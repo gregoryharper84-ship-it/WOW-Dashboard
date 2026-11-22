@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,10 +17,58 @@ from v17.fitted_team_event_certification import (
 )
 from v17 import nhl_certified_scoring_adapter as adapter
 import v17.nhl_fitted_specialist as nhl
+from v17.nhl_starter_goalie_confirmation import (
+    ATTESTATION_FIELD,
+    TrustedProvider,
+    attest_receipt,
+)
 
 
-NOW = datetime(2026, 11, 22, 18, 0, tzinfo=timezone.utc)
+EVENT_START = datetime(2026, 11, 22, 20, 0, tzinfo=timezone.utc)
+# Evaluation must sit inside the 90-minute pregame confirmation window.
+NOW = EVENT_START - timedelta(minutes=30)
+OFFICIAL_EVENT_ID = "2026020001"
+# Test-only attestation material. Production keys stay server-owned.
+ATTESTATION_KEY = b"nhl-adapter-test-attestation-key!!"  # 32 bytes
+TRUSTED_PROVIDERS = {
+    "NHL_GAMECENTER": TrustedProvider("NHL_GAMECENTER", "NHL_COM"),
+    "TEAM_OFFICIAL": TrustedProvider("TEAM_OFFICIAL", "CLUB_SITE"),
+}
 FIXTURE = Path(__file__).parent / "fixtures" / "nhl_fitted_candidate_20261107.json"
+
+
+def _provider_receipt(source: str, family: str, snap: str, digit: str, *, minutes_before: int = 45) -> dict:
+    return {
+        "source_authority": "OFFICIAL",
+        "source_id": source,
+        "provider_family": family,
+        "source_snapshot_id": snap,
+        "source_payload_sha256": digit * 64,
+        "official_event_id": OFFICIAL_EVENT_ID,
+        "home_team_id": "BOS",
+        "away_team_id": "NYR",
+        "event_start_time_utc": EVENT_START.isoformat(),
+        "as_of": (EVENT_START - timedelta(minutes=minutes_before)).isoformat(),
+        "home": {"goalie_id": "8480000", "starting_status": "CONFIRMED"},
+        "away": {"goalie_id": "8481111", "starting_status": "CONFIRMED"},
+    }
+
+
+def _attested_starter_receipts() -> list[dict]:
+    receipts = [
+        _provider_receipt("NHL_GAMECENTER", "NHL_COM", "snap-a", "a", minutes_before=45),
+        _provider_receipt("TEAM_OFFICIAL", "CLUB_SITE", "snap-b", "b", minutes_before=40),
+    ]
+    for row in receipts:
+        row[ATTESTATION_FIELD] = attest_receipt(row, ATTESTATION_KEY)
+    return receipts
+
+
+def _server_goalie_kwargs() -> dict:
+    return {
+        "trusted_providers": TRUSTED_PROVIDERS,
+        "attestation_key": ATTESTATION_KEY,
+    }
 
 
 def _empirical_calibrator() -> dict:
@@ -67,20 +115,24 @@ def _receipt_payload(**overrides) -> dict:
     return row
 
 
-def _evidence(**overrides) -> dict:
+def _evidence(*, with_attested_starters: bool = True, **overrides) -> dict:
     row = {
-        "official_event_id": "2026020001",
+        "official_event_id": OFFICIAL_EVENT_ID,
+        # Caller-asserted goalie scalars are intentionally forgeable here; the
+        # adapter must ignore them unless starter_provider_receipts attest.
         "goalie_status": "CONFIRMED",
-        "goalie_status_observed_at": "2026-11-22T17:30:00+00:00",
-        "goalie_identity_snapshot_id": "goalie-snap-1",
+        "goalie_status_observed_at": (NOW - timedelta(minutes=5)).isoformat(),
+        "goalie_identity_snapshot_id": "forged-caller-goalie-snap",
         "settlement_basis": "HOME_AWAY_INCLUDING_OT_SO",
         "source_snapshot_id": "snap-1",
-        "source_snapshot_timestamp": "2026-11-22T17:00:00+00:00",
+        "source_snapshot_timestamp": (NOW - timedelta(minutes=15)).isoformat(),
         "season": "20262027",
         "neutral_site": False,
         "injury_report": {"status": "NONE"},
         "rest_travel": {"home_rest_days": 2, "away_rest_days": 1},
     }
+    if with_attested_starters:
+        row[adapter.STARTER_PROVIDER_RECEIPTS_FIELD] = _attested_starter_receipts()
     row.update(overrides)
     return row
 
@@ -198,8 +250,9 @@ def test_adapter_rejects_identity_calibrator_even_if_receipt_parses():
             latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
             home_team="BOS",
             away_team="NYR",
-            official_event_id="2026020001",
+            official_event_id=OFFICIAL_EVENT_ID,
             now_utc=NOW,
+            **_server_goalie_kwargs(),
         )
     assert "NHL_IDENTITY_CALIBRATOR_FORBIDDEN" in exc.value.blockers
 
@@ -218,8 +271,9 @@ def test_adapter_rejects_incompatible_settlement_basis():
             latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
             home_team="BOS",
             away_team="NYR",
-            official_event_id="2026020001",
+            official_event_id=OFFICIAL_EVENT_ID,
             now_utc=NOW,
+            **_server_goalie_kwargs(),
         )
     assert "NHL_SETTLEMENT_BASIS_UNVERIFIED" in exc.value.blockers
 
@@ -237,8 +291,9 @@ def test_adapter_emits_home_and_away_bounds_matching_validate_prediction_package
         latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
         home_team="BOS",
         away_team="NYR",
-        official_event_id="2026020001",
+        official_event_id=OFFICIAL_EVENT_ID,
         now_utc=NOW,
+        **_server_goalie_kwargs(),
     )
     assert package["can_execute"] is False
     assert package["calibration_artifact_fingerprint"] == _hash(_empirical_calibrator())
@@ -252,7 +307,81 @@ def test_adapter_emits_home_and_away_bounds_matching_validate_prediction_package
     assert blockers == ()
 
 
-def test_goalie_hold_still_blocks_with_valid_receipt():
+def test_caller_confirmed_status_with_fake_snapshot_id_cannot_promote(monkeypatch):
+    """Greg SAFE_HOLD counterexample: forged CONFIRMED + fake ID must not promote."""
+    receipt = parse_certification(_receipt_payload())
+    forged = _evidence(
+        with_attested_starters=False,
+        goalie_status="CONFIRMED",
+        goalie_identity_snapshot_id="forged-caller-goalie-snap",
+        derived_server_side=True,
+        server_owned=True,
+    )
+    with pytest.raises(adapter.NHLCertifiedScoringError) as exc:
+        adapter.build_nhl_certified_envelope(
+            receipt=receipt,
+            raw_home=0.58,
+            calibrated_home=0.56,
+            lower=0.51,
+            upper=0.61,
+            evidence=forged,
+            model_timestamp="2026-11-22T12:00:00+00:00",
+            latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
+            home_team="BOS",
+            away_team="NYR",
+            official_event_id=OFFICIAL_EVENT_ID,
+            now_utc=NOW,
+            **_server_goalie_kwargs(),
+        )
+    assert exc.value.code == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NHL_STARTER_RECEIPTS_INCOMPLETE" in exc.value.blockers
+    assert exc.value.can_execute is False
+    assert exc.value.probability_publishable is False
+
+    # End-to-end: even with a resolved receipt, forged goalies hold before scoring.
+    monkeypatch.setattr(adapter, "resolve_certification", lambda *_a, **_k: receipt)
+    with pytest.raises(adapter.NHLCertifiedScoringError) as score_exc:
+        adapter.score_nhl_certified_event(
+            SimpleNamespace(
+                sport_specific_evidence=forged,
+                home_team="BOS",
+                away_team="NYR",
+                official_event_id=OFFICIAL_EVENT_ID,
+                settlement_basis="HOME_AWAY_INCLUDING_OT_SO",
+            ),
+            db=_Database([_candidate_row()]),
+            now_utc=NOW,
+            **_server_goalie_kwargs(),
+        )
+    assert "NHL_STARTER_RECEIPTS_INCOMPLETE" in score_exc.value.blockers
+    assert score_exc.value.probability_publishable is False
+
+
+def test_unsigned_provider_receipts_cannot_promote():
+    receipt = parse_certification(_receipt_payload())
+    unsigned = _attested_starter_receipts()
+    for row in unsigned:
+        row.pop(ATTESTATION_FIELD, None)
+    with pytest.raises(adapter.NHLCertifiedScoringError) as exc:
+        adapter.build_nhl_certified_envelope(
+            receipt=receipt,
+            raw_home=0.58,
+            calibrated_home=0.56,
+            lower=0.51,
+            upper=0.61,
+            evidence=_evidence(**{adapter.STARTER_PROVIDER_RECEIPTS_FIELD: unsigned}),
+            model_timestamp="2026-11-22T12:00:00+00:00",
+            latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
+            home_team="BOS",
+            away_team="NYR",
+            official_event_id=OFFICIAL_EVENT_ID,
+            now_utc=NOW,
+            **_server_goalie_kwargs(),
+        )
+    assert "NHL_STARTER_ATTESTATION_INVALID" in exc.value.blockers
+
+
+def test_goalie_hold_still_blocks_without_server_registry():
     receipt = parse_certification(_receipt_payload())
     with pytest.raises(adapter.NHLCertifiedScoringError) as exc:
         adapter.build_nhl_certified_envelope(
@@ -261,15 +390,16 @@ def test_goalie_hold_still_blocks_with_valid_receipt():
             calibrated_home=0.56,
             lower=0.51,
             upper=0.61,
-            evidence=_evidence(goalie_status="PROJECTED"),
+            evidence=_evidence(),
             model_timestamp="2026-11-22T12:00:00+00:00",
             latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
             home_team="BOS",
             away_team="NYR",
-            official_event_id="2026020001",
+            official_event_id=OFFICIAL_EVENT_ID,
             now_utc=NOW,
+            # No trusted_providers / attestation_key → fail closed.
         )
-    assert "NHL_STARTING_GOALIE_NOT_CONFIRMED" in exc.value.blockers
+    assert "NHL_STARTER_SOURCE_NOT_TRUSTED" in exc.value.blockers
     assert exc.value.can_execute is False
 
 
@@ -309,23 +439,28 @@ def test_score_matching_uses_receipt_bound_loader_without_replacing_helper(monke
             "immutable_model_timestamp": "2026-11-22T12:00:00+00:00",
             "home_team": "BOS",
             "away_team": "NYR",
-            "official_event_id": "2026020001",
+            "official_event_id": OFFICIAL_EVENT_ID,
             "model_artifact_checksum": receipt.artifact_sha256,
         }
 
     monkeypatch.setattr(nhl, "score_current_nhl_event", fake_score)
+    evidence = _evidence()
+    confirmed = adapter.resolve_server_confirmed_goalies(
+        evidence, now_utc=NOW, official_event_id=OFFICIAL_EVENT_ID, **_server_goalie_kwargs()
+    )
+    evidence = adapter.rehydrate_evidence_with_server_goalies(evidence, confirmed)
     req = SimpleNamespace(
-        sport_specific_evidence=_evidence(),
+        sport_specific_evidence=evidence,
         home_team="BOS",
         away_team="NYR",
-        event_start_time_utc="2026-11-22T20:00:00+00:00",
+        event_start_time_utc=EVENT_START.isoformat(),
         settlement_basis="HOME_AWAY_INCLUDING_OT_SO",
     )
     scored = adapter._score_matching_certified_artifacts(
         db=db,
         req=req,
         receipt=receipt,
-        evidence=_evidence(),
+        evidence=evidence,
         now_utc=NOW,
     )
     assert seen["model_version"] == receipt.model_version
@@ -348,6 +483,10 @@ def test_adapter_end_to_end_does_not_mutate_candidate_rows(monkeypatch):
         assert isinstance(certified_candidate, nhl.NHLFittedCandidate)
         loaded = certified_candidate
         assert loaded.artifact_checksum == receipt.artifact_sha256
+        # Rehydrated evidence must carry the derived snapshot, not the forged caller ID.
+        evidence = getattr(req, "sport_specific_evidence", {}) or {}
+        assert str(evidence.get("goalie_identity_snapshot_id") or "").startswith("sha256:")
+        assert evidence.get("goalie_identity_snapshot_id") != "forged-caller-goalie-snap"
         return {
             "raw_home_probability": 0.58,
             "calibrated_home_probability": 0.56,
@@ -356,7 +495,7 @@ def test_adapter_end_to_end_does_not_mutate_candidate_rows(monkeypatch):
             "immutable_model_timestamp": "2026-11-22T12:00:00+00:00",
             "home_team": "BOS",
             "away_team": "NYR",
-            "official_event_id": "2026020001",
+            "official_event_id": OFFICIAL_EVENT_ID,
             "model_artifact_checksum": receipt.artifact_sha256,
         }
 
@@ -365,11 +504,14 @@ def test_adapter_end_to_end_does_not_mutate_candidate_rows(monkeypatch):
         sport_specific_evidence=_evidence(),
         home_team="BOS",
         away_team="NYR",
-        event_start_time_utc="2026-11-22T20:00:00+00:00",
-        event_key="NHL:2026020001",
+        event_start_time_utc=EVENT_START.isoformat(),
+        event_key=f"NHL:{OFFICIAL_EVENT_ID}",
+        official_event_id=OFFICIAL_EVENT_ID,
         settlement_basis="HOME_AWAY_INCLUDING_OT_SO",
     )
-    package = adapter.score_nhl_certified_event(req, db=db, now_utc=NOW)
+    package = adapter.score_nhl_certified_event(
+        req, db=db, now_utc=NOW, **_server_goalie_kwargs()
+    )
     assert package["probability_publishable"] is True
     assert package["can_execute"] is False
     assert package["settlement_basis"] == "HOME_AWAY_INCLUDING_OT_SO"
@@ -395,19 +537,24 @@ def test_receipt_bound_scoring_never_mutates_global_loader(monkeypatch):
             "immutable_model_timestamp": "2026-11-22T12:00:00+00:00",
             "home_team": "BOS",
             "away_team": "NYR",
-            "official_event_id": "2026020001",
+            "official_event_id": OFFICIAL_EVENT_ID,
             "model_artifact_checksum": receipt.artifact_sha256,
         }
 
     monkeypatch.setattr(nhl, "score_current_nhl_event", fake_score)
+    evidence = _evidence()
+    confirmed = adapter.resolve_server_confirmed_goalies(
+        evidence, now_utc=NOW, official_event_id=OFFICIAL_EVENT_ID, **_server_goalie_kwargs()
+    )
+    evidence = adapter.rehydrate_evidence_with_server_goalies(evidence, confirmed)
     request = SimpleNamespace(
-        sport_specific_evidence=_evidence(), home_team="BOS", away_team="NYR",
-        event_start_time_utc="2026-11-22T20:00:00+00:00",
+        sport_specific_evidence=evidence, home_team="BOS", away_team="NYR",
+        event_start_time_utc=EVENT_START.isoformat(),
         settlement_basis="HOME_AWAY_INCLUDING_OT_SO",
     )
     for _ in range(2):
         result = adapter._score_matching_certified_artifacts(
-            db=db, req=request, receipt=receipt, evidence=_evidence(), now_utc=NOW,
+            db=db, req=request, receipt=receipt, evidence=evidence, now_utc=NOW,
         )
         assert result["lower"] == pytest.approx(0.51)
     assert observed == [(receipt.model_version, receipt.artifact_sha256)] * 2
