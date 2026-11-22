@@ -420,7 +420,9 @@ def _team_event_candidate(
         "market_evidence_source_blockers": event_blockers,
         "sporting_identity_preserved_without_market_evidence": True,
         "contrarian_review_required": True,
-        "canonicalization_required": True,
+        "canonicalization_required": (
+            event_identity.get("official_event_identity_verified") is not True
+        ),
     }
 
 
@@ -481,7 +483,11 @@ def run() -> dict[str, Any]:
                 # No news or specialist can treat it as verified canonical identity.
                 "official_event_id": event_id,
                 "provider_event_id": event_id,
-                "provider_event_source": "ODDS_API",
+                "provider_event_source": (
+                    "ESPN_SCOREBOARD"
+                    if event_id.startswith("espn-") or event.get("_wow_secondary_event_id")
+                    else "ODDS_API"
+                ),
                 "official_event_identity_verified": False,
                 "canonical_event_id": None,
                 "canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED",
@@ -590,7 +596,9 @@ def run() -> dict[str, Any]:
                     "game_scripts_are_evidence_only": True,
                     "scout_team": list(SCOUT_TEAM),
                     "contrarian_review_required": True,
-                    "canonicalization_required": True,
+                    "canonicalization_required": (
+                        event_identity.get("official_event_identity_verified") is not True
+                    ),
                 })
             coverage.append({
                 "scope": "event",
