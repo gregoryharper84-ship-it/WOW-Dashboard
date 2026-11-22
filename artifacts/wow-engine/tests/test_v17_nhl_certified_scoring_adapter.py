@@ -118,6 +118,9 @@ def _receipt_payload(**overrides) -> dict:
 def _evidence(*, with_attested_starters: bool = True, **overrides) -> dict:
     row = {
         "official_event_id": OFFICIAL_EVENT_ID,
+        "home_team": "BOS",
+        "away_team": "NYR",
+        "event_start_time_utc": EVENT_START.isoformat(),
         # Caller-asserted goalie scalars are intentionally forgeable here; the
         # adapter must ignore them unless starter_provider_receipts attest.
         "goalie_status": "CONFIRMED",
@@ -381,6 +384,73 @@ def test_unsigned_provider_receipts_cannot_promote():
     assert "NHL_STARTER_ATTESTATION_INVALID" in exc.value.blockers
 
 
+def test_attested_receipts_for_other_matchup_cannot_authorize_request_teams():
+    """Codex P1: BOS–NYR receipts must not authorize a different scored matchup."""
+    receipt = parse_certification(_receipt_payload())
+    with pytest.raises(adapter.NHLCertifiedScoringError) as exc:
+        adapter.build_nhl_certified_envelope(
+            receipt=receipt,
+            raw_home=0.58,
+            calibrated_home=0.56,
+            lower=0.51,
+            upper=0.61,
+            evidence=_evidence(),
+            model_timestamp="2026-11-22T12:00:00+00:00",
+            latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
+            home_team="TOR",
+            away_team="MTL",
+            official_event_id=OFFICIAL_EVENT_ID,
+            now_utc=NOW,
+            **_server_goalie_kwargs(),
+        )
+    assert "NHL_STARTER_EVENT_IDENTITY_MISMATCH" in exc.value.blockers
+    assert exc.value.probability_publishable is False
+
+
+def test_attested_receipts_cannot_authorize_different_start_time():
+    receipt = parse_certification(_receipt_payload())
+    wrong_start = (EVENT_START + timedelta(hours=3)).isoformat()
+    with pytest.raises(adapter.NHLCertifiedScoringError) as exc:
+        adapter.build_nhl_certified_envelope(
+            receipt=receipt,
+            raw_home=0.58,
+            calibrated_home=0.56,
+            lower=0.51,
+            upper=0.61,
+            evidence=_evidence(event_start_time_utc=wrong_start),
+            model_timestamp="2026-11-22T12:00:00+00:00",
+            latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
+            home_team="BOS",
+            away_team="NYR",
+            official_event_id=OFFICIAL_EVENT_ID,
+            now_utc=NOW,
+            req=SimpleNamespace(event_start_time_utc=wrong_start),
+            **_server_goalie_kwargs(),
+        )
+    assert "NHL_STARTER_START_TIME_DISAGREEMENT" in exc.value.blockers
+
+
+def test_missing_request_matchup_fields_fail_closed():
+    receipt = parse_certification(_receipt_payload())
+    with pytest.raises(adapter.NHLCertifiedScoringError) as exc:
+        adapter.build_nhl_certified_envelope(
+            receipt=receipt,
+            raw_home=0.58,
+            calibrated_home=0.56,
+            lower=0.51,
+            upper=0.61,
+            evidence=_evidence(home_team="", away_team="", event_start_time_utc=""),
+            model_timestamp="2026-11-22T12:00:00+00:00",
+            latest_material_update_timestamp="2026-11-22T11:00:00+00:00",
+            home_team="",
+            away_team="",
+            official_event_id=OFFICIAL_EVENT_ID,
+            now_utc=NOW,
+            **_server_goalie_kwargs(),
+        )
+    assert "NHL_STARTER_REQUEST_MATCHUP_INCOMPLETE" in exc.value.blockers
+
+
 def test_goalie_hold_still_blocks_without_server_registry():
     receipt = parse_certification(_receipt_payload())
     with pytest.raises(adapter.NHLCertifiedScoringError) as exc:
@@ -446,7 +516,13 @@ def test_score_matching_uses_receipt_bound_loader_without_replacing_helper(monke
     monkeypatch.setattr(nhl, "score_current_nhl_event", fake_score)
     evidence = _evidence()
     confirmed = adapter.resolve_server_confirmed_goalies(
-        evidence, now_utc=NOW, official_event_id=OFFICIAL_EVENT_ID, **_server_goalie_kwargs()
+        evidence,
+        now_utc=NOW,
+        official_event_id=OFFICIAL_EVENT_ID,
+        home_team="BOS",
+        away_team="NYR",
+        event_start_time_utc=EVENT_START.isoformat(),
+        **_server_goalie_kwargs(),
     )
     evidence = adapter.rehydrate_evidence_with_server_goalies(evidence, confirmed)
     req = SimpleNamespace(
@@ -544,7 +620,13 @@ def test_receipt_bound_scoring_never_mutates_global_loader(monkeypatch):
     monkeypatch.setattr(nhl, "score_current_nhl_event", fake_score)
     evidence = _evidence()
     confirmed = adapter.resolve_server_confirmed_goalies(
-        evidence, now_utc=NOW, official_event_id=OFFICIAL_EVENT_ID, **_server_goalie_kwargs()
+        evidence,
+        now_utc=NOW,
+        official_event_id=OFFICIAL_EVENT_ID,
+        home_team="BOS",
+        away_team="NYR",
+        event_start_time_utc=EVENT_START.isoformat(),
+        **_server_goalie_kwargs(),
     )
     evidence = adapter.rehydrate_evidence_with_server_goalies(evidence, confirmed)
     request = SimpleNamespace(
