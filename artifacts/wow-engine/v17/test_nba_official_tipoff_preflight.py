@@ -200,3 +200,46 @@ def test_input_bounds_are_strict():
             preflight([], now=NOW, **kwargs)
     with pytest.raises(ValueError, match="NBA_PREFLIGHT_CLOCK_NAIVE"):
         preflight([], now=datetime(2026, 11, 12))
+
+
+@pytest.mark.parametrize("field,value,expected", [
+    ("competitions", {"unexpected": "object"}, "NBA_ESPN_COMPETITION_AMBIGUOUS"),
+    ("competitions", 1, "NBA_ESPN_COMPETITION_AMBIGUOUS"),
+    ("competitions", "not-a-list", "NBA_ESPN_COMPETITION_AMBIGUOUS"),
+    ("competitions", [1], "NBA_ESPN_COMPETITION_AMBIGUOUS"),
+    ("competitions", [], "NBA_ESPN_COMPETITION_AMBIGUOUS"),
+    ("competitors", {"home": "invalid"}, "NBA_ESPN_PARTICIPANTS_INVALID"),
+    ("competitors", 1, "NBA_ESPN_PARTICIPANTS_INVALID"),
+    ("competitors", "not-a-list", "NBA_ESPN_PARTICIPANTS_INVALID"),
+    ("competitors", [None, None], "NBA_ESPN_PARTICIPANTS_INVALID"),
+])
+def test_malformed_nested_source_yields_typed_blocker_not_exception(field, value, expected):
+    event = official()
+    if field == "competitors":
+        event["competitions"][0]["competitors"] = value
+    else:
+        event[field] = value
+    result, when = _verify_event(stored(), event, observed_at=NOW)
+    assert result == expected
+    assert when is None
+
+
+def test_malformed_nested_event_does_not_abort_unrelated_valid_rows():
+    invalid = official("401909957")
+    invalid["competitions"] = {"unexpected": "object"}
+    valid = official("401909958")
+    rows = [stored("401909957"), stored("401909958")]
+    original = deepcopy(rows)
+    report = preflight(rows, now=NOW, max_rows=2, max_days=1,
+                       http_get=feed([invalid, valid], []))
+    assert report["balanced"] is True
+    assert report["rows_in"] == report["rows_accounted"] == 2
+    assert [r["status"] for r in report["receipts"]] == [
+        "NBA_ESPN_COMPETITION_AMBIGUOUS",
+        "NBA_OFFICIAL_TIPOFF_CORROBORATED",
+    ]
+    assert report["verified"] == 1
+    assert report["unverified"] == 1
+    assert report["db_writes"] == 0
+    assert report["can_execute"] is False
+    assert rows == original
