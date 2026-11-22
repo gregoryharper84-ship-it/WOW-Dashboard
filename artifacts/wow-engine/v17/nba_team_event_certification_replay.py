@@ -6,6 +6,10 @@ A successful numerical replay is evidence for independent review only: it never
 certifies, promotes, activates, registers, publishes, ranks or executes a model.
 """
 from __future__ import annotations
+from v17.multisport_team_event_calibration import (
+    calibration_payload_sha256, CalibrationArtifactDigestError,
+)
+
 
 import hashlib
 import json
@@ -47,7 +51,8 @@ ARTIFACT_FIELDS = (
 )
 CALIBRATOR_FIELDS = (
     "calibrator_id,sport,calibrator_version,model_artifact_version,calibration_method,"
-    "coefficients,calibration_row_count,brier,log_loss,ece,calibration_bias,promoted,active,created_at"
+    "coefficients,calibration_row_count,brier,log_loss,ece,calibration_bias,promoted,active,created_at,"
+    "calibration_artifact_payload,calibration_artifact_sha256"
 )
 CERTIFICATION_FIELDS = (
     "sport,capability_status,reason_code,model_artifact_version,calibrator_version,"
@@ -705,8 +710,29 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         and -1.0 <= float(calibrator_row["calibration_bias"]) <= 1.0
     )
     calibrator_checksum = _calibrator_digest(calibrator_row)
-    # The current table has no persisted calibrator checksum or fit-corpus hash.
-    calibrator_checksum_persisted = bool(calibrator_row.get("calibrator_checksum"))
+    # The governed artifact-evidence migration now persists a content-bound
+    # SHA256. The old "calibrator_checksum" column never existed here. A valid
+    # digest is necessary, never sufficient, for independent certification.
+    calibration_payload = calibrator_row.get("calibration_artifact_payload")
+    declared_calibration_digest = str(
+        calibrator_row.get("calibration_artifact_sha256") or ""
+    ).strip().lower()
+    calibrator_checksum_persisted = False
+    if isinstance(calibration_payload, Mapping) and _is_sha256(declared_calibration_digest):
+        try:
+            calibrator_checksum_persisted = bool(
+                calibration_payload_sha256(calibration_payload) == declared_calibration_digest
+                and calibration_payload.get("model_version") == version
+                and calibration_payload.get("calibration_version") == calibrator_row.get("calibrator_version")
+                and calibration_payload.get("calibration_method") == calibrator_row.get("calibration_method")
+                and _matches(calibration_payload.get("platt_a"), coefficients.get("a"))
+                and _matches(calibration_payload.get("platt_b"), coefficients.get("b"))
+                and calibration_payload.get("probability_publishable") is False
+                and calibration_payload.get("rank_eligible") is False
+                and calibration_payload.get("can_execute") is False
+            )
+        except (CalibrationArtifactDigestError, ValueError, TypeError, OverflowError):
+            calibrator_checksum_persisted = False
 
     try:
         certification_row = _read_one(
