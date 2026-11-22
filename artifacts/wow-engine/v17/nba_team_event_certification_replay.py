@@ -97,6 +97,12 @@ def _sha256_json(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _manifest_token(row: Mapping[str, Any], field: str) -> str:
+    """Preserve legitimate zero and False in immutable corpus fingerprints."""
+    value = row.get(field)
+    return "" if value is None else str(value)
+
+
 def _read_one(
     db: Any,
     table: str,
@@ -318,8 +324,8 @@ def _corpus_replay(
             blockers.append("SOURCE_PROVENANCE_NOT_CERTIFIED")
             continue
 
-        provider = str(raw.get("source_provider") or "").strip()
-        endpoint = str(raw.get("source_endpoint") or "").strip()
+        provider = _manifest_token(raw, "source_provider").strip()
+        endpoint = _manifest_token(raw, "source_endpoint").strip()
         retrieved_at = _aware_timestamp(raw.get("source_retrieved_at"))
         if provider:
             providers.add(provider)
@@ -365,7 +371,7 @@ def _corpus_replay(
             and feature_date is not None
             and feature_date == game_date
             and str(payload.get("feature_schema_version") or "") == FEATURE_SCHEMA_VERSION
-            and str(raw.get("feature_schema_version") or "") == FEATURE_SCHEMA_VERSION
+            and _manifest_token(raw, "feature_schema_version") == FEATURE_SCHEMA_VERSION
             and payload.get("home_games_prior") == raw.get("home_games_prior")
             and payload.get("away_games_prior") == raw.get("away_games_prior")
             and isinstance(values, Mapping)
@@ -406,7 +412,7 @@ def _corpus_replay(
             computed_feature_hash = _sha256_json(payload)
         except (TypeError, ValueError):
             computed_feature_hash = ""
-        if not _is_sha256(raw.get("feature_payload_sha256")) or computed_feature_hash != str(raw.get("feature_payload_sha256") or "").lower():
+        if not _is_sha256(raw.get("feature_payload_sha256")) or computed_feature_hash != _manifest_token(raw, "feature_payload_sha256").lower():
             blockers.append("SOURCE_PROVENANCE_NOT_CERTIFIED")
             feature_hashes_valid = False
 
@@ -454,17 +460,17 @@ def _corpus_replay(
         digest.update((
             "G|" + "|".join((
                 game_id,
-                str(raw.get("season") or ""),
-                str(raw.get("game_date") or ""),
-                str(raw.get("scheduled_start_utc") or ""),
-                str(raw.get("home_team_id") or ""),
-                str(raw.get("away_team_id") or ""),
-                str(raw.get("home_score") or ""),
-                str(raw.get("away_score") or ""),
-                str(raw.get("source_provider") or ""),
-                str(raw.get("source_endpoint") or ""),
-                str(raw.get("source_retrieved_at") or ""),
-                str(raw.get("source_payload_sha256") or ""),
+                _manifest_token(raw, "season"),
+                _manifest_token(raw, "game_date"),
+                _manifest_token(raw, "scheduled_start_utc"),
+                _manifest_token(raw, "home_team_id"),
+                _manifest_token(raw, "away_team_id"),
+                _manifest_token(raw, "home_score"),
+                _manifest_token(raw, "away_score"),
+                _manifest_token(raw, "source_provider"),
+                _manifest_token(raw, "source_endpoint"),
+                _manifest_token(raw, "source_retrieved_at"),
+                _manifest_token(raw, "source_payload_sha256"),
                 str(raw.get("home_win")),
             )) + "\n"
         ).encode("utf-8"))
@@ -473,11 +479,11 @@ def _corpus_replay(
         digest.update((
             "F|" + "|".join((
                 game_id,
-                str(raw.get("as_of") or ""),
-                str(raw.get("feature_schema_version") or ""),
-                str(raw.get("home_games_prior") or ""),
-                str(raw.get("away_games_prior") or ""),
-                str(raw.get("feature_payload_sha256") or ""),
+                _manifest_token(raw, "as_of"),
+                _manifest_token(raw, "feature_schema_version"),
+                _manifest_token(raw, "home_games_prior"),
+                _manifest_token(raw, "away_games_prior"),
+                _manifest_token(raw, "feature_payload_sha256"),
             )) + "\n"
         ).encode("utf-8"))
 
@@ -945,6 +951,13 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
             and min(row.game_date for row in training_rows).isoformat() == artifact.train_start_date
             and max(row.game_date for row in training_rows).isoformat() == artifact.train_end_date
             and min(row.game_date for row in holdout_rows) > cutoff
+            # Require both independently stored holdout boundary dates.
+            and stored_holdout_evidence.get("holdout_start_date") == min(
+                row.game_date for row in holdout_rows
+            ).isoformat()
+            and stored_holdout_evidence.get("holdout_end_date") == max(
+                row.game_date for row in holdout_rows
+            ).isoformat()
             and len({row.game_id for row in replay_rows}) == len(replay_rows)
         )
         if not split_valid:
