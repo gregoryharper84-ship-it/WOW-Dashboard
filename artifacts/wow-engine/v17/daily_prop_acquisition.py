@@ -269,6 +269,7 @@ def acquire_daily_prop_snapshots(
     http_get: Any = httpx.get,
     include_nfl: bool = False,
     refresh_targets: list[dict[str, Any]] | None = None,
+    nfl_rotation: int | None = None,
 ) -> dict[str, Any]:
     """Acquire official future NFL and MLB evidence with one bounded candidate budget.
 
@@ -305,18 +306,28 @@ def acquire_daily_prop_snapshots(
         and row.get("event_id") and row.get("player") and row.get("stat_type")
     ))
     discovery_cache: dict[str, Any] = {}
+    # A deterministic one-hour index advances background/empty-manifest
+    # discovery over successive invocations without mutable global state,
+    # a database cursor, or dependence on successful hydration. Exact selected
+    # stale identities always take precedence over rotation.
+    if nfl_rotation is not None and (type(nfl_rotation) is not int or nfl_rotation < 0):
+        raise ValueError("NFL_PROP_ROTATION_INVALID")
+    rotation = None if priority_targets else (
+        nfl_rotation if nfl_rotation is not None else int(now.timestamp() // 3600)
+    )
 
-    def nfl_page(offset: int, limit: int) -> dict[str, Any]:
+    def nfl_page(offset: int, limit: int, *, first_page: bool = False) -> dict[str, Any]:
         return acquire_nfl_forward_evidence_batch(
             NFLForwardEvidenceRequest(
                 requested_date=requested_date, candidate_offset=offset,
                 max_candidates=max(1, min(limit, 64)),
+                candidate_rotation=rotation if first_page else None,
             ),
             db=db, now=now, http_get=http_get,
             priority_targets=priority_targets, _discovery_cache=discovery_cache,
         )
 
-    first = nfl_page(0, min(budget, max(1, (budget + 1) // 2)))
+    first = nfl_page(0, min(budget, max(1, (budget + 1) // 2)), first_page=True)
     nfl_pages.append(first)
     nfl_attempted = int(first.get("attempted") or 0)
     mlb = _acquire_mlb_daily_prop_snapshots(
@@ -359,6 +370,7 @@ def acquire_daily_prop_snapshots(
         "source_results": {
             "NFL": [{
                 "status": page.get("status"), "candidate_offset": page.get("candidate_offset"),
+                "candidate_rotation": page.get("candidate_rotation"),
                 "total_candidates": page.get("total_candidates"),
                 "attempted": page.get("attempted"), "persisted": page.get("persisted"),
                 "held": page.get("held"),
