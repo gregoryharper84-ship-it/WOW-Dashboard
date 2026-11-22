@@ -138,8 +138,19 @@ def _metric_rows(candidate: dict[str, Any]) -> dict[str, Any]:
     # *exact* quote. No opener/movement, price comparison or market probability
     # is inferred from one quote or from a line without its market identity.
     if "exact_current_quote" not in metrics:
-        for quote in candidate.get("market_evidence") or []:
+        # Scout discovery may attach multiple bookmaker rows, while the
+        # canonical snapshot adapter also supports one quote as a dict.
+        # Treat both shapes identically; never iterate dict keys as quotes.
+        raw_quotes = candidate.get("market_evidence")
+        quotes = ([raw_quotes] if isinstance(raw_quotes, dict)
+                  else raw_quotes if isinstance(raw_quotes, list) else [])
+        for quote in quotes:
             if not isinstance(quote, dict):
+                continue
+            # An explicit candidate/quote identity mismatch cannot be
+            # laundered into evidence under the candidate's event ID.
+            quote_event = quote.get("official_event_id")
+            if quote_event is not None and str(quote_event) != str(candidate.get("official_event_id") or ""):
                 continue
             key = str(quote.get("market_key") or "").lower()
             if key not in ("h2h", "spreads", "totals") and not key.startswith(("player_", "pitcher_", "batter_")):
