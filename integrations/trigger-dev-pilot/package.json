@@ -1,0 +1,30 @@
+{
+  "name": "@wow/trigger-readonly-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "predev": "node ./scripts/start-dev-preflight.mjs",
+    "dev": "trigger dev",
+    "cli:smoke": "node --input-type=module -e \"await import('./node_modules/trigger.dev/dist/esm/build/externals.js')\"",
+    "patch:cli": "node ./scripts/patch-trigger-cli.mjs"
+  },
+  "dependencies": {
+    "@trigger.dev/sdk": "^4.8.3"
+  },
+  "devDependencies": {
+    "trigger.dev": "^4.8.3",
+    "typescript": "~5.9.2",
+    "@types/node": "^22.16.0",
+    "picomatch": "2.3.2"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2",
+    "esbuild": "0.25.0",
+    "minimatch": "11.0.1",
+    "tar": "7.5.22",
+    "zod": "4.6.7"
+  }
+}
