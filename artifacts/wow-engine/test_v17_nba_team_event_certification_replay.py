@@ -459,8 +459,10 @@ def test_nba_calibrator_digest_readback_uses_real_persisted_artifact_evidence():
         "model_version": calibrator["model_artifact_version"],
         "calibration_version": calibrator["calibrator_version"],
         "calibration_method": calibrator["calibration_method"],
-        "platt_a": calibrator["coefficients"]["a"],
-        "platt_b": calibrator["coefficients"]["b"],
+        # Signed artifact uses Platt slope then intercept, while the
+        # historical calibrator row uses a=intercept and b=slope.
+        "platt_a": calibrator["coefficients"]["b"],
+        "platt_b": calibrator["coefficients"]["a"],
         "probability_publishable": False,
         "rank_eligible": False,
         "can_execute": False,
@@ -484,6 +486,9 @@ def test_nba_calibrator_digest_readback_uses_real_persisted_artifact_evidence():
     # Even an internally consistent new payload hash cannot bless an artifact
     # bearing a different model lineage, changed coefficients or publication flags.
     for changed in (
+        # Regression: a legacy a/b payload with keys simply copied across
+        # is internally hash-consistent but describes the wrong fitted model.
+        {**payload, "platt_a": calibrator["coefficients"]["a"], "platt_b": calibrator["coefficients"]["b"]},
         {**payload, "model_version": "NBA_OTHER"},
         {**payload, "calibration_version": "NBA_OTHER"},
         {**payload, "platt_b": 100.0},
