@@ -10,6 +10,8 @@ execution authority.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Any, Mapping
 
 import requests
@@ -135,9 +137,18 @@ def resolve_nhl_current_event_identity(
         raise NHLEventIdentityError(
             f"NHL_OFFICIAL_SOURCE_HTTP_{getattr(response, 'status_code', 'UNKNOWN')}"
         )
+    # Hash the exact decompressed HTTP response.content bytes that we parse.
+    # A wall-clock verified_at alone does not bind the schedule body. Never
+    # replace missing bytes with a hash of a re-serialized JSON fixture.
+    body = getattr(response, "content", None)
+    if not isinstance(body, bytes) or not body:
+        raise NHLEventIdentityError("NHL_OFFICIAL_SOURCE_BYTES_UNAVAILABLE")
+    if len(body) > 4_000_000:
+        raise NHLEventIdentityError("NHL_OFFICIAL_SOURCE_RESPONSE_OVERSIZED")
+    source_sha256 = hashlib.sha256(body).hexdigest()
     try:
-        payload = response.json()
-    except Exception as exc:  # noqa: BLE001
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError) as exc:
         raise NHLEventIdentityError(
             "NHL_OFFICIAL_SOURCE_RESPONSE_INVALID",
             type(exc).__name__,
@@ -178,6 +189,9 @@ def resolve_nhl_current_event_identity(
         raise NHLEventIdentityError("NHL_CANONICAL_EVENT_AMBIGUOUS")
 
     match = matches[0]
+    state = str(match.get("gameState") or "").strip().upper()
+    if state not in {"FUT", "PRE"}:
+        raise NHLEventIdentityError("NHL_EVENT_NOT_PREGAME")
     return {
         "event_id": next(iter(ids)),
         "event_start_time": _aware(match.get("startTimeUTC")).isoformat(),
@@ -187,6 +201,8 @@ def resolve_nhl_current_event_identity(
         "game_state": match.get("gameState"),
         "identity_provider": SOURCE_PROVIDER,
         "identity_source": url,
+        "canonical_identity_source_sha256": source_sha256,
+        "canonical_identity_source_byte_count": len(body),
         "identity_verified_at": datetime.now(timezone.utc).isoformat(),
         "market_features_used": False,
         "prediction_authority": False,
