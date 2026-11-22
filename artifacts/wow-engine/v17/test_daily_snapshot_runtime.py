@@ -153,8 +153,177 @@ def test_reconciliation_includes_purged_and_invalid_terminal_buckets():
     result=_reconcile([{"row_status":"PURGED"},{"row_status":"INVALID"}])
     assert result["rows_purged"] == 1
     assert result["rows_invalid"] == 1
+    # Hard terminals fold into rows_rejected so the governed 3-way identity holds.
+    assert result["rows_rejected"] == 2
+    assert result["rows_in"] == (
+        result["rows_completed"] + result["rows_held"] + result["rows_rejected"]
+    )
     assert result["rows_unclassified"] == 0
     assert result["balanced"] is True
+
+
+def test_cross_sport_hard_scorer_terminals_are_not_soft_held():
+    from v17.daily_snapshot_runtime import _cross_sport_stage_status
+
+    rejected = {
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "NO_LOW_PROBABILITY",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "NO_LOW_PROBABILITY",
+            "terminal_label": "NO_LOW_PROBABILITY",
+            "pick_rejected": True,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    }
+    purged = {
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "rank_eligible": False,
+        "detail": {
+            "terminal_label": "PLAYER_RULED_OUT",
+            "pick_rejected": True,
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+    }
+    assert _cross_sport_stage_status(rejected) == "REJECTED"
+    assert _cross_sport_stage_status(purged) == "PURGED"
+
+
+def test_cross_sport_scorer_package_is_promoted_for_compact_and_stage_telemetry():
+    from v17.daily_response_contract import compact_moneyline_result
+    from v17.daily_snapshot_runtime import (
+        _compute_stage_progression_by_sport,
+        _cross_sport_stage_status,
+        _promote_cross_sport_scorer_result,
+        _reconcile,
+        _terminal_row,
+    )
+    from v17.daily_terminal_reduction import assert_no_terminal_upgrade, reduce_row_terminal
+
+    # Held-but-scored package: nested under detail before promotion. Fatal typed
+    # input failures intentionally keep model_probability_available=false; this
+    # fixture uses a governance hold so the numeric scorer package must survive.
+    routed = {
+        "official_event_id": "nba-1",
+        "commence_time_utc": FUTURE,
+        "home_team": "Home",
+        "away_team": "Away",
+        "sport": "NBA",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "blockers": ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"],
+            "calibrated_probability": 0.61,
+            "calibrated_lower_bound": 0.55,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    payload = _promote_cross_sport_scorer_result(routed)
+    assert payload["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert payload["blockers"] == ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+    assert payload["calibrated_probability"] == 0.61
+    assert payload["detail"]["blockers"] == ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+
+    compact = compact_moneyline_result(payload)
+    assert compact["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert compact["calibrated_probability"] == 0.61
+    assert compact["model_probability_available"] is True
+    assert compact["probability_visibility_status"] == "MODELED_HELD"
+
+    status = _cross_sport_stage_status(routed)
+    row = _terminal_row(
+        "MONEYLINE",
+        {"official_event_id": "nba-1", "sport": "NBA"},
+        payload,
+        assert_no_terminal_upgrade(reduce_row_terminal([status])),
+    )
+    assert row["row_status"] == "HELD"
+    assert row["terminal"] is True
+    assert row["result"]["calibrated_probability"] == 0.61
+    assert row["can_execute"] is False
+
+    recon = _reconcile([row])
+    assert recon["balanced"] is True
+    assert recon["rows_in"] == recon["rows_completed"] + recon["rows_held"] + recon["rows_rejected"]
+
+    stage = _compute_stage_progression_by_sport([row])
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in stage["by_sport"]["NBA"]["failure_codes"]
+
+    # Nested typed input failures still surface in stage telemetry without promotion.
+    nested_only = {
+        "lane": "MONEYLINE",
+        "identity": {"sport": "NCAAB"},
+        "row_status": "HELD",
+        "result": {
+            "model_status": "MODEL_INPUTS_INSUFFICIENT",
+            "detail": {"blockers": ["NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]},
+            "can_execute": False,
+        },
+    }
+    nested_stage = _compute_stage_progression_by_sport([nested_only])
+    assert "MODEL_INPUTS_INSUFFICIENT" in nested_stage["by_sport"]["NCAAB"]["failure_codes"]
+    assert "NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in nested_stage["by_sport"]["NCAAB"]["failure_codes"]
+    assert nested_stage["hydrated"] == nested_stage["model_evaluated"] == 0
+
+
+def test_cross_sport_rejected_row_reconciles_under_contract_identity():
+    from v17.daily_snapshot_runtime import (
+        _cross_sport_stage_status,
+        _promote_cross_sport_scorer_result,
+        _reconcile,
+        _terminal_row,
+    )
+    from v17.daily_terminal_reduction import assert_no_terminal_upgrade, reduce_row_terminal
+
+    routed = {
+        "official_event_id": "mlb-1",
+        "sport": "MLB",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "NO_LOW_PROBABILITY",
+            "terminal_label": "NO_LOW_PROBABILITY",
+            "pick_rejected": True,
+            "calibrated_probability": 0.41,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    }
+    payload = _promote_cross_sport_scorer_result(routed)
+    status = _cross_sport_stage_status(routed)
+    assert status == "REJECTED"
+    row = _terminal_row(
+        "MONEYLINE",
+        {"official_event_id": "mlb-1", "sport": "MLB"},
+        payload,
+        assert_no_terminal_upgrade(reduce_row_terminal([status])),
+    )
+    assert row["row_status"] == "REJECTED"
+    assert row["result"]["calibrated_probability"] == 0.41
+    assert row["result"]["pick_rejected"] is True
+    recon = _reconcile([row])
+    assert recon == {
+        "rows_in": 1,
+        "rows_completed": 0,
+        "rows_held": 0,
+        "rows_rejected": 1,
+        "rows_purged": 0,
+        "rows_invalid": 0,
+        "rows_unclassified": 0,
+        "balanced": True,
+    }
 
 
 def test_props_publishable_without_rank_is_held():
