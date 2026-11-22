@@ -543,7 +543,8 @@ def _forward_shadow_audit(db: Any) -> dict[str, Any]:
         )
         grades = _read_all(
             db, FORWARD_VERIFIED_GRADE_TABLE, grade_fields,
-            order_by="official_event_id",
+            # The event repeats across captures; capture_id breaks page ties.
+            order_by=("official_event_id", "capture_id"),
         )
     except Exception as exc:  # noqa: BLE001 - reads never alter certification result
         return {
