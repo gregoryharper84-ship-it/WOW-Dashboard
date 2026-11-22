@@ -1060,6 +1060,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 requested_date=req.requested_slate_date,
                 requested_timezone=req.requested_timezone,
                 max_candidates=max(req.max_props * 3, req.max_props),
+                include_nfl=True,
             )
             if prop_acquisition.get("status") == "DATA_UNOBTAINABLE":
                 blockers.extend(prop_acquisition.get("blockers") or [])
