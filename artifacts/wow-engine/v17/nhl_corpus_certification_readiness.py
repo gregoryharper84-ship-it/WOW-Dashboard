@@ -504,19 +504,24 @@ def install_nhl_corpus_certification_readiness_routes(
     auth_dependency: Any,
     db_client_fn: Any,
 ) -> None:
-    """Install read-only readiness and rights-gated G1 rebuild routes."""
+    """Install readiness and rights-gated G1 rebuild routes (POST-only).
+
+    Both surfaces use POST so composition through the shared maintenance
+    installer stays compatible with FastAPI and with the narrow FakeApp
+    doubles used by NFL publication install tests (post-only stubs).
+    """
     readiness_path = "/internal/v17/nhl-corpus-certification-readiness"
     rebuild_path = "/internal/v17/nhl-g1-corpus-rebuild"
-    existing = {getattr(route, "path", None) for route in app.router.routes}
+    existing = {getattr(route, "path", None) for route in getattr(app.router, "routes", [])}
 
     if readiness_path not in existing:
 
-        @app.get(
+        @app.post(
             readiness_path,
             dependencies=[scout_route_auth_dependency(auth_dependency)],
-            operation_id="getWowV17NhlCorpusCertificationReadiness",
+            operation_id="postWowV17NhlCorpusCertificationReadiness",
         )
-        def get_readiness() -> dict[str, Any]:
+        def post_readiness() -> dict[str, Any]:
             return assess_nhl_corpus_certification_readiness(db_client_fn())
 
     if rebuild_path not in existing:

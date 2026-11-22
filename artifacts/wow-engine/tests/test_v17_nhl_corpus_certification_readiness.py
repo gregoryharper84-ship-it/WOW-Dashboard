@@ -343,5 +343,24 @@ def test_readiness_route_requires_auth_and_stays_inert():
         db_client_fn=lambda: _FakeDB(),
     )
     client = TestClient(app)
-    response = client.get("/internal/v17/nhl-corpus-certification-readiness")
+    response = client.post("/internal/v17/nhl-corpus-certification-readiness")
     assert response.status_code == 401
+
+
+def test_readiness_installer_tolerates_post_only_fake_app():
+    class FakeApp:
+        def __init__(self):
+            self.router = SimpleNamespace(routes=[])
+
+        def post(self, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    app = FakeApp()
+    readiness.install_nhl_corpus_certification_readiness_routes(
+        app,
+        auth_dependency=lambda: None,
+        db_client_fn=lambda: _FakeDB(),
+    )
