@@ -41,14 +41,8 @@ def _norm(value: Any) -> str:
 
 
 def _is_prizepicks_card(card: dict[str, Any]) -> bool:
-    return (
-        _norm(card.get("platform")) == "prizepicks"
-        or any(
-            _norm(leg.get("platform")) == "prizepicks"
-            for leg in list(card.get("legs") or [])
-            if isinstance(leg, dict)
-        )
-    )
+    """Explicit platform intent only: generic cards can have PP-sourced legs."""
+    return _norm(card.get("platform")) == "prizepicks"
 
 
 def _event(leg: dict[str, Any]) -> str:
