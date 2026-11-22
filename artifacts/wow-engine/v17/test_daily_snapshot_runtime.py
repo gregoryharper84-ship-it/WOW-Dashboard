@@ -698,7 +698,6 @@ def test_daily_snapshot_reports_stage_progression_and_held_scoring_run_status(mo
     assert lane_rec["scoring_run_status"] == "ALL_HELD_ZERO_EVALUATED"
 
 
-
 def test_stage_monitor_rejects_forged_certification_assertions():
     from v17.daily_snapshot_runtime import _is_row_certified
     alleged = [

@@ -27,7 +27,8 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
 
-def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None) -> dict[str, Any]:
+def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None,
+                     public_news_sha256: str | None = None) -> dict[str, Any]:
     enriched = dict(row)
     team = scout_team_for(str(row.get("sport_key") or ""))
     enriched["sport_scout_team"] = team.to_handoff()
@@ -62,6 +63,10 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
             {
                 "sport_key": row.get("sport_key"),
                 "official_event_id": row.get("official_event_id"),
+                "provider_event_id": row.get("provider_event_id"),
+                "provider_event_source": row.get("provider_event_source"),
+                "official_event_identity_verified": row.get("official_event_identity_verified"),
+                "canonical_identity_status": row.get("canonical_identity_status"),
                 "event_start_utc": (
                     row.get("event_start_utc")
                     or row.get("commence_time")
@@ -69,6 +74,11 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
                 ),
             },
             facts if isinstance(facts, list) else [],
+            source_receipt_sha256=(
+                row.get("news_discovery_sha256")
+                if isinstance(row.get("news_discovery_receipt"), dict)
+                else public_news_sha256
+            ),
         )
         enriched["news_intelligence_status"] = enriched["news_research_handoff"]["research_status"]
         enriched["news_research_rescore_requested"] = enriched["news_research_handoff"]["research_rescore_requested"]
@@ -89,7 +99,10 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         receipt = (common_news if isinstance(common_news, dict) and isinstance(digest, str)
                    and len(digest) == 64 and row.get("public_news_discovery_sha256") == digest
                    and row.get("sport_key") == common_news.get("sport_key") else None)
-        return enrich_candidate(row, lane, public_news=receipt)
+        return enrich_candidate(
+            row, lane, public_news=receipt,
+            public_news_sha256=digest if receipt is not None else None,
+        )
     handoff["team_event_candidates"] = [enrich(row, "TEAM_EVENT") for row in handoff.get("team_event_candidates", []) or [] if isinstance(row, dict)]
     handoff["prop_candidates"] = [enrich(row, "PROP") for row in handoff.get("prop_candidates", []) or [] if isinstance(row, dict)]
     out["model_handoff"] = handoff

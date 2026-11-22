@@ -174,6 +174,76 @@ def _row_sport(row: dict[str, Any]) -> str:
     return str(sport or "UNKNOWN").upper().strip()
 
 
+def _prop_outcome_rank_eligible(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    qualification = payload.get("probability_qualification")
+    qual = qualification if isinstance(qualification, dict) else {}
+    return bool(
+        payload.get("rank_eligible") is True
+        or payload.get("probability_rank_eligible") is True
+        or qual.get("rank_eligible") is True
+        or qual.get("probability_rank_eligible") is True
+    )
+
+
+def _prop_outcome_hydrated(payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("can_execute") is not False:
+        return False
+    traversal = payload.get("backend_traversal")
+    evidence = payload.get("evidence")
+    return bool(
+        isinstance(traversal, dict)
+        and traversal.get("supabase_evidence") == "PASS"
+        and isinstance(evidence, dict)
+        and evidence.get("ok") is True
+        and evidence.get("hydration_status") == "PASS"
+    )
+
+
+def _prop_outcome_evaluated(payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("can_execute") is not False:
+        return False
+    traversal = payload.get("backend_traversal")
+    model_ev = payload.get("model_evidence")
+    qual = payload.get("probability_qualification")
+    return bool(
+        isinstance(traversal, dict)
+        and traversal.get("governed_model") == "PASS"
+        and isinstance(model_ev, dict)
+        and model_ev.get("calibrated_probability") is not None
+        and isinstance(qual, dict)
+        and qual.get("model_evaluated") is True
+    )
+
+
+def _prop_outcome_certified(outcome: Any) -> bool:
+    if not isinstance(outcome, dict) or outcome.get("status") != "COMPLETED":
+        return False
+    payload = outcome.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    traversal = payload.get("backend_traversal")
+    qual = payload.get("probability_qualification")
+    prediction = payload.get("prediction")
+    return bool(
+        _prop_outcome_hydrated(payload)
+        and _prop_outcome_evaluated(payload)
+        and payload.get("probability_publishable") is True
+        and payload.get("pick_rejected") is False
+        and payload.get("can_execute") is False
+        and isinstance(traversal, dict)
+        and traversal.get("controlling_specialist") == "PASS"
+        and traversal.get("exact_route_artifact") == "PASS"
+        and traversal.get("prediction_ledger_write") == "PASS"
+        and isinstance(qual, dict)
+        and qual.get("rank_eligible") is True
+        and qual.get("pick_rejected") is False
+        and isinstance(prediction, dict)
+        and bool(str(prediction.get("prediction_id") or "").strip())
+    )
+
+
 def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
     """Count only verified consumed features, not absence of an input error.
 
@@ -205,6 +275,14 @@ def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
         return False, blockers
     if result.get("hydration_status") not in (None, "", "PASS"):
         return False, blockers
+
+    if row.get("lane") == "PROPS":
+        outcomes = result.get("outcomes")
+        if isinstance(outcomes, list) and any(
+            isinstance(o, dict) and _prop_outcome_hydrated(o.get("payload"))
+            for o in outcomes
+        ):
+            return True, blockers
 
     receipt = result.get("feature_consumption_receipt")
     verified_consumption = (
@@ -251,7 +329,8 @@ def _is_row_model_evaluated(row: dict[str, Any], hydrated: bool) -> bool:
         return any(
             isinstance(o, dict)
             and (
-                o.get("payload", {}).get("model_invoked") is True
+                _prop_outcome_evaluated(o.get("payload"))
+                or o.get("payload", {}).get("model_invoked") is True
                 or o.get("payload", {}).get("specialist_invoked") is True
                 or o.get("payload", {}).get("probability") is not None
             )
@@ -269,6 +348,20 @@ def _is_row_certified(row: dict[str, Any], evaluated: bool) -> bool:
     if not evaluated or row.get("row_status") != "COMPLETED":
         return False
     result = row.get("result") or {}
+    if row.get("lane") == "PROPS":
+        if (
+            result.get("can_execute") is not False
+            or result.get("probability_publishable") is not True
+            or result.get("rank_eligible") is not True
+            or row.get("probability_publishable") is not True
+            or row.get("rank_eligible") is not True
+        ):
+            return False
+        outcomes = result.get("outcomes")
+        return bool(
+            isinstance(outcomes, list)
+            and any(_prop_outcome_certified(o) for o in outcomes)
+        )
     if (
         result.get("model_invoked") is not True
         or result.get("terminal_label") != "FINAL_APPROVED"
@@ -1006,7 +1099,12 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                     outcomes.append({"direction": direction, "status": classify_stage_status(detail), "payload": detail})
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
-            publishable = any(x["payload"].get("probability_publishable") is True and x["payload"].get("rank_eligible") is True for x in outcomes)
+            publishable = any(
+                x.get("status") == "COMPLETED"
+                and x["payload"].get("probability_publishable") is True
+                and _prop_outcome_rank_eligible(x["payload"])
+                for x in outcomes
+            )
             rows.append(
                 _terminal_row(
                     "PROPS",
