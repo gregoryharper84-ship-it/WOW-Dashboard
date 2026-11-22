@@ -185,12 +185,14 @@ to one every 5 seconds" and **no `Retry-After` header**.
 | 735 s (12.3 min) | 429 |
 | 688 s (11.5 min), after a runtime restart that changed egress | **200, 5 articles** |
 
-The block is a sustained per-IP penalty measured in minutes, not the advertised
-five-second interval. The single 200 cannot separate elapsed silence from the
-egress change, so it is evidence that the block lifts, not a recovery
-threshold. Three scheduled source-refresh runs the same day (10:27Z, 18:58Z and
-the 02:5xZ slot) each received 429 on their **first** request from separate
-GitHub-hosted runner addresses, so a fresh runner IP is not by itself a remedy.
+The refusals were sustained across minutes, not the advertised five-second
+interval. **What carries the block is not established.** The same address
+stayed refused through 735 s of silence, yet three scheduled source-refresh
+runs the same day (10:27Z, 18:58Z and the 02:5xZ slot) each received 429 on
+their **first** request from separate GitHub-hosted runner addresses, so a
+per-IP allowance does not account for what was observed. The single 200 cannot
+separate elapsed silence from the egress change, so it is evidence that the
+block lifts, not a recovery threshold.
 
 **The success that settles the policy.** Scheduled Multi-Scout [run
 #44789095413](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44789095413)
