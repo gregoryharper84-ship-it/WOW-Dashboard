@@ -501,3 +501,63 @@ def test_nba_calibrator_digest_readback_uses_real_persisted_artifact_evidence():
         assert report["calibrator_checksum_persisted"] is False
         assert report["probability_publishable"] is False
         assert report["can_execute"] is False
+
+
+def test_malformed_artifact_partition_dates_fail_closed_without_shared_endpoint_crash():
+    for broken_start, broken_end in (
+        ("2025-03-06", "not-a-date"),
+        ("2025-03-08", "2025-03-07"),
+        ("bad-date", "2025-03-07"),
+    ):
+        tables = _fixture()
+        artifact = tables["wow_basketball_team_event_model_artifacts"][0]
+        artifact["artifact_payload"]["train_start_date"] = broken_start
+        artifact["artifact_payload"]["train_end_date"] = broken_end
+        artifact["train_start_date"] = broken_start
+        artifact["train_end_date"] = broken_end
+        report = run_nba_team_event_certification_replay(_DB(tables))
+        assert report["status"] == "ARTIFACT_IDENTITY_INVALID"
+        assert "CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE" in report["blockers"]
+        assert report["probability_publishable"] is False
+        assert report["rank_eligible"] is False
+        assert report["can_execute"] is False
+
+
+def test_replay_evidence_sha_binds_observed_calibrator_content_even_when_blocked():
+    tables = _fixture()
+    calibrator = tables["wow_basketball_team_event_calibrators"][0]
+    calibrator["ece"] = 0.15
+    first = run_nba_team_event_certification_replay(_DB(tables))
+    calibrator["ece"] = 0.25
+    second = run_nba_team_event_certification_replay(_DB(tables))
+
+    assert first["calibrator_sha256_observed"] != second["calibrator_sha256_observed"]
+    assert first["calibrator_fit_replay_status"] == second["calibrator_fit_replay_status"]
+    assert first["calibrator_fit_replay_sha256"] == second["calibrator_fit_replay_sha256"]
+    assert first["replay_evidence_sha256"] != second["replay_evidence_sha256"]
+    assert first["probability_publishable"] is second["probability_publishable"] is False
+    assert first["can_execute"] is second["can_execute"] is False
+
+
+def test_replay_evidence_sha_binds_tampered_signed_payload_even_when_digest_invalid():
+    tables = _fixture()
+    calibrator = tables["wow_basketball_team_event_calibrators"][0]
+    payload = {
+        "model_version": calibrator["model_artifact_version"],
+        "calibration_version": calibrator["calibrator_version"],
+        "calibration_method": calibrator["calibration_method"],
+        "platt_a": calibrator["coefficients"]["b"],
+        "platt_b": calibrator["coefficients"]["a"],
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+    calibrator["calibration_artifact_sha256"] = calibration_payload_sha256(payload)
+    calibrator["calibration_artifact_payload"] = {**payload, "platt_a": 2.0}
+    first = run_nba_team_event_certification_replay(_DB(tables))
+    calibrator["calibration_artifact_payload"] = {**payload, "platt_a": 3.0}
+    second = run_nba_team_event_certification_replay(_DB(tables))
+    assert first["calibrator_checksum_persisted"] is second["calibrator_checksum_persisted"] is False
+    assert first["replay_evidence_sha256"] != second["replay_evidence_sha256"]
+    assert first["exact_bundle_match"] is second["exact_bundle_match"] is False
+    assert first["can_execute"] is second["can_execute"] is False
