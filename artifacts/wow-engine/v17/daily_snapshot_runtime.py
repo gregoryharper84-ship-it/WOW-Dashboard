@@ -517,7 +517,7 @@ def _prop_manifest_requires_refresh(
         return False
     cutoff = (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(minutes=30)
     return any(
-        _snapshot_captured_at(row) < cutoff
+        datetime.min.replace(tzinfo=timezone.utc) < _snapshot_captured_at(row) < cutoff
         for row in manifest[:selected_limit]
     )
 
