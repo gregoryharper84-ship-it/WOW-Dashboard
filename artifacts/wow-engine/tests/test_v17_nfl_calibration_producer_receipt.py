@@ -175,14 +175,17 @@ def test_pregame_receipt_does_not_retroactively_attest_reused_old_predictions():
 
 class _Query:
     def __init__(self, rows, *, filter_field=None):
+        """Wrap the fake rows and the field this query filters on."""
         self.rows = rows
         self.filter_field = filter_field
         self.total = None
 
     def select(self, *_a, **_kw):
+        """Accept the projection and any count request, then keep chaining."""
         return self
 
     def eq(self, field, value):
+        """Filter rows by the requested field, tracking the exact count."""
         if field == self.filter_field:
             self.rows = [row for row in self.rows if row.get(field) == value]
             if field == "model_version":
@@ -190,20 +193,24 @@ class _Query:
         return self
 
     def order(self, field, **_kw):
+        """Order the fake cohort stably by event identity when asked."""
         if self.filter_field == "model_version":
             assert field == "official_event_id"
             self.rows = sorted(self.rows, key=lambda row: row["official_event_id"])
         return self
 
     def range(self, start, end):
+        """Slice the bounded page the caller requested."""
         assert self.filter_field == "model_version"
         self.rows = self.rows[start:end + 1]
         return self
 
     def limit(self, *_a):
+        """Cap the returned rows the way the real client would."""
         return self
 
     def execute(self):
+        """Return rows together with the exact count the real client reports."""
         return SimpleNamespace(data=self.rows, count=self.total)
 
 
@@ -213,6 +220,7 @@ class _CertifiedDb:
         # The registry schema pins probability_publishable to false, so the
         # explicit champion authorization this gate can observe is the governed
         # lifecycle state, not the publication flag.
+        """Build a fake certification database for one champion candidate."""
         self.model = {
             "active": True, "promoted": True,
             "lifecycle_state": "CHAMPION" if approved else "PROSPECTIVE_CERTIFIED",
@@ -244,6 +252,7 @@ class _CertifiedDb:
         ]
 
     def table(self, name):
+        """Serve only the forward tables this gate reads; anything else is a bug."""
         if name == "wow_nfl_event_predictions":
             return _Query(self.prediction_rows, filter_field="event_prediction_id")
         if name == "wow_nfl_event_fitted_model_artifacts":
@@ -276,6 +285,7 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
 
 
 def test_champion_attachment_never_bypasses_prediction_or_upstream_holds():
+    """Certification alone never publishes: row flag, upstream hold and refresh still gate."""
     from v17.nfl_daily_stage_receipts import attach_nfl_daily_stage_receipt
 
     req, row, governed = _bound_evidence()

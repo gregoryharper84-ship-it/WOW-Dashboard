@@ -253,15 +253,18 @@ FORWARD_VERSION = "NFL_EVENT_LOGREG_PLATT_V1_5d603a873fbb"
 
 class _ForwardTable:
     def __init__(self, db, name):
+        """Bind the fake table to its database and the table name under test."""
         self.db = db
         self.name = name
         self.rows = None
         self.total = None
 
     def select(self, *_a, **_kw):
+        """Ignore the projection; this fake returns whole rows."""
         return self
 
     def eq(self, field, value):
+        """Apply the identity filter the gate is expected to push down."""
         if self.name == "wow_nfl_event_fitted_model_artifacts":
             self.rows = [r for r in self.db.artifacts if str(r.get("artifact_id")) == str(value)]
         elif self.name == "wow_nfl_forward_shadow_grades":
@@ -272,6 +275,7 @@ class _ForwardTable:
         return self
 
     def order(self, field, desc=False):
+        """Order by event identity; the health table yields its single snapshot."""
         if self.name == "wow_nfl_forward_shadow_grades":
             assert field == "official_event_id"
             self.rows = sorted(self.rows, key=lambda r: r["official_event_id"], reverse=desc)
@@ -280,6 +284,7 @@ class _ForwardTable:
         return self
 
     def range(self, start, end):
+        """Slice a bounded page and record the bounds for assertions."""
         assert self.name == "wow_nfl_forward_shadow_grades"
         self.db.pages.append((start, end))
         selection = self.rows[start:end + 1]
@@ -289,36 +294,45 @@ class _ForwardTable:
         return self
 
     def limit(self, value):
+        """Truncate to the caller's limit without reordering."""
         source = self.db.health if self.rows is None else self.rows
         self.rows = list(source)[:value]
         return self
 
     def execute(self):
+        """Return the page with the exact count a real client reports."""
         return SimpleNamespace(data=self.rows or [], count=self.total)
 
 
 class _FailingTable:
     def select(self, *_a, **_kw):
+        """Stay chainable so the gate reaches execute()."""
         return self
 
     def eq(self, *_a):
+        """Stay chainable so the gate reaches execute()."""
         return self
 
     def order(self, *_a, **_k):
+        """Stay chainable so the gate reaches execute()."""
         return self
 
     def range(self, *_a):
+        """Stay chainable so the gate reaches execute()."""
         return self
 
     def limit(self, *_a):
+        """Stay chainable so the gate reaches execute()."""
         return self
 
     def execute(self):
+        """Fail the readback; an unreadable table is never evidence."""
         raise RuntimeError("database offline; not a pass")
 
 
 class _ForwardDb:
     def __init__(self, *, artifacts, health, grades, fails=False, response_cap=None):
+        """Store the artifacts, health snapshot and grades this fake serves."""
         self.artifacts = artifacts
         self.health = health
         self.grades = grades
@@ -327,10 +341,12 @@ class _ForwardDb:
         self.pages = []
 
     def table(self, name):
+        """Serve the named table, or an always-failing one when configured."""
         return _FailingTable() if self.fails else _ForwardTable(self, name)
 
 
 def _champion_artifact(**extra):
+    """Build an active, promoted CHAMPION row with publication pinned false."""
     artifact = {
         "artifact_id": MODEL,
         "active": True,
@@ -343,6 +359,7 @@ def _champion_artifact(**extra):
 
 
 def _healthy_assessment(**extra):
+    """Build a forward assessment that recommends certification."""
     assessment = {
         "graded_n": 100,
         "minimum_forward_required": 100,
@@ -357,6 +374,7 @@ def _healthy_assessment(**extra):
 def _grades(n, version=FORWARD_VERSION):
     # 70/100 realized wins for an immutable 70% model: actual forward
     # Brier/log loss/ECE/bias and lower-bound reliability all pass.
+    """Build n unique prospective grades for a 70% model realizing 70% wins."""
     return [
         {
             "official_event_id": f"2026_{i:02d}_SF_ATL",
@@ -376,10 +394,12 @@ def _grades(n, version=FORWARD_VERSION):
 
 
 def _forward_row(version=FORWARD_VERSION):
+    """Build the evidence row naming the champion and its exact version."""
     return {"model_artifact_id": MODEL, "model_version": version}
 
 
 def test_champion_registry_state_plus_minimum_cohort_proves_forward_certification():
+    """A governed champion with exactly the minimum cohort proves certification."""
     db = _ForwardDb(
         artifacts=[_champion_artifact()],
         health=[_healthy_assessment()],
@@ -389,6 +409,7 @@ def test_champion_registry_state_plus_minimum_cohort_proves_forward_certificatio
 
 
 def test_paginated_champion_cohort_uses_complete_ordered_400_game_set():
+    """A 400-game cohort is read across bounded pages and still certifies."""
     db = _ForwardDb(
         artifacts=[_champion_artifact()],
         health=[_healthy_assessment(graded_n=400)],
@@ -401,6 +422,7 @@ def test_paginated_champion_cohort_uses_complete_ordered_400_game_set():
 def test_exact_maximum_full_page_count_is_accepted_without_extra_query():
     # Forty full 250-row pages are complete by the server's exact count;
     # a missing 41st page is not a reason to reject a valid 10k cohort.
+    """Ten thousand grades fill forty pages exactly; no forty-first page is required."""
     db = _ForwardDb(
         artifacts=[_champion_artifact()],
         health=[_healthy_assessment(graded_n=10_000)],
@@ -414,6 +436,7 @@ def test_exact_maximum_full_page_count_is_accepted_without_extra_query():
 def test_server_response_cap_cannot_certify_truncated_champion_grades():
     # Simulate a PostgREST service that silently caps every 250-row request
     # to 100 rows despite reporting the exact 400-row model-version count.
+    """A server that silently caps rows cannot certify a truncated cohort."""
     db = _ForwardDb(
         artifacts=[_champion_artifact()],
         health=[_healthy_assessment(graded_n=400)],
@@ -428,6 +451,7 @@ def test_registry_publication_flag_is_never_the_forward_gate():
     # The column is schema-pinned to false in production; requiring true made the
     # gate unsatisfiable, while trusting true here would bypass the row-level
     # publication flag the package readback already enforces.
+    """The registry publication flag is never the forward gate, in either direction."""
     for flag in (False, True):
         db = _ForwardDb(
             artifacts=[_champion_artifact(probability_publishable=flag)],
@@ -438,6 +462,7 @@ def test_registry_publication_flag_is_never_the_forward_gate():
 
 
 def test_non_champion_or_unpromoted_artifact_never_certifies():
+    """Only an active, promoted champion artifact can certify."""
     for override in (
         {"lifecycle_state": "CANDIDATE"},
         {"lifecycle_state": "PROSPECTIVE_CERTIFIED"},
@@ -454,6 +479,7 @@ def test_non_champion_or_unpromoted_artifact_never_certifies():
 
 
 def test_cohort_must_be_unique_and_bound_to_this_exact_model_version():
+    """The cohort must be unique and bound to this exact model version."""
     cases = (
         # one game short of the required cohort
         _grades(99),
@@ -472,6 +498,7 @@ def test_cohort_must_be_unique_and_bound_to_this_exact_model_version():
 
 
 def test_mixed_model_global_pass_cannot_hide_champion_own_bad_calibration():
+    """A prior champion's global PASS cannot cover this champion's bad calibration."""
     bad_champion = _grades(100)
     for grade in bad_champion:
         grade["calibrated_probability"] = 0.95
@@ -488,6 +515,7 @@ def test_mixed_model_global_pass_cannot_hide_champion_own_bad_calibration():
 
 
 def test_version_grades_require_complete_valid_unique_immutable_evidence():
+    """Every exact-version grade must be complete, valid, unique and immutable."""
     mutations = (
         lambda rows: rows[0].update(outcome=True),
         lambda rows: rows[0].update(outcome=None),
@@ -508,6 +536,7 @@ def test_version_grades_require_complete_valid_unique_immutable_evidence():
 
 
 def test_health_snapshot_must_recommend_forward_pass_with_no_blockers():
+    """The health snapshot must recommend a forward pass with no blockers."""
     for override in (
         {"status": "INSUFFICIENT_FORWARD_EVIDENCE"},
         {"certification_recommendation": "DO_NOT_CERTIFY_YET"},
@@ -526,6 +555,7 @@ def test_health_snapshot_must_recommend_forward_pass_with_no_blockers():
 
 
 def test_absent_duplicate_or_unreadable_forward_readback_never_certifies():
+    """Absent, duplicated or unreadable forward readback never certifies."""
     for db in (
         _ForwardDb(artifacts=[], health=[_healthy_assessment()], grades=_grades(100)),
         _ForwardDb(
