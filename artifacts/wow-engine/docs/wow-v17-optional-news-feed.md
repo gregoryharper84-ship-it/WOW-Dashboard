@@ -127,10 +127,12 @@ spacing exceeds that bounded hint. An unusual manually dispatched run
 could violate the interval; operators should not repeatedly dispatch
 blocked sources.
 
-**Still blocked until proven otherwise:** actual nonempty GDELT acquisition
-on the current merged code, independent news fact verification, fresh exact
-event identity linkage, and a genuine controlling fitted-specialist rescore
-receipt. Workflow-level green alone never proves source health.
+**Not yet accepted as proven:** repeatable nonempty GDELT acquisition on the
+current merged code, independent news fact verification, fresh exact event
+identity linkage, and a genuine controlling fitted-specialist rescore
+receipt. One nonempty receipt does exist on the current merged code (the
+`SOURCE_FETCH_OK` acquisition noted below), but a single receipt is not
+repeatable acquisition. Workflow-level green alone never proves source health.
 `model_feature_eligible=false`, `model_rescore_verified=false` and
 `can_execute=false` stay unchanged.
 
