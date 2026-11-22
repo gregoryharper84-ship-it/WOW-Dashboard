@@ -27,3 +27,9 @@ Hashes above are placeholders, not evidence. Use exact observed 40-char current 
 5. Verify any later actual repair separately: protected merge, both Render SHAs, authenticated route, Supabase readback and scoreboard delta.
 
 No new scheduler, queue, live trades, probability calculation, self-approval, or direct main writes.
+
+## Codex negative-review lessons (2026-11-22)
+
+- A same-PR repair in the Claude workflow can detach to an older commit before optional intake. The helper is therefore copied **from the verified GitHub dispatch SHA** into runner temp before any repair-head checkout. The older PR must never provide executable intake code. A regression executes the pinned helper with no module in the repair checkout.
+- Malformed URL ports/brackets, whitespace, encoded strings, traversal, and natural-language suffixes are rejected with no exceptions. The only allowed references are exact repository commit/blob paths, numeric issue/PR pages, and numeric workflow-run/job URLs. GitHub App provenance by itself does not make text safe.
+- Both are preserved as permanent tests. Optional Viktor comments never grant dispatch, merge, qualification, or execution authority.
