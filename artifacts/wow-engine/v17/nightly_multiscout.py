@@ -27,6 +27,12 @@ HORIZON_HOURS = int(os.environ.get("WOW_SCOUT_HORIZON_HOURS", "36"))
 REQUEST_DELAY_MS = int(os.environ.get("WOW_SCOUT_REQUEST_DELAY_MS", "75"))
 MARKET_CHUNK_SIZE = int(os.environ.get("WOW_SCOUT_MARKET_CHUNK_SIZE", "10"))
 MAX_MARKETS_PER_EVENT = int(os.environ.get("WOW_SCOUT_MAX_MARKETS_PER_EVENT", "30"))
+# Official NHL fixture resolution is optional per run so CI fixtures that do not
+# mock the NHL schedule stay on the explicit unverified provider-id path.
+RESOLVE_NHL_OFFICIAL_IDENTITY = (
+    os.environ.get("WOW_SCOUT_RESOLVE_NHL_OFFICIAL_IDENTITY", "true").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 TERMINAL_SOURCE_HTTP_STATUSES = {401, 403, 429}
 # The proxy answers 200 with core markets only when the vendor rejects the
 # event-scoped endpoints for this account. Without this the run records zero
@@ -400,7 +406,8 @@ def run() -> dict[str, Any]:
             event_identity = {
                 # Legacy handoff key is retained for downstream compatibility.
                 # This is an odds-provider event ID, NOT an authenticated league ID.
-                # No news or specialist can treat it as verified canonical identity.
+                # No news or specialist can treat it as verified canonical identity
+                # until NHL official schedule resolution succeeds below.
                 "official_event_id": event_id,
                 "provider_event_id": event_id,
                 "provider_event_source": "ODDS_API",
@@ -424,6 +431,12 @@ def run() -> dict[str, Any]:
                 )
                 if event.get(field) is not None
             })
+            if key == "icehockey_nhl" and RESOLVE_NHL_OFFICIAL_IDENTITY:
+                try:
+                    from v17.nhl_multiscout_identity import resolve_multiscout_nhl_identity
+                except ModuleNotFoundError:  # pragma: no cover - script import path
+                    from nhl_multiscout_identity import resolve_multiscout_nhl_identity
+                event_identity = resolve_multiscout_nhl_identity(event_identity)
             scripts = game_scripts(key)
             event_blockers: list[dict[str, Any]] = []
             event_rows: list[dict[str, Any]] = []
