@@ -328,4 +328,3 @@ These are execution dependencies, not unresolved design choices:
 - Current-season (`20262027`) hydration must be acquired; validation currently shows zero such rows
 - Catalog PR is intentionally sequenced after registry + certified-adapter proof
 - Production deployed-SHA verification is required before clearing `WORKING_NOT_COMPLETE`
-)
