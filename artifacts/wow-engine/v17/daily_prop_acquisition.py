@@ -196,6 +196,10 @@ def _acquire_mlb_daily_prop_snapshots(
                     canonical_event_id=candidate["event_id"],
                 )
                 evidence = RawPropEvidence.model_validate(raw)
+                evidence.source_timestamps = {
+                    **evidence.source_timestamps,
+                    "WOW_AUTONOMOUS_DISCOVERY_LINE": now.isoformat(),
+                }
                 line = _candidate_line(evidence.game_log)
                 row = PickRequestRow(
                     row_key=f"daily:{candidate['event_id']}:{candidate['player']}:{stat_type}:{line}",
