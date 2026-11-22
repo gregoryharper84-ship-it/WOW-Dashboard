@@ -22,7 +22,11 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from v17 import memory_admission
-from v17.daily_snapshot_oidc_bridge import _render_deployed_sha
+
+
+def _render_deployed_sha() -> str | None:
+    sha = str(os.getenv("RENDER_GIT_COMMIT") or "").strip().lower()
+    return sha if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha) else None
 
 
 LOGGER = logging.getLogger("wow.v17.daily_async")

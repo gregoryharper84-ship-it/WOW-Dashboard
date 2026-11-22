@@ -26,7 +26,6 @@ from v17 import memory_admission
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
-from v17.daily_snapshot_oidc_bridge import _render_deployed_sha
 from v17.daily_response_contract import (
     ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
     ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
@@ -67,6 +66,11 @@ class DailySnapshotRequest(BaseModel):
     # COMPACT is the normal client contract: full per-row evidence is persisted
     # and read back through the paged retrieval route instead of being inlined.
     response_mode: Literal["COMPACT", "FULL"] = "COMPACT"
+
+
+def _render_deployed_sha() -> str | None:
+    sha = str(os.getenv("RENDER_GIT_COMMIT") or "").strip().lower()
+    return sha if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha) else None
 
 
 def _detail(exc: HTTPException) -> dict[str, Any]:
