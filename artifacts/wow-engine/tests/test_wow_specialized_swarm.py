@@ -139,3 +139,33 @@ def test_integration_with_canonical_v17_modules_when_present():
     assert manifest["scout_team_id"] == "NBA_SCOUT_TEAM"
     assert len(manifest["workers"]) == len(WORKERS)
     assert manifest["workers"][2]["brief"]["research_role"] == "MATCHUP_CONTEXT"
+
+
+def test_cli_imports_sibling_v17_without_pythonpath(tmp_path):
+    """A repo-root CLI invocation must not require an undocumented PYTHONPATH."""
+    import os
+    import shutil
+    import subprocess
+    tools = tmp_path / "artifacts/wow-engine/tools"
+    package = tmp_path / "artifacts/wow-engine/v17"
+    tools.mkdir(parents=True)
+    package.mkdir(parents=True)
+    shutil.copyfile(ROOT / "tools/wow_specialized_swarm.py", tools / "wow_specialized_swarm.py")
+    (package / "__init__.py").write_text("")
+    (package / "matchup_discovery.py").write_text("def profile_for(sport): return 'BASKETBALL'\n")
+    (package / "sport_scout_registry.py").write_text(
+        "from types import SimpleNamespace\n"
+        "def scout_team_for(sport): return SimpleNamespace(team_id='NBA_SCOUT_TEAM', sport_key=sport)\n")
+    (package / "sport_research_brief.py").write_text(
+        "SUPPORTED_RESEARCH_WORKERS = ('wow.source-provenance-researcher', 'wow.participant-status-researcher', "
+        "'wow.matchup-context-researcher', 'wow.history-comparables-researcher', 'wow.market-settlement-researcher')\n"
+        "def build_research_brief(event, worker, now=None):\n"
+        "    return {'worker_id': worker, 'prediction_authority': False, 'can_execute': False}\n")
+    env = {**os.environ, "PYTHONPATH": ""}
+    proc = subprocess.run([
+        sys.executable, str(tools / "wow_specialized_swarm.py"),
+        "--sport", "basketball_nba", "--event-id", "test-123",
+        "--starts", "2099-01-01T00:00:00Z", "--format", "prompt",
+    ], cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("/swarm ")
