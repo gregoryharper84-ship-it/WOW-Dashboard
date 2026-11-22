@@ -339,3 +339,36 @@ def test_absent_and_wrong_shape_market_evidence_never_invents_quote():
         report = discover_matchup(c, now=NOW)
         assert "exact_current_quote" in report["missing_critical_features"]
         assert report["screened_count"] == 0
+
+
+def test_nightly_coverage_summary_counts_reviews_and_missing_source_evidence():
+    from datetime import timedelta
+    from v17.sport_scout_enrichment import enrich_handoff
+
+    upcoming = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    team = {
+        **candidate("basketball_nba"),
+        "commence_time": upcoming,
+    }
+    prop = {
+        **candidate("americanfootball_nfl"),
+        "official_event_id": "evt-prop",
+        "commence_time": upcoming,
+    }
+    enriched = enrich_handoff({
+        "can_execute": False,
+        "model_handoff": {
+            "team_event_candidates": [team],
+            "prop_candidates": [prop],
+        },
+    })
+    summary = enriched["matchup_discovery_summary"]
+    assert summary["team_event_candidates"] == 1
+    assert summary["prop_candidates"] == 1
+    assert summary["review_requested_rows"] == 2
+    assert summary["review_status_counts"] == {"MATCHUP_EVIDENCE_NOT_OBSERVED": 2}
+    assert summary["rows_with_missing_critical_evidence"] == 2
+    assert summary["rows_with_screened_exact_quote"] == 0
+    assert summary["model_rescore_verified"] is False
+    assert summary["prediction_authority"] is False
+    assert summary["can_execute"] is False
