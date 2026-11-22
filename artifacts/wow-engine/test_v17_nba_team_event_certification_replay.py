@@ -20,6 +20,7 @@ from basketball_team_event_specialist import (
 )
 import v17.nba_team_event_certification_replay as nba_replay_module
 from v17.nba_team_event_certification_replay import run_nba_team_event_certification_replay
+from v17.multisport_team_event_calibration import calibration_payload_sha256
 from v17.team_event_certification_replay import run_certification_replay
 
 
@@ -448,3 +449,50 @@ def test_nba_corpus_reconstruction_failure_is_typed_and_does_not_fallback(monkey
     assert report["exact_bundle_match"] is False
     assert report["probability_publishable"] is False
     assert report["can_execute"] is False
+
+
+def test_nba_calibrator_digest_readback_uses_real_persisted_artifact_evidence():
+    """A persisted verified calibrator digest is evidence, never certification."""
+    tables = _fixture()
+    calibrator = tables["wow_basketball_team_event_calibrators"][0]
+    payload = {
+        "model_version": calibrator["model_artifact_version"],
+        "calibration_version": calibrator["calibrator_version"],
+        "calibration_method": calibrator["calibration_method"],
+        "platt_a": calibrator["coefficients"]["a"],
+        "platt_b": calibrator["coefficients"]["b"],
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+    calibrator["calibration_artifact_payload"] = payload
+    calibrator["calibration_artifact_sha256"] = calibration_payload_sha256(payload)
+
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["calibrator_checksum_persisted"] is True
+    assert report["exact_bundle_match"] is False
+    assert report["pregame_corpus_ready"] is False
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+    # A declared hash is insufficient if the content changes after signing.
+    calibrator["calibration_artifact_payload"] = {**payload, "platt_a": 2.0}
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["calibrator_checksum_persisted"] is False
+    assert report["probability_publishable"] is False
+
+    # Even an internally consistent new payload hash cannot bless an artifact
+    # bearing a different model lineage, changed coefficients or publication flags.
+    for changed in (
+        {**payload, "model_version": "NBA_OTHER"},
+        {**payload, "calibration_version": "NBA_OTHER"},
+        {**payload, "platt_b": 100.0},
+        {**payload, "probability_publishable": True},
+        {**payload, "can_execute": True},
+    ):
+        calibrator["calibration_artifact_payload"] = changed
+        calibrator["calibration_artifact_sha256"] = calibration_payload_sha256(changed)
+        report = run_nba_team_event_certification_replay(_DB(tables))
+        assert report["calibrator_checksum_persisted"] is False
+        assert report["probability_publishable"] is False
+        assert report["can_execute"] is False
