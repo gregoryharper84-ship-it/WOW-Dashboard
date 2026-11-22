@@ -202,6 +202,7 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
         "owner_login": "repository-owner",
         "pr": {
             "state": "open", "draft": False, "merged": False, "head_sha": HEAD,
+            "body": "Incident: #2136",
             "head_ref": "copilot/fix", "head_repo": review.CANONICAL_REPOSITORY,
             "base_ref": "main", "author": "copilot-swe-agent", "author_id": 123,
         },
@@ -227,6 +228,11 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
     }
 
     assert qa.decision("qa", qa.qa_findings(evidence), evidence)["conclusion"] == "success"
+    evidence["pr"].pop("body")
+    missing_incident_findings = qa.qa_findings(evidence)
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in missing_incident_findings
+    assert qa.decision("qa", missing_incident_findings, evidence)["conclusion"] == "failure"
+    evidence["pr"]["body"] = "Incident: #2136"
     evidence["source_review"].pop("producer_context")
     assert any(
         finding.startswith("QA_INDEPENDENT_SOURCE_REVIEW_INVALID:")
@@ -255,8 +261,8 @@ def test_source_review_artifact_binds_exact_head_complete_diff_and_trusted_run()
     assert receipt["schema_version"] == 1
     assert receipt["review"]["decision"] == "PASS"
     assert receipt["diff"]["sha256"] == RESULT["reviewed_diff_sha256"]
-    assert receipt["source"]["provider_identity"] == "openai-codex-action"
-    assert receipt["source"]["credential_scope"] == "WOW_QA_REVIEW_OPENAI_API_KEY"
+    assert receipt["source"]["provider_identity"] == "gemini-generative-api"
+    assert receipt["source"]["credential_scope"] == "WOW_QA_REVIEW_GEMINI_API_KEY"
 
 
 def test_workflow_run_triggered_review_keeps_protected_main_provenance():
@@ -868,6 +874,94 @@ def test_qa_policy_rejects_missing_duplicate_or_expired_artifacts(mutation, reas
         )
 
 
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+def test_main_scoped_admission_neutralizes_absent_qa_policy_artifact(conclusion):
+    """Automatic workflow_run admission must not poison checksPass.
+
+    Observed on main tip e82af6a (2026-11-10): upstream QA failed before
+    uploading wow-v17-qa-policy-{run}-{attempt} (TARGET_PR_IDENTITY_MISMATCH
+    on draft/retargeted #2559). Strict resolve still fails closed; only the
+    opt-in main-scoped callback may exit neutral with no Release check.
+    """
+    routes, archive = qa_policy_routes()
+    # Both successful and failed authenticated QA producers may have no policy;
+    # neither outcome must create a main-scoped Release failure or approval.
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}"]["conclusion"] = conclusion
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [],
+    }
+    kwargs = dict(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"],
+        run_attempt=1,
+        token="read-only",
+        now=datetime.now(timezone.utc),
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive,
+    )
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING",
+    ):
+        review.resolve_qa_review_policy(**kwargs)
+    neutral = review.resolve_qa_review_policy(
+        **kwargs, allow_superseded_target=True,
+    )
+    assert neutral == {
+        "disposition": "neutral",
+        "reason": "RELEASE_QA_POLICY_ARTIFACT_ABSENT",
+    }
+    # Duplicate inventory remains fail-closed even for the main-scoped opt-in.
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [
+            {"id": 778, "name": f"wow-v17-qa-policy-{PRODUCER_RUN['id']}-1", "expired": False,
+             "created_at": "2026-11-04T16:40:00Z"},
+            {"id": 779, "name": f"wow-v17-qa-policy-{PRODUCER_RUN['id']}-1", "expired": False,
+             "created_at": "2026-11-04T16:40:01Z"},
+        ],
+    }
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING",
+    ):
+        review.resolve_qa_review_policy(**kwargs, allow_superseded_target=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workflow_id", 1),
+        ("path", ".github/workflows/foreign.yml"),
+        ("event", "pull_request_target"),
+        ("head_branch", "feature/foreign"),
+        ("head_sha", "not-a-sha"),
+        ("repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("head_repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("status", "in_progress"),
+        ("conclusion", "cancelled"),
+    ],
+)
+def test_missing_policy_neutral_requires_authenticated_qa_run(field, value):
+    """Foreign or unfinished producer evidence can never become neutral."""
+    routes, archive = qa_policy_routes()
+    run_id = PRODUCER_RUN["id"]
+    routes[f"/actions/runs/{run_id}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [],
+    }
+    routes[f"/actions/runs/{run_id}"][field] = value
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_RUN_PROVENANCE_MISMATCH",
+    ):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=run_id,
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+            allow_superseded_target=True,
+        )
+
+
 def test_qa_policy_rejects_pr_movement_checksum_and_canary_scope_replay():
     routes, archive = qa_policy_routes()
     moved_pr = pr()
@@ -902,24 +996,28 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     parsed = __import__("yaml").load(workflow, Loader=__import__("yaml").BaseLoader)
     steps = parsed["jobs"]["qa"]["steps"]
-    recheck = next(
-        step for step in steps
-        if step.get("name") == "Recheck PR head and diff after review"
-    )
-    review_step = next(step for step in steps if step.get("name") == "Run isolated read-only adversarial review")
-    publisher_step = next(step for step in steps if step.get("name") == "Mint checks-only App token")
+    recheck = next(step for step in steps
+                   if step.get("name") == "Recheck PR head and diff after review")
+    review_step = next(step for step in steps
+                       if step.get("name") == "Run isolated read-only Gemini semantic review")
+    publisher_step = next(step for step in steps
+                          if step.get("name") == "Mint checks-only App token")
+    dedicated_app_step = next(step for step in steps
+                              if step.get("name") == "Mint dedicated semantic reviewer App token")
 
     assert "github.ref == 'refs/heads/main'" in workflow
+    # Preserve the four bounded native regression admission triggers;
+    # trusted governance gate was deliberately removed to prevent QA loops.
     assert parsed["on"]["workflow_run"]["workflows"] == [
-        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
-        "wow-v17-trusted-governance-gate",
+        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
+        "wow-v17-change-impact-gate",
     ]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow
     assert "environment: wow-qa" in workflow
-    assert "WOW_QA_REVIEW_OPENAI_API_KEY" in workflow
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" in workflow
+    assert "WOW_QA_GEMINI_FREE_TIER_CONFIRMED" in workflow
     assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
-    assert 'permission_profile: ":read-only"' in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
@@ -928,14 +1026,20 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "Select exact-head review policy" in workflow
     assert "wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "independent_review_canary" in workflow
-    assert "WOW_REVIEW_OPENAI_API_KEY" not in workflow
-    assert "wow-review" not in workflow
-    assert review_step["with"]["openai_api_key"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"
-    assert "WOW_QA_APP_PRIVATE_KEY" not in review_step["with"].values()
-    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in str(publisher_step)
-    assert "contents: write" not in workflow
-    assert "pull-requests: write" not in workflow
-    assert "actions: write" not in workflow
+    assert "wow_v28_gemini_qa_bridge.py review" in review_step["run"]
+    assert review_step["env"]["WOW_QA_REVIEW_GEMINI_API_KEY"] == (
+        "${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}"
+    )
+    assert "WOW_QA_APP_PRIVATE_KEY" not in str(review_step)
+    assert publisher_step["with"]["permission-checks"] == "write"
+    assert dedicated_app_step["with"]["permission-pull-requests"] == "write"
+    assert "permission-checks" not in dedicated_app_step["with"]
+    assert "wow_v28_gemini_qa_bridge.py attest" in workflow
+    assert "wow_v28_gemini_qa_bridge.py verify" in workflow
+    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
+    assert "uses: ./.github/actions/wow-chatgpt-agent" not in workflow
+    assert "write" not in parsed["permissions"].values()
+    assert "write" not in (parsed["jobs"]["qa"].get("permissions") or {}).values()
     assert "checkout.*inputs" not in workflow
     assert "retention-days: 1" in workflow
     assert "github.run_id" in workflow and "github.run_attempt" in workflow

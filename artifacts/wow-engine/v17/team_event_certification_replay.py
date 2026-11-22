@@ -332,13 +332,17 @@ def build_certification_report(
         for candidate in sorted(sport_candidates, key=lambda row: _lane_id(row)):
             lid = _lane_id(candidate)
             exact_pass = _evidence_identity(candidate) in exact_passes
+            # A technical replay receipt cannot override the candidate's
+            # independent source-review state.
+            governed_source_pass = str(candidate.get("source_review_status") or "").strip().upper() == "PASS"
+            governed_exact_pass = exact_pass and governed_source_pass
             helper_replay_pass = lane_evidence.get(lid.upper(), sport_evidence.get(sport, False))
             assessed = assess_candidate(
                 sport,
                 candidate,
-                replay_evidence_pass=exact_pass or helper_replay_pass,
-                source_review_evidence_pass=exact_pass,
-                candidate_bound_evidence_pass=exact_pass,
+                replay_evidence_pass=governed_exact_pass or helper_replay_pass,
+                source_review_evidence_pass=governed_exact_pass,
+                candidate_bound_evidence_pass=governed_exact_pass,
             ).as_dict()
             lane_rows.append(assessed)
             all_lane_results.append(assessed)

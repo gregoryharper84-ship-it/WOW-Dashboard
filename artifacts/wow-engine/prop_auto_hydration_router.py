@@ -183,6 +183,48 @@ def _is_wnba_composite(stat_type: str) -> bool:
         return False
 
 
+def recheck_provisional_participation(
+    *,
+    sport: str,
+    player: str,
+    event_start_time: str,
+    availability: Optional[dict[str, Any]] = None,
+    http_get: Any = None,
+    now: Any = None,
+) -> dict[str, Any]:
+    """Dispatch the final pregame recheck to the sport's official source.
+
+    Only MLB currently issues provisional (probable-starter) participation, so
+    an unregistered sport fails closed instead of inventing a confirmation.
+    """
+    normalized_sport = str(sport or "").strip().upper()
+    if normalized_sport == "MLB":
+        import prop_auto_hydration as _mlb
+
+        kwargs: dict[str, Any] = {}
+        if http_get is not None:
+            kwargs["http_get"] = http_get
+        if now is not None:
+            kwargs["now"] = now
+        team = None
+        if isinstance(availability, dict):
+            provenance = availability.get("provenance")
+            if isinstance(provenance, dict):
+                team = provenance.get("team")
+            team = team or availability.get("team")
+        return _mlb.recheck_mlb_probable_starter(
+            player=player,
+            event_start_time=event_start_time,
+            team=team,
+            **kwargs,
+        )
+    raise PropAutoHydrationError(
+        "PROVISIONAL_RECHECK_UNSUPPORTED_SPORT",
+        "final provisional recheck is not certified for this sport",
+        detail={"sport": normalized_sport},
+    )
+
+
 def provider_for_sport(sport: str, stat_type: Optional[str] = None) -> str:
     normalized_sport = str(sport or "").strip().upper()
     normalized_stat = str(stat_type or "").strip().upper()

@@ -67,6 +67,41 @@ Use when a PrizePicks board/PDF/screenshots/pasted board is supplied and the use
 5. Preserve individual sporting probabilities exactly. Card-level independence estimates are portfolio math only and must never be relabeled governed sporting probability.
 6. Shrink the card rather than add filler or unresolved dependent legs.
 
+### Mode F — CROSS_SPORT_RESEARCH_SLIPS
+Use when the user asks to combine provisional NBA/NHL/NFL/NCAAB/other-sport ML,
+spread, game-total, or player-prop research into multiple slips.
+
+1. Preserve all original selections and freeze a source/line/time receipt before
+   any kickoff, including sport + official event, outcome/period/settlement,
+   player/team ID for props, the exact offered quote (not hypothetical odds),
+   timestamp, bookmaker and a strict quote-freshness policy.
+2. Run the existing V17 \`slip_portfolio_optimizer.optimize_portfolio\` with
+   \`research_preflight_enabled=True\` and an explicit
+   \`research_as_of_utc\`; its \`v17.slip_research_preflight.audit_research_slips\`
+   audits the **entire unshrunk portfolio first** and then existing
+   duplicate-thesis/critical-hinge logic shrinks the cards. Do not replace a
+   failed review with a fabricated confidence, odds or filler leg.
+3. Game totals require timestamped pace/possessions, opponent-adjusted
+   offense/defense, lineup, rest/travel and tail scenarios plus a separately
+   identified fitted totals-distribution/calibration receipt. Without it label
+   \`TOTAL_DISTRIBUTION_UNVERIFIED\`; do not lead a 'strong confidence' slip
+   with a narrative-only total or derive a total probability from a moneyline.
+4. Verify player event/roster/team and line before presenting a prop, and
+   preserve the independent source and actual pregame material-news rescore
+   receipt when changes occur. A discovery headline alone is not verification.
+5. Repeated exact theses across slips are \`CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE\`,
+   including UConn +3.5-like repeats at the same event/market/line. Same-event
+   dependencies and 4+ legs are \`RESEARCH_HOLD\` absent a separately validated
+   joint model. Prefer smaller, independent 2–3-leg structures when evidenced;
+   do not claim a 5-leg multiplier implies superior win probability.
+6. The preflight **never** independently authenticates a supplied receipt, marks
+   the model certified, supplies executable pricing, ranks governed probabilities,
+   or submits a bet. Even a context-complete preflight is
+   \`RESEARCH_CONTEXT_REVIEWABLE_UNCERTIFIED\` and the integrated optimizer
+   explicitly reports \`HELD_RESEARCH_ONLY\`. Certified model/published-value
+   use requires separate independent model/terminal/market authorization and
+   exact-head QA. \`can_execute=false\` always.
+
 ## Universal V17 rules
 - WOW_BETTING_ENGINE owns player/scalar/prop rows.
 - LLP_TEAM_BETTING_ENGINE owns team/event winner, favorite, underdog, upset, match-winner, and fight-winner rows.

@@ -12,6 +12,7 @@ from nfl_event_data_p1 import (
     DATASET_PBP,
     DATASET_SCHEDULES,
     DATASET_WEEKLY_ROSTERS,
+    SourceAcquisitionError,
     SourceAsset,
     SourceHostRejected,
     SourceSchemaChanged,
@@ -92,6 +93,47 @@ def test_download_fails_closed_when_schema_changes(tmp_path: Path):
     with _mock_client(content) as client:
         with pytest.raises(SourceSchemaChanged):
             download_asset(schedules_asset(), tmp_path, client=client)
+    assert list(tmp_path.glob("*.csv")) == []
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_download_fails_closed_on_total_deadline(tmp_path: Path, monkeypatch):
+    """Hard wall-clock deadline must abort before a partial CSV is retained."""
+    fields = [
+        "game_id", "season", "game_type", "week", "gameday",
+        "away_team", "away_score", "home_team", "home_score", "roof",
+    ]
+    content = _csv_bytes(fields, [{
+        "game_id": "2025_01_DAL_PHI", "season": 2025, "game_type": "REG",
+        "week": 1, "gameday": "2025-09-04", "away_team": "DAL", "away_score": 20,
+        "home_team": "PHI", "home_score": 24, "roof": "outdoors",
+    }])
+    # First read stamps start; second read (first chunk) is past the deadline.
+    ticks = iter([0.0, 5.0])
+    monkeypatch.setattr("nfl_event_data_p1.time.monotonic", lambda: next(ticks))
+    with _mock_client(content) as client:
+        with pytest.raises(SourceAcquisitionError, match="total download deadline exceeded"):
+            download_asset(
+                schedules_asset(), tmp_path, client=client, max_total_seconds=1.0,
+            )
+    assert list(tmp_path.glob("*.csv")) == []
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_download_fails_closed_on_max_bytes(tmp_path: Path):
+    """Oversized streams must fail closed without retaining partial content."""
+    fields = [
+        "game_id", "season", "game_type", "week", "gameday",
+        "away_team", "away_score", "home_team", "home_score", "roof",
+    ]
+    content = _csv_bytes(fields, [{
+        "game_id": "2025_01_DAL_PHI", "season": 2025, "game_type": "REG",
+        "week": 1, "gameday": "2025-09-04", "away_team": "DAL", "away_score": 20,
+        "home_team": "PHI", "home_score": 24, "roof": "outdoors",
+    }])
+    with _mock_client(content) as client:
+        with pytest.raises(SourceAcquisitionError, match="max_bytes"):
+            download_asset(schedules_asset(), tmp_path, client=client, max_bytes=8)
     assert list(tmp_path.glob("*.csv")) == []
     assert list(tmp_path.glob("*.part")) == []
 

@@ -25,7 +25,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Any, Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 
 from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,9 +40,24 @@ from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from mlb_1ip_specialist import score_mlb_1ip, starter_changed
 from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
 from prop_auto_hydration import PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS, PropAutoHydrationError
-from prop_auto_hydration_router import auto_hydrate_prop_evidence
+from prop_auto_hydration_router import auto_hydrate_prop_evidence, recheck_provisional_participation
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
+from v17.player_availability_gate import (
+    AVAILABILITY_AVAILABLE,
+    AVAILABILITY_UNAVAILABLE,
+    AVAILABILITY_UNVERIFIED,
+    PLAYER_AVAILABILITY_UNVERIFIED,
+    PLAYER_AVAILABILITY_RECHECK_REQUIRED,
+    PLAYER_RULED_OUT,
+    evaluate_player_availability,
+)
+from v17.provisional_availability_recheck import (
+    RECHECK_NOT_DUE,
+    RECHECK_SOURCE_UNAVAILABLE,
+    recheck_is_due,
+    resolve_provisional_recheck,
+)
 from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
 from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
 
@@ -253,6 +268,66 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
     if not role_label:
         raise ValueError("ROLE_STATUS_MISSING")
 
+    # Roster identity above is not game availability. Official participation
+    # evidence is evaluated separately and, when it rules the player out, stops
+    # the row before the scorer runs. Missing availability evidence is reported
+    # as UNVERIFIED and applied as a pre-model ranking blocker by the caller, so
+    # it is never read as clearance.
+    availability = evaluate_player_availability(role_status)
+    if availability.status == AVAILABILITY_UNAVAILABLE:
+        raise ValueError(f"{PLAYER_RULED_OUT}:{availability.designation or 'UNSPECIFIED'}")
+
+    # A provisional official basis (MLB probable starter) carries an explicit
+    # recheck obligation. Inside the final-refresh window, re-read the same
+    # official source: a typed confirmation discharges the obligation, a
+    # rule-out becomes a normal rejection, and every other outcome (stale,
+    # unretrievable, identity mismatch, still probable) leaves the obligation
+    # in place. A recheck that fails never converts into clearance.
+    availability_recheck: dict[str, Any] | None = None
+    if availability.requires_revalidation:
+        availability_recheck = {
+            "status": RECHECK_NOT_DUE,
+            "checked_at": now.isoformat(),
+            "event_start_time": event_start.isoformat(),
+            "window_hours": 6,
+            "can_execute": False,
+        }
+        if recheck_is_due(event_start, now):
+            try:
+                observed = recheck_provisional_participation(
+                    sport=str(row.sport).strip().upper(),
+                    player=row.player,
+                    event_start_time=event_start.isoformat(),
+                    availability=availability.receipt(),
+                    now=now,
+                )
+            except Exception as exc:
+                availability_recheck = {
+                    "status": RECHECK_SOURCE_UNAVAILABLE,
+                    "error_type": type(exc).__name__,
+                    "checked_at": now.isoformat(),
+                    "can_execute": False,
+                }
+            else:
+                decision, availability_recheck = resolve_provisional_recheck(
+                    provisional=availability.receipt(),
+                    observed=observed,
+                    now=now,
+                )
+                if decision.status == AVAILABILITY_UNAVAILABLE:
+                    raise ValueError(
+                        f"{PLAYER_RULED_OUT}:{decision.designation or 'UNSPECIFIED'}"
+                    )
+                availability = decision
+                if decision.status == AVAILABILITY_AVAILABLE:
+                    # Freeze the confirming observation on the row so the
+                    # snapshot and every re-reader see the discharged
+                    # obligation, not the original probable listing.
+                    row.evidence.role_status = {
+                        **row.evidence.role_status,
+                        "availability": dict(observed),
+                    }
+
     opportunity = row.evidence.opportunity_ledger
     opportunity_status = str(
         opportunity.get("status") or opportunity.get("gate_label") or ""
@@ -287,15 +362,53 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
         "stat_type": canonical_stat,
         "player": " ".join(str(row.player).strip().split()),
         "event_id": str(row.event_id).strip(),
+        # Official participation evidence is reported through validation so the
+        # run loop can apply it as a pre-model ranking blocker. UNVERIFIED is
+        # never converted into clearance here.
+        "availability_status": availability.status,
+        "availability_requires_revalidation": availability.requires_revalidation,
+        "availability": availability.receipt(),
+        "availability_recheck": availability_recheck,
     }
+
+
+def _premodel_availability_blockers(normalized: dict[str, Any]) -> list[str]:
+    """Recompute availability holds at the source snapshot writer.
+
+    The writer must not trust caller-supplied blocker lists: every direct
+    Daily or scoring call preserves unverified/recheck status in storage.
+    """
+    if normalized.get("availability_requires_revalidation") is True:
+        return [PLAYER_AVAILABILITY_RECHECK_REQUIRED]
+    if normalized.get("availability_status") == AVAILABILITY_UNVERIFIED:
+        return [PLAYER_AVAILABILITY_UNVERIFIED]
+    if normalized.get("availability_status") == AVAILABILITY_UNAVAILABLE:
+        return [PLAYER_RULED_OUT]
+    return []
 
 
 def _snapshot_payload(
     row: PickRequestRow,
     normalized: dict[str, Any],
+    blockers: list[str] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
+    """Freeze one row's evidence and its pre-model availability verdict.
+
+    ``blockers`` is the gate verdict (availability hold or provisional recheck
+    obligation), not evidence content, so it is persisted on the row but kept
+    out of the fingerprint: the same evidence row must resolve to the same
+    ``source_snapshot_id`` when it is re-scored after a later recheck clears it.
+
+    Persisting it matters because every re-reader of
+    ``wow_prop_evidence_snapshots`` -- including
+    ``wow_prop_evidence_snapshot()`` and the live self-acceptance check -- treats
+    ``blockers=[]`` with ``hydration_status=PASS`` as ready evidence. A hold
+    that lived only in the HTTP response would be invisible after the run.
+    """
     if row.evidence is None:
         raise ValueError("EVIDENCE_MISSING_AFTER_ACQUISITION")
+
+    snapshot_blockers = list(dict.fromkeys([*(blockers or []), *_premodel_availability_blockers(normalized)]))
 
     fingerprint_input = {
         "event_id": normalized["event_id"],
@@ -349,7 +462,7 @@ def _snapshot_payload(
         "opportunity_ledger": row.evidence.opportunity_ledger,
         "source_timestamps": normalized["source_timestamps"],
         "hydration_status": "PASS",
-        "blockers": [],
+        "blockers": snapshot_blockers,
         "evidence_version": str(row.evidence.evidence_version).strip(),
         "can_execute": False,
     }
@@ -424,7 +537,9 @@ def _completed_scored_outcome(
     snapshot_id: str,
     fingerprint: str,
     acquisition: dict[str, Any],
+    premodel_blockers: Iterable[str] = (),
 ) -> dict[str, Any]:
+    premodel = list(dict.fromkeys(str(b).strip().upper() for b in premodel_blockers if str(b).strip()))
     if scored.get("research_only") is True:
         # The publication wrapper returns raw fitted output without a governed
         # prediction. Preserve that receipt as a typed hold; no bounds, rank,
@@ -438,7 +553,7 @@ def _completed_scored_outcome(
                 "model_evaluated": True,
                 "specialist_invoked": True,
                 "scoring_attempted": True,
-                "blockers": scored.get("blockers") or [],
+                "blockers": list(dict.fromkeys([*(scored.get("blockers") or []), *premodel])),
             },
             snapshot_id=snapshot_id,
             acquisition=acquisition,
@@ -481,14 +596,30 @@ def _completed_scored_outcome(
             blockers.append("MARKET_DATA_UNAVAILABLE")
         if (lanes.get("MONEY") or {}).get("status") != "PASS":
             blockers.append("PAYOUT_UNRESOLVED")
+    # Pre-model ranking blockers are added after the scorer's own blockers so no
+    # scoring or lane stage can drop them. Participation evidence that was never
+    # retrieved is a ranking blocker, not a model rejection: the probability may
+    # still be reported for research, but the row cannot be rank eligible.
+    if premodel:
+        blockers = list(dict.fromkeys([*blockers, *premodel]))
+        rank_eligible = False
+        money_allowed = False
     decision = reduce_prop_terminal(
         proposed_label=terminal_label,
         blockers=blockers,
         model_evaluated=True,
     )
+    if decision.pick_rejected:
+        terminal_status = "REJECTED"
+    elif premodel:
+        # Evidence is missing, not the model: the row is unresolved, never a
+        # completed governed row.
+        terminal_status = "HELD"
+    else:
+        terminal_status = "COMPLETED"
     return {
         "row_key": row_key,
-        "terminal_status": "REJECTED" if decision.pick_rejected else "COMPLETED",
+        "terminal_status": terminal_status,
         "code": decision.terminal_label,
         "terminal_label": decision.terminal_label,
         "confidence_tier": confidence_tier,
@@ -1213,6 +1344,27 @@ def install_pick_request_routes(
                 acquisition["status"] = "PASS"
             except ValueError as exc:
                 acquisition["status"] = "FAILED_VALIDATION"
+                reason = str(exc)
+                if reason.split(":", 1)[0] == PLAYER_RULED_OUT:
+                    # Participation invalidation keeps its own terminal. It is
+                    # not an incomplete acquisition, a model rejection, or an
+                    # absent fitted capability.
+                    outcomes.append(
+                        _terminal(
+                            row_key,
+                            "REJECTED",
+                            PLAYER_RULED_OUT,
+                            detail={
+                                "blocker": PLAYER_RULED_OUT,
+                                "terminal_label": PLAYER_RULED_OUT,
+                                "designation": reason.split(":", 1)[1] if ":" in reason else None,
+                                "model_evaluated": False,
+                                "specialist_invoked": False,
+                            },
+                            acquisition=acquisition,
+                        )
+                    )
+                    continue
                 outcomes.append(
                     _terminal(
                         row_key,
@@ -1224,7 +1376,34 @@ def install_pick_request_routes(
                 )
                 continue
 
-            snapshot_id, fingerprint, snapshot = _snapshot_payload(row, normalized)
+            premodel_blockers: list[str] = []
+            if normalized.get("availability_requires_revalidation") is True:
+                # A provisional official basis (MLB probable starter), or a
+                # recheck that failed to discharge it, names the player for the
+                # game but is not confirmed participation. The obligation is
+                # more specific than plain UNVERIFIED, so it is reported first:
+                # the row may be scored for research, but it cannot enter the
+                # Verified Pool until the final refresh rechecks the same
+                # official source.
+                premodel_blockers.append(PLAYER_AVAILABILITY_RECHECK_REQUIRED)
+                acquisition["availability_status"] = "PROVISIONAL_RECHECK_REQUIRED"
+            elif normalized.get("availability_status") == AVAILABILITY_UNVERIFIED:
+                # No official participation evidence was retrieved. Compute the
+                # probability for research, but keep the row out of the Verified
+                # Pool until availability is verified.
+                premodel_blockers.append(PLAYER_AVAILABILITY_UNVERIFIED)
+                acquisition["availability_status"] = AVAILABILITY_UNVERIFIED
+
+            if normalized.get("availability_recheck") is not None:
+                acquisition["availability_recheck"] = normalized["availability_recheck"]
+                if normalized.get("availability_requires_revalidation") is False:
+                    # Only a discharged obligation changes the reported status;
+                    # a provisional row reports its recheck obligation instead.
+                    acquisition["availability_status"] = normalized.get("availability_status")
+
+            snapshot_id, fingerprint, snapshot = _snapshot_payload(
+                row, normalized, premodel_blockers
+            )
             try:
                 market_api.prod.get_client().table("wow_prop_evidence_snapshots").upsert(
                     snapshot,
@@ -1398,6 +1577,7 @@ def install_pick_request_routes(
                 snapshot_id=snapshot_id,
                 fingerprint=fingerprint,
                 acquisition=acquisition,
+                premodel_blockers=premodel_blockers,
             )
             outcomes.append(completed_outcome)
             if completed_outcome["terminal_status"] == "COMPLETED":

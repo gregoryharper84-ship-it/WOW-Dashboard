@@ -582,6 +582,20 @@ def run_prop_lifecycle_autopilot(
         requested_tokens=tokens,
         captured_at=captured_at,
     )
+    if settlement_stage["status"] != "PASS":
+        # A failed stage supplies no settlement result. Do not persist zero
+        # considered/settled/held as though the source returned an empty cohort.
+        blocker = f"SETTLEMENT_STAGE_FAILED:{settlement_stage.get('error_type') or 'UNKNOWN'}"
+        for route_row in dashboard["route_rows"]:
+            route_row["settlement_stage_status"] = "FAILED"
+            route_row["settlement_adapter_status"] = "SETTLEMENT_STAGE_FAILED"
+            for field in (
+                "settlement_cycle_considered_n",
+                "settlement_cycle_settled_n",
+                "settlement_cycle_held_n",
+            ):
+                route_row[field] = None
+            route_row["blockers"] = _unique_blockers(route_row.get("blockers"), [blocker])
     persistence = (
         persist_lifecycle_health(db, cycle_id=cycle_id, dashboard=dashboard)
         if req.persist_health

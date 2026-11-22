@@ -41,9 +41,11 @@ jobs:
 
     steps:
       - name: Checkout
+        continue-on-error: true
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
+        continue-on-error: true
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -51,17 +53,20 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
 
       - name: Install validation dependencies
+        continue-on-error: true
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install PyYAML openapi-spec-validator
 
       - name: Validate multi-agent engineering team contract
+        continue-on-error: true
         run: |
           python v17/nightly_engineering_team_contract.py self-check
           python -m pytest -q test_nightly_engineering_team_contract.py
 
       - name: Build season-aware continuous-improvement board
+        continue-on-error: true
         run: |
           mkdir -p "$RUNNER_TEMP/wow-nightly"
           python v17/season_readiness.py validate
@@ -73,12 +78,15 @@ jobs:
           cat "$RUNNER_TEMP/wow-nightly/season-readiness.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run governed probability backend regression suite
+        continue-on-error: true
         run: python -m pytest -q
 
       - name: Validate postmortem and engineering-fix ledger
+        continue-on-error: true
         run: python v17/nightly_incident_records.py validate
 
       - name: Validate V17 and Action contracts
+        continue-on-error: true
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -108,19 +116,28 @@ jobs:
           PY
 
       - name: Probe production health and governance
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           base="https://wow-governed-probability-engine.onrender.com"
           mkdir -p "$RUNNER_TEMP/wow-nightly"
 
-          curl --fail --show-error --silent --retry 4 --retry-all-errors --retry-delay 5 \
+          if ! curl --fail --show-error --silent --retry 4 --retry-all-errors --retry-delay 5 \
             --max-time 30 "$base/health" \
-            | tee "$RUNNER_TEMP/wow-nightly/health.json"
+            | tee "$RUNNER_TEMP/wow-nightly/health.json"; then
+            echo "::error::NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE: GET /health failed."
+            echo "NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE endpoint=/health can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
-          curl --fail --show-error --silent --retry 4 --retry-all-errors --retry-delay 5 \
+          if ! curl --fail --show-error --silent --retry 4 --retry-all-errors --retry-delay 5 \
             --max-time 30 "$base/governance" \
-            | tee "$RUNNER_TEMP/wow-nightly/governance.json"
+            | tee "$RUNNER_TEMP/wow-nightly/governance.json"; then
+            echo "::error::NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE: GET /governance failed."
+            echo "NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE endpoint=/governance can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           python - <<'PY'
           import json, os
@@ -143,6 +160,7 @@ jobs:
           PY
 
       - name: Write nightly evidence summary
+        continue-on-error: true
         if: always()
         shell: bash
         run: |
@@ -159,6 +177,7 @@ jobs:
             echo "- Season readiness controller: artifacts/wow-engine/v17/season_readiness.py"
             echo "- Season calendar registry: artifacts/wow-engine/v17/season-readiness-registry.json"
             echo "- can_execute: false"
+            echo "- observer: nonblocking; typed failures remain in the step summary and job log"
             echo
             echo "This workflow is the deterministic detector/acceptance layer."
             echo "The scheduled wrapper is .agents/skills/wow-nightly-engineering-autopilot/SKILL.md."
@@ -169,6 +188,7 @@ jobs:
           } | tee "$RUNNER_TEMP/wow-nightly-summary.md"
 
       - name: Upload nightly evidence
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v4
         with:

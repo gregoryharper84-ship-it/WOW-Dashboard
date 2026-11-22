@@ -36,3 +36,13 @@ def test_durable_audit_counts_independent_theses_and_exact_artifact_identity():
     assert 'route_theses = {_thesis_key(row) for row in eligible}' in runtime
     assert 'artifact_cohorts' in runtime
     assert 'forward_unsettled_n' in runtime
+
+
+def test_priority_durable_audit_exposes_diagnostic_without_creating_a_new_gate():
+    repo_root = Path(__file__).resolve().parents[3]
+    runtime = (repo_root / "artifacts" / "wow-engine" / "v17" / "prop_priority_lifecycle_runtime.py").read_text()
+    assert "from v17.prop_operator_summary import summarize_prop_routes" in runtime
+    assert 'result["operator_summary"] = summarize_prop_routes(' in runtime
+    assert "run_prop_production_registration_audit" in runtime
+    assert 'result["automatic_certification"] = False' in runtime
+    assert 'result["automatic_promotion"] = False' in runtime

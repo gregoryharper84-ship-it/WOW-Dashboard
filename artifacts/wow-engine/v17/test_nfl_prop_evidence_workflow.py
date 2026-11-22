@@ -13,3 +13,38 @@ def test_nfl_prop_forward_evidence_workflow_preserves_fail_closed_authority():
     assert "automatic_promotion" in text
     assert "probability_publishable" in text
     assert "can_execute" in text
+
+
+
+def test_nfl_hourly_producer_rotates_over_actual_candidate_page_count():
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (repo_root / ".github" / "workflows" / "wow-v17-nfl-prop-forward-evidence.yml").read_text()
+    assert 'candidate_rotation' in source
+    assert 'GITHUB_RUN_NUMBER % 10' not in source
+    assert '"max_candidates":32' in source
+
+
+def test_nfl_hourly_evidence_producer_includes_thursday_on_tuesday_without_extra_route():
+    """The bounded local third day must be queried, not merely calculated."""
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (repo_root / ".github" / "workflows" / "wow-v17-nfl-prop-forward-evidence.yml").read_text()
+    assert 'third_day="$(TZ=America/Chicago date -d \'+2 days\' +%F)"' in source
+    assert 'for slate_date in "${today}" "${tomorrow}" "${third_day}"; do' in source
+    assert source.count('/internal/v17/nfl-prop-forward-evidence/acquire') == 1
+    assert 'candidate_rotation' in source
+    assert 'max_candidates' in source
+    assert 'issue_oidc_token' in source
+    assert 'automatic_certification' in source and 'automatic_promotion' in source
+    assert 'probability_publishable' in source and 'WOW_CAN_EXECUTE: "false"' in source
+    # Three bounded 180-second POSTs plus OIDC and health may exceed 10 minutes.
+    assert 'timeout-minutes: 12' in source
+
+
+def test_nfl_hourly_evidence_producer_logs_bounded_row_blocker_codes():
+    """Held rows must be accountable in the run log: the endpoint's row-scoped blocker
+    codes (player:stat:CODE) are printed, bounded, and never replace the authority checks."""
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (repo_root / ".github" / "workflows" / "wow-v17-nfl-prop-forward-evidence.yml").read_text()
+    assert "'blockers': [str(b)[:200] for b in (payload.get('blockers') or [])[:40]]" in source
+    # The fail-closed authority assertions stay ahead of the summary print.
+    assert source.index("must remain false") < source.index("'blockers': [str(b)[:200]")

@@ -205,3 +205,77 @@ def test_frontier_candidate_cannot_directly_change_production() -> None:
     assert validate_frontier_candidate(candidate) == []
     candidate["production_change"] = True
     assert "frontier candidate must set production_change=false" in validate_frontier_candidate(candidate)
+
+
+def test_controller_priority_advances_repair_behind_pending_release() -> None:
+    records = [
+        {"postmortem_id": "PM-RELEASE", "severity": "P0", "state": "DEPLOYED_PENDING_VERIFY"},
+        {"postmortem_id": "PM-REPAIR", "severity": "P0", "state": "FIX_IN_PROGRESS"},
+    ]
+    # Independent release verifier keeps the existing release-first selection.
+    assert select_priority_incident(records).incident_id == "PM-RELEASE"
+    # Overnight repair lane does not redispatch the same read-only release probe.
+    repair = select_priority_incident(records, exclude_release=True)
+    assert repair.incident_id == "PM-REPAIR"
+    assert repair.state == "FIX_IN_PROGRESS"
+    assert repair.frontier_allowed is False
+
+
+def test_release_only_queue_cannot_open_frontier() -> None:
+    decision = select_priority_incident(
+        [{"postmortem_id": "PM-RELEASE", "severity": "P0", "state": "DEPLOYED_PENDING_VERIFY"}],
+        exclude_release=True,
+    )
+    assert decision.incident_id is None
+    assert decision.frontier_allowed is False
+    assert "independent release verification" in decision.reason
+
+
+def test_controller_priority_preserves_wait_and_terminal_filters() -> None:
+    decision = select_priority_incident(
+        [
+            {"postmortem_id": "PM-REVIEW", "severity": "P0", "state": "PR_CREATED", "wait_state": "REVIEW_PENDING"},
+            {"postmortem_id": "PM-CLOSED", "severity": "P0", "state": "VERIFIED_CLOSED"},
+            {"postmortem_id": "PM-P1", "severity": "P1", "state": "OPEN"},
+        ],
+        exclude_release=True,
+    )
+    assert decision.incident_id == "PM-P1"
+    assert decision.frontier_allowed is False
+
+
+def test_controller_priority_cli_uses_real_ledger_contract(tmp_path) -> None:
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(json.dumps({"records": [
+        {"postmortem_id": "PM-RELEASE", "severity": "P0", "state": "DEPLOYED_PENDING_VERIFY"},
+        {"postmortem_id": "PM-REPAIR", "severity": "P0", "state": "FIX_IN_PROGRESS"},
+    ]}), encoding="utf-8")
+    script = Path(__file__).parent / "v17" / "engineering_agent_team.py"
+    command = [sys.executable, str(script), "priority", "--ledger", str(ledger), "--exclude-release"]
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    payload = json.loads(result.stdout)
+    assert payload["incident_id"] == "PM-REPAIR"
+    assert payload["state"] == "FIX_IN_PROGRESS"
+    assert payload["frontier_allowed"] is False
+
+
+def test_real_ledger_does_not_requeue_already_merged_pr_2565() -> None:
+    import json
+    from pathlib import Path
+
+    ledger_path = Path(__file__).parent / "v17" / "incident-ledger.json"
+    records = json.loads(ledger_path.read_text(encoding="utf-8"))["records"]
+    item = next(record for record in records if record["postmortem_id"] == "PM-2026-11-10-001")
+    assert item["state"] == "MERGED_PENDING_DEPLOY"
+    assert item["engineering_fixes"]["FIX-2026-11-10-001"]["state"] == "MERGED_PENDING_DEPLOY"
+    assert item["engineering_fixes"]["FIX-2026-11-10-001"]["merge_commit"] == (
+        "6018482f2bedf172b4a7a1014f2bfa1c2db95210"
+    )
+    decision = select_priority_incident(records, exclude_release=True)
+    assert decision.incident_id != "PM-2026-11-10-001"
+    assert decision.frontier_allowed is False

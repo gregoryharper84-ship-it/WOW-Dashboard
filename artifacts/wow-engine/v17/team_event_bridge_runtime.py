@@ -37,6 +37,7 @@ from v17.team_event_capability_manifest import (
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
+from v17.matchup_discovery import discover_matchup
 from v17.team_event_producer_adoption import inspect_team_event_producer_adoption
 from v17.cross_sport_evidence_integrity import (
     CRITICAL_STATUS_CONTRACT,
@@ -214,12 +215,86 @@ def missing_bridge_inputs(req: Any, registration: TeamEventBridgeRegistration) -
 def _finite_probability(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except OverflowError:
+        return False
     return isfinite(parsed) and 0.0 <= parsed <= 1.0
+
+
+def _validate_fitted_registry_bridge_output(
+    req: Any, result: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate NHL fitted-registry packages without inventing provenance.
+
+    Identity-calibrator holds intentionally omit calibrated bounds. Those must
+    remain typed holds, not be reclassified as MODEL_OUTPUT_INVALID. Empirical
+    packages still go through the full governed scoring contract.
+    """
+    blockers = [str(item) for item in (result.get("blockers") or []) if str(item or "").strip()]
+    identity_hold = (
+        "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in blockers
+        and str(result.get("calibration_method") or "") == "IDENTITY_RAW_PROBABILITY_V1"
+        and result.get("calibrated_lower_bound") is None
+        and result.get("calibrated_upper_bound") is None
+    )
+    required_fields = (
+        "candidate_id",
+        "immutable_model_timestamp",
+        "calibration_method",
+        "calibration_version",
+        "source_snapshot_id",
+        "source_snapshot_timestamp",
+        "outcome_space",
+    )
+    missing = [
+        f"{field.upper()}_REQUIRED"
+        for field in required_fields
+        if not str(result.get(field) or "").strip()
+    ]
+    if not (
+        str(result.get("prediction_id") or "").strip()
+        or str(result.get("candidate_id") or "").strip()
+    ):
+        missing.append("PREDICTION_ID_OR_CANDIDATE_ID_REQUIRED")
+    if missing:
+        raise _model_failure_detail(
+            req,
+            code=MODEL_OUTPUT_INVALID,
+            blocker=missing[0],
+            status_code=409,
+            extra={"missing_fields": missing, "model_invoked": True},
+        )
+    if identity_hold:
+        out = dict(result)
+        out["rank_eligible"] = False
+        out["probability_publishable"] = False
+        out["can_execute"] = False
+        return out
+    audit = validate_governed_scoring_package(result)
+    if audit.status != PASS:
+        code = audit.status if audit.status != MODEL_OUTPUT_INVALID else MODEL_OUTPUT_INVALID
+        raise _model_failure_detail(
+            req,
+            code=code,
+            blocker=(audit.blockers[0] if audit.blockers else "GOVERNED_PACKAGE_INVALID"),
+            status_code=409,
+            extra={"governed_package_audit": audit.as_dict()},
+        )
+    out = dict(result)
+    out["rank_eligible"] = bool(result.get("rank_eligible") is True and audit.rank_eligible)
+    out["probability_publishable"] = bool(
+        result.get("probability_publishable") is True and audit.scoring_allowed
+    )
+    out["can_execute"] = False
+    return out
 
 
 def _validate_standard_bridge_output(req: Any, result: dict[str, Any]) -> dict[str, Any]:
     """Validate the canonical package for newly registered non-MLB adapters."""
+    if result.get("fitted_registry_scoring") is True:
+        return _validate_fitted_registry_bridge_output(req, result)
+
     audit = validate_governed_scoring_package(result)
     if audit.status != PASS:
         # Stale governed packages have their own typed status in the scoring
@@ -399,7 +474,20 @@ def score_registered_team_event_request(
     else:
         result = dict(result)
         result["can_execute"] = False
-    return _attach_feature_consumption_receipt(req, registration, result)
+    scored = _attach_feature_consumption_receipt(req, registration, result)
+    # All registered specialists share this read-only research coverage audit.
+    # The discovery layer cannot change the scorer's fitted numeric outputs or
+    # certify an absent/unverified feature merely because research was requested.
+    if "matchup_discovery" not in scored:
+        scored["matchup_discovery"] = discover_matchup({
+            "sport_key": sport,
+            "official_event_id": getattr(req, "official_event_id", None),
+            "event_start_time_utc": getattr(req, "event_start_time_utc", None),
+            "home_team": getattr(req, "home_team", None),
+            "away_team": getattr(req, "away_team", None),
+            "sport_specific_evidence": getattr(req, "sport_specific_evidence", None),
+        })
+    return scored
 
 
 def team_event_bridge_health() -> dict[str, dict[str, Any]]:
@@ -418,8 +506,21 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
         registered = registration is not None
         probe = probe_sport(sport)
         certification, certification_id = certification_state(sport, registered=registered)
+        # NBA may be registered while canonical server hydration is still absent.
+        # Keep the typed scorer failure, but do not report health as UP.
+        nba_hydration_blocked = registered and sport == "NBA"
+        scoring_blockers = (
+            ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+            if nba_hydration_blocked else []
+        )
         health[sport] = {
-            "status": "UP" if registered else MODEL_UNAVAILABLE,
+            "status": (
+                "BLOCKED" if nba_hydration_blocked
+                else "UP" if registered
+                else MODEL_UNAVAILABLE
+            ),
+            "request_scoring_path_ready": bool(registered and not nba_hydration_blocked),
+            "readiness_blockers": scoring_blockers,
             "registered": registered,
             "registered_capability": registered,
             "registry_state": resolve_state(sport, registered=registered, probe=probe),
@@ -623,6 +724,225 @@ def _register_nfl_bridge_if_available() -> bool:
     return True
 
 
+def _register_nba_bridge_if_available() -> bool:
+    """Additive registration for the fitted NBA current-pregame bridge.
+
+    NBA has an independent fitted basketball candidate/training/calibration
+    pipeline, official event and team identity, and a pregame scorer. If the
+    adapter or scorer cannot be imported, the bridge is not registered and the
+    route fails closed.
+    """
+    if os.getenv("WOW_V17_NBA_TEAM_EVENT_BRIDGE", "1") != "1":
+        return False
+    try:
+        from v17.nba_current_pregame_scorer import score_nba_team_event_request
+    except Exception:  # noqa: BLE001 - absence is an audit answer, not a crash
+        return False
+
+    def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = True) -> dict[str, Any]:
+        # The shared dispatcher's historical default can explicitly forward
+        # False despite this wrapper's True default. No NBA caller-evidence
+        # shortcut is certified; force server hydration on every registered path.
+        return score_nba_team_event_request(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=True,
+        )
+
+    register_team_event_bridge(
+        "NBA",
+        adapter_name="V17_NBA_TEAM_EVENT_BRIDGE",
+        controlling_specialist="NBA_GAME_WIN_PROBABILITY_EXPERT_V1",
+        scorer=scorer,
+        required_inputs=TEAM_EVENT_INPUT_CONTRACTS["NBA"],
+        standard_package_validation=False,
+        supported_regimes=(REGULAR_SEASON,),
+    )
+    return True
+
+
+def score_ncaab_team_event_request(
+    req: Any,
+    *,
+    event_api: Any = None,
+    canonical_hydration_required: bool = True,
+) -> dict[str, Any]:
+    """Governed scoring entrypoint for NCAA men's basketball team events."""
+    scout_research_barrier = _base_runtime._run_mandatory_scout_research(req)
+    evidence = getattr(req, "sport_specific_evidence", None)
+    evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
+
+    # The available hydrate_pregame(event, settled_games) is research-only;
+    # it is not a server query adapter and cannot be called as (req, client).
+    # Until a trusted event/history producer is bound, never swallow an import
+    # failure or treat caller evidence as a canonical hydrated feature source.
+    features = evidence_map.get("features") or evidence_map.get("feature_package")
+    if not features:
+        raise _model_failure_detail(
+            req,
+            code=MODEL_INPUTS_INSUFFICIENT,
+            blocker="NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
+            status_code=422,
+            extra={
+                "model_invoked": False,
+                "canonical_hydration_required": canonical_hydration_required,
+                "scout_barrier_passed": bool(scout_research_barrier.get("pass_scout_research_barrier")),
+            },
+        )
+
+    return {
+        "candidate_id": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
+        "sport": "NCAAB",
+        "league": getattr(req, "league", "NCAAB"),
+        "official_event_id": str(getattr(req, "official_event_id", "")),
+        "event_key": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
+        "event_start_time_utc": str(getattr(req, "event_start_time_utc", "")),
+        "home_team": str(getattr(req, "home_team", "")),
+        "away_team": str(getattr(req, "away_team", "")),
+        "controlling_specialist": "NCAAB_GAME_WIN_PROBABILITY_EXPERT_V1",
+        "model_family": "NCAAB_RESULT_FORM_LOGIT_V1",
+        "code": "MODEL_RESEARCH_ONLY_HOLD",
+        "model_status": "MODEL_RESEARCH_ONLY_HOLD",
+        "blockers": ["NCAAB_MODEL_CANDIDATE_UNCERTIFIED", "OFFICIAL_PUBLICATION_NOT_CERTIFIED"],
+        "terminal_label": "MODEL_RESEARCH_ONLY_HOLD",
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "model_invoked": False,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+
+
+def _register_ncaab_bridge_if_available() -> bool:
+    """Register the fitted NCAAB bridge when available."""
+    if os.getenv("WOW_V17_NCAAB_TEAM_EVENT_BRIDGE", "1") != "1":
+        return False
+
+    register_team_event_bridge(
+        "NCAAB",
+        adapter_name="V17_NCAAB_TEAM_EVENT_BRIDGE",
+        controlling_specialist="NCAAB_GAME_WIN_PROBABILITY_EXPERT_V1",
+        scorer=score_ncaab_team_event_request,
+        required_inputs=TEAM_EVENT_INPUT_CONTRACTS.get("NCAAB", ("official_event_id", "home_team", "away_team")),
+        standard_package_validation=False,
+        supported_regimes=(REGULAR_SEASON,),
+    )
+    return True
+
+
+def score_ncaaf_team_event_request(
+    req: Any,
+    *,
+    event_api: Any = None,
+    canonical_hydration_required: bool = True,
+) -> dict[str, Any]:
+    """Governed scoring entrypoint for NCAA college football team events."""
+    scout_research_barrier = _base_runtime._run_mandatory_scout_research(req)
+    evidence = getattr(req, "sport_specific_evidence", None)
+    evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
+
+    get_client = getattr(event_api, "get_client", None)
+    client = get_client() if callable(get_client) else getattr(event_api, "client", None)
+    if client is None and (hasattr(event_api, "table") or hasattr(event_api, "rpc")):
+        client = event_api
+
+    artifact = None
+    try:
+        from ncaaf_fitted_provider import resolve_certified_artifact
+        if client is not None:
+            artifact = resolve_certified_artifact(client, feature_schema_version="NCAAF_FEATURES_V1")
+    except Exception:
+        artifact = None
+
+    if artifact is None:
+        raise _model_failure_detail(
+            req,
+            code=MODEL_UNAVAILABLE,
+            blocker="NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+            status_code=409,
+            extra={
+                "model_invoked": False,
+                "canonical_hydration_required": canonical_hydration_required,
+                "scout_barrier_passed": bool(scout_research_barrier.get("pass_scout_research_barrier")),
+            },
+        )
+
+    features = evidence_map.get("features") or evidence_map.get("feature_package")
+    if not features:
+        raise _model_failure_detail(
+            req,
+            code=MODEL_INPUTS_INSUFFICIENT,
+            blocker="NCAAF_PREGAME_FEATURES_INSUFFICIENT",
+            status_code=422,
+            extra={"model_invoked": False, "canonical_hydration_required": canonical_hydration_required},
+        )
+
+    try:
+        from ncaaf_logistic_adapter import logistic_adapter
+        from ncaaf_fitted_provider import NCAAFInferenceRequest
+
+        inf_req = NCAAFInferenceRequest(
+            official_event_id=str(getattr(req, "official_event_id", "")),
+            feature_schema_version=str(features.get("feature_schema_version") or "NCAAF_FEATURES_V1"),
+            feature_as_of=str(features.get("feature_as_of") or ""),
+            home_team=str(getattr(req, "home_team", "")),
+            away_team=str(getattr(req, "away_team", "")),
+        )
+        raw = logistic_adapter(artifact, inf_req, features)
+        home_p = float(raw.home_probability)
+        away_p = float(raw.away_probability)
+    except Exception as exc:
+        raise _model_failure_detail(
+            req,
+            code=MODEL_SCORER_FAILED,
+            blocker=f"NCAAF_SCORER_FAILED:{type(exc).__name__}",
+            status_code=500,
+            extra={"model_invoked": True, "error_type": type(exc).__name__},
+        ) from exc
+
+    return {
+        "candidate_id": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
+        "sport": "NCAAF",
+        "league": getattr(req, "league", "NCAAF"),
+        "official_event_id": str(getattr(req, "official_event_id", "")),
+        "event_key": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
+        "home_team": str(getattr(req, "home_team", "")),
+        "away_team": str(getattr(req, "away_team", "")),
+        "controlling_specialist": "NCAAF_GAME_WIN_PROBABILITY_EXPERT_V1",
+        "model_family": "NCAAF_LOGISTIC_V1",
+        "model_version": artifact.model_artifact_version,
+        "calibrated_probability": home_p,
+        "calibrated_home_probability": home_p,
+        "calibrated_away_probability": away_p,
+        "code": "MODEL_RESEARCH_ONLY_HOLD",
+        "model_status": "MODEL_RESEARCH_ONLY_HOLD",
+        "blockers": ["NCAAF_MODEL_CANDIDATE_UNCERTIFIED", "OFFICIAL_PUBLICATION_NOT_CERTIFIED"],
+        "terminal_label": "MODEL_RESEARCH_ONLY_HOLD",
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "model_invoked": True,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+
+
+def _register_ncaaf_bridge_if_available() -> bool:
+    """Register the fitted NCAAF bridge when available."""
+    if os.getenv("WOW_V17_NCAAF_TEAM_EVENT_BRIDGE", "1") != "1":
+        return False
+
+    register_team_event_bridge(
+        "NCAAF",
+        adapter_name="V17_NCAAF_TEAM_EVENT_BRIDGE",
+        controlling_specialist="NCAAF_GAME_WIN_PROBABILITY_EXPERT_V1",
+        scorer=score_ncaaf_team_event_request,
+        required_inputs=TEAM_EVENT_INPUT_CONTRACTS.get("NCAAF", ("official_event_id", "home_team", "away_team")),
+        standard_package_validation=False,
+        supported_regimes=(REGULAR_SEASON,),
+    )
+    return True
+
+
 def install_team_event_bridge_runtime() -> dict[str, Any]:
     """Install the authoritative production registry exactly once."""
     global _INSTALLED
@@ -657,6 +977,9 @@ def install_team_event_bridge_runtime() -> dict[str, Any]:
     # condition, and with no promoted champion the scorer still fails closed as
     # MODEL_UNAVAILABLE at score time.
     _register_nfl_bridge_if_available()
+    _register_nba_bridge_if_available()
+    _register_ncaab_bridge_if_available()
+    _register_ncaaf_bridge_if_available()
 
     _base_runtime.score_team_event_request = score_registered_team_event_request
     _install_health_overlay()
@@ -678,6 +1001,8 @@ __all__ = [
     "install_team_event_bridge_runtime",
     "missing_bridge_inputs",
     "register_team_event_bridge",
+    "score_ncaab_team_event_request",
+    "score_ncaaf_team_event_request",
     "score_registered_team_event_request",
     "team_event_bridge_health",
     "unregister_team_event_bridge",

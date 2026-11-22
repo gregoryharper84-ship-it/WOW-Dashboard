@@ -20,8 +20,7 @@ probability, and never enables execution.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -31,7 +30,9 @@ from basketball_event_hydration_runtime import (
     BasketballHydrationPartialWriteError,
     hydrate,
 )
-from basketball_training_replay import run_training_replay
+from basketball_training_replay import (
+    run_training_replay, verify_training_provenance, verify_training_freshness,
+)
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_model_development_manifest import development_lane
 
@@ -81,40 +82,94 @@ def _blocked(
     return payload
 
 
-_PUBLIC_REASON_PREFIXES = (
-    "BASKETBALL_", "BALLDONTLIE_", "SPORTSDATAVERSE_",
-    "ESPN_", "NBA_", "WNBA_", "SOURCE_", "MODEL_", "CALIBRATION_",
-)
-_PUBLIC_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-_LEGACY_PUBLIC_REASONS = frozenset({
-    "BALLDONTLIE_API_KEY unavailable",
-    "SUPABASE service credential unavailable",
-})
+# Only source-owned failure codes may cross the authenticated API boundary.
+# Exception messages can contain URLs, provider payloads or secrets; map known
+# tokens to literal constants instead of returning any exception-derived text.
+_PUBLIC_FAILURE_CODE_MAP = {
+    code: code
+    for code in (
+        "BALLDONTLIE_API_KEY unavailable",
+        "SUPABASE service credential unavailable",
+        "BALLDONTLIE_RATE_LIMITED",
+        "BALLDONTLIE_AUTH_FAILED",
+        "BALLDONTLIE_INVALID_JSON",
+        "BALLDONTLIE_INVALID_RESPONSE",
+        "SPORTSDATAVERSE_ESPN_SOURCE_NOT_READY",
+        "SPORTSDATAVERSE_ESPN_REQUEST_FAILED",
+        "SPORTSDATAVERSE_ESPN_RATE_LIMITED",
+        "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT",
+        "ESPN_SCOREBOARD_REQUEST_FAILED",
+        "ESPN_SCOREBOARD_INVALID_JSON",
+        "ESPN_SCOREBOARD_INVALID_RESPONSE",
+        "ESPN_RECENT_SPORT_UNSUPPORTED",
+        "ESPN_RECENT_LOOKBACK_INVALID",
+        "ESPN_RECENT_CLOCK_INVALID",
+        "ESPN_RECENT_SOURCE_FETCH_FAILED",
+        "ESPN_RECENT_SOURCE_INVALID_JSON",
+        "ESPN_RECENT_SOURCE_INVALID_RESPONSE",
+        "ESPN_RECENT_EVENT_IDENTITY_MISSING",
+        "ESPN_RECENT_DUPLICATE_GAME_ID",
+        "ESPN_RECENT_EVENT_TIME_INVALID",
+        "ESPN_RECENT_SOURCE_EVENT_WRONG_DATE",
+        "ESPN_RECENT_WINDOW_GAP_NOT_COVERED",
+        "BASKETBALL_SETTLED_GAME_ID_INVALID",
+        "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED",
+        "BASKETBALL_HYDRATION_CLOCK_INVALID",
+        "BALLDONTLIE_EMPTY_SEASON",
+        "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE",
+        "BASKETBALL_FRESH_SOURCE_UNAVAILABLE",
+        "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED",
+        "NBA_SOURCE_HTTP_503",
+        "SOURCE_HTTP_503",
+        "NBA_FAILURE",
+        "NBA_TRAINING_CORPUS_EMPTY",
+        "WNBA_TRAINING_CORPUS_EMPTY",
+        "NBA_TRAINING_PROVENANCE_INCOMPLETE",
+        "WNBA_TRAINING_PROVENANCE_INCOMPLETE",
+        "NBA_TRAINING_CORPUS_FUTURE_DATED",
+        "WNBA_TRAINING_CORPUS_FUTURE_DATED",
+        "NBA_TRAINING_CORPUS_STALE",
+        "WNBA_TRAINING_CORPUS_STALE",
+        "NBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
+        "WNBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
+        "NBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS",
+        "WNBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS",
+        "NBA_CANONICAL_DAY_READBACK_FAILED",
+        "NBA_CANONICAL_DAY_READBACK_INCOMPLETE",
+        "NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED",
+        # Current-season persisted readback literals must stay typed through
+        # the public mapper; otherwise provenance failures collapse to the
+        # generic READBACK_FAILED fallback and hide the real blocker.
+        "NBA_CURRENT_SEASON_READBACK_INVALID",
+        "NBA_CURRENT_SEASON_READBACK_INCOMPLETE",
+        "NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID",
+        "NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH",
+        "NBA_CURRENT_SEASON_PERSISTED_PROOF_MISSING",
+        "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED",
+        "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING",
+        *(f"{prefix}{status}" for prefix in (
+            "BALLDONTLIE_HTTP_",
+            "SPORTSDATAVERSE_ESPN_HTTP_",
+            "ESPN_SCOREBOARD_HTTP_",
+            "ESPN_RECENT_SOURCE_HTTP_",
+            "NBA_SOURCE_HTTP_",
+        ) for status in range(400, 600)),
+    )
+}
 
 
 def _public_failure_code(exc: Exception, fallback: str) -> str:
-    """Preserve trusted typed failure families, never raw provider/DB details.
-
-    A source can nest its error under a colon or a prose description; only the
-    stable uppercase family is public. Arbitrary RuntimeError messages and
-    transport exceptions must not be forwarded into an authenticated response.
-    """
+    """Map known source errors to literals; never echo untrusted exception text."""
     if not isinstance(exc, (BasketballHydrationError, RuntimeError)):
         return fallback
-    raw = str(exc).strip()
-    for legacy in _LEGACY_PUBLIC_REASONS:
-        if raw == legacy:
-            # Return the trusted constant, not the exception-derived string.
-            return legacy
-    token = re.split(r"[:\s]", raw, maxsplit=1)[0]
-    if (
-        token.startswith(_PUBLIC_REASON_PREFIXES)
-        and re.fullmatch(r"[A-Z][A-Z0-9_]{3,119}", token, flags=re.ASCII)
-    ):
-        # Rebuild the code character by character from a constant alphabet so
-        # no exception-derived string object reaches the HTTP response.
-        return "".join(_PUBLIC_CODE_ALPHABET[_PUBLIC_CODE_ALPHABET.index(ch)] for ch in token)
-    return fallback
+    raw = str(exc).strip()[:256]
+    head = raw.split(":", 1)[0].split(None, 1)
+    token = head[0] if head else ""
+    # Values come only from this module's literal allowlist. Unknown prefixes,
+    # arbitrary RuntimeError messages and provider/DB details use the fallback.
+    return _PUBLIC_FAILURE_CODE_MAP.get(
+        raw, _PUBLIC_FAILURE_CODE_MAP.get(token, fallback)
+    )
 
 
 def _hydration_blocker(exc: Exception) -> dict[str, Any]:
@@ -227,15 +282,16 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
 
     # The latest day can be clean while earlier games in this season's
     # persisted training window have a wrong season/provider. Validate ALL
-    # settled rows before replay. Stable two-key ordering and bounded
-    # pages prevent truncation from being silently accepted.
+    # settled rows before replay. An exact PostgREST count makes a server-side
+    # row cap observable: a short page must not silently end validation.
     scanned_ids: set[str] = set()
     season_open = date(season_start_year, 10, 1)
     page_size = 100
     max_pages = 20
+    expected_count: int | None = None
     for page in range(max_pages + 1):
         result = (
-            db.table(table).select(fields)
+            db.table(table).select(fields, count="exact")
             .eq("settled", True)
             .gte("game_date", season_open.isoformat())
             .lte("game_date", clock.date().isoformat())
@@ -244,9 +300,22 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
             .execute()
         )
         batch = getattr(result, "data", None)
-        if not isinstance(batch, list) or len(batch) > page_size:
+        total_count = getattr(result, "count", None)
+        if (
+            not isinstance(batch, list) or len(batch) > page_size
+            or type(total_count) is not int
+            or total_count < 0 or total_count > max_pages * page_size
+            or (expected_count is not None and total_count != expected_count)
+        ):
+            raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
+        if expected_count is None:
+            expected_count = total_count
+        offset = page * page_size
+        if offset + len(batch) > expected_count:
             raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
         if page == max_pages:
+            # This sentinel page must be empty because the maximum accepted
+            # count is max_pages * page_size.
             if batch:
                 raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
             break
@@ -271,8 +340,12 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
             ):
                 raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID")
             scanned_ids.add(event)
-        if len(batch) < page_size:
+        if offset + len(batch) == expected_count:
             break
+        if len(batch) != page_size:
+            # PostgREST may cap rows below the requested range. Without this
+            # check, an earlier wrong-provider settlement can escape review.
+            raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
     if not seen_ids.issubset(scanned_ids):
         raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH")
     return latest_day.isoformat()
@@ -357,6 +430,74 @@ def _nba_current_season_data_gap(
         "recoverable": True,
         "can_execute": False,
     }
+
+
+def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Research-only pre-tipoff capture of the registered NBA candidate.
+
+    Runs after a completed NBA replay or a refit-only maintenance failure.
+    It scores the already-registered candidate from persisted finals, but
+    must not capture when hydration is partially written, current-season
+    evidence is absent, or replay was held. The maintenance row status is
+    recorded with the receipt. Research-only: never changes certification,
+    publication, or execution.
+    """
+    nba_rows = tuple(row for row in results if row.get("sport") == "NBA")
+    if not nba_rows:
+        return None
+    # Every NBA maintenance row must be eligible. A later partial-write or
+    # replay hold must veto capture even if an earlier duplicate row succeeded.
+    def eligible(row: Mapping[str, Any]) -> bool:
+        return (
+            row.get("status") == "SHADOW_EVIDENCE_UPDATED"
+            or (row.get("status") == "BLOCKED"
+                and row.get("code") == "BASKETBALL_MODEL_MAINTENANCE_FAILED")
+        )
+
+    veto_row = next((row for row in nba_rows if not eligible(row)), None)
+    nba_row = veto_row if veto_row is not None else nba_rows[0]
+    capture_safe = veto_row is None
+    # A failed refit need not erase prospective evidence, but any unverified
+    # corpus must still fail closed. If any eligible row was blocked, recheck
+    # both preflights rather than trusting a different successful row.
+    corpus_verified = all(row.get("status") == "SHADOW_EVIDENCE_UPDATED" for row in nba_rows)
+    verification_failure_code = None
+    if capture_safe and not corpus_verified:
+        try:
+            provenance = verify_training_provenance(db, "NBA")
+            freshness = verify_training_freshness(db, "NBA")
+            corpus_verified = (
+                provenance.get("provenance_complete") is True
+                and freshness.get("freshness_status") == "PASS"
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed on unverified corpus
+            corpus_verified = False
+            verification_failure_code = _public_failure_code(
+                exc, "NBA_CANDIDATE_CORPUS_VERIFICATION_FAILED"
+            )
+    if not capture_safe or not corpus_verified:
+        receipt = {
+            "status": "SKIPPED",
+            "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
+            "maintenance_row_status": nba_row.get("status"),
+            "maintenance_row_code": nba_row.get("code"),
+            "capture_corpus_verified": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+        if verification_failure_code is not None:
+            receipt["capture_corpus_verification_code"] = verification_failure_code
+        return receipt
+    try:
+        from v17 import nba_candidate_forward_shadow as lane
+        receipt = dict(lane.run_nba_candidate_forward_shadow(db))
+    except Exception as exc:  # noqa: BLE001 - never fail maintenance on research capture
+        receipt = {"status": "FAILED", "reason_code": f"NBA_CANDIDATE_FORWARD_SHADOW_{type(exc).__name__.upper()}",
+                   "probability_publishable": False, "can_execute": False}
+    receipt["maintenance_row_status"] = nba_row.get("status")
+    receipt["maintenance_row_code"] = nba_row.get("code")
+    receipt["capture_corpus_verified"] = corpus_verified
+    return receipt
 
 
 def run_basketball_model_maintenance(
@@ -523,6 +664,8 @@ def run_basketball_model_maintenance(
                 )
             )
 
+    nba_forward_shadow = nba_candidate_forward_shadow_after_refresh(db, results)
+
     updated = sum(row["status"] == "SHADOW_EVIDENCE_UPDATED" for row in results)
     degraded = sum(
         row.get("hydration_status") in {
@@ -550,6 +693,7 @@ def run_basketball_model_maintenance(
         "rows_fresh_acquisition_degraded": degraded,
         "rows_no_new_settlements": no_new,
         "rows_fresh_acquisition_unverified": unverified,
+        "nba_candidate_forward_shadow": nba_forward_shadow,
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": False,

@@ -112,7 +112,11 @@ jobs:
         run: |
           set -euo pipefail
           runs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" --jq '.workflow_runs')
-          required=(
+          # Routine postmerge acceptance is governed by the three current
+          # native protected ruleset contexts, not by six separate workflow
+          # successes. Preserve these as diagnostics without weakening the
+          # actual protected check or fitted-model certification gates.
+          diagnostic_workflows=(
             "wow-verify|.github/workflows/wow-verify.yml"
             "wow-engine-verify|.github/workflows/wow-engine-verify.yml"
             "wow-v17-rapid-repair|.github/workflows/wow-v17-rapid-repair.yml"
@@ -120,17 +124,14 @@ jobs:
             "wow-v17-engineering-auditor-code-health|.github/workflows/wow-v17-engineering-auditor-code-health.yml"
             "wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"
           )
-          for required_spec in "${required[@]}"; do
-            required_name="${required_spec%%|*}"
-            required_path="${required_spec#*|}"
-            match=$(jq -r --arg name "$required_name" --arg path "$required_path" '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$runs")
-            [ "$match" = "completed|success" ] || {
-              echo "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN: $required_name:$required_path -> ${match:-MISSING}" >&2
-              exit 1
-            }
+          for spec in "${diagnostic_workflows[@]}"; do
+            name="${spec%%|*}"
+            path="${spec#*|}"
+            match=$(jq -r --arg name "$name" --arg path "$path" '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$runs")
+            echo "Diagnostic workflow: $name:$path -> ${match:-MISSING}" >> "$GITHUB_STEP_SUMMARY"
           done
-          # V4: authenticated five-check release evidence, not retired
-          # trusted-governance or paid semantic-review artifacts.
+          # Owner-ratified policy #1830 and native ruleset #24907422:
+          # precisely three authenticated mandatory exact-PR-head App checks.
           all_checks='[]'
           for page in $(seq 1 10); do
             response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}")
@@ -146,9 +147,24 @@ jobs:
             "WOW required-three regression|15368"
             "WOW governed probability backend|15368"
             "WOW additional required regression|15368"
+          )
+          # These two real independent review signals are optional diagnostics
+          # for routine merges. Missing/failed signals are never fabricated as
+          # success or accepted as Class C scientific certification.
+          optional_reviews=(
             "WOW Independent QA exact-head|5245832"
             "WOW Release Authority exact-head|5245853"
           )
+          for entry in "${optional_reviews[@]}"; do
+            context="${entry%%|*}"
+            app_id="${entry#*|}"
+            status=$(jq -r --arg name "$context" --arg sha "$HEAD_SHA" --argjson app "$app_id" '
+              [.[] | select(.name == $name and .head_sha == $sha and .app.id == $app)]
+              | sort_by(.id) | last | if . == null then "MISSING" else
+                  "\(.status)|\(.conclusion // "")" end
+            ' <<<"$all_checks")
+            echo "Optional independent review (not scientific certification): $context -> $status" >> "$GITHUB_STEP_SUMMARY"
+          done
           for entry in "${expected[@]}"; do
             context="${entry%%|*}"
             app_id="${entry#*|}"
@@ -163,7 +179,7 @@ jobs:
               exit 1
             }
           done
-          echo "Authenticated exact-head V4 five-check evidence verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "Authenticated exact-head native three-required-check evidence verified; independent certification separately pending." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Capture deterministic release evidence
         if: steps.pr.outputs.number != ''
@@ -190,23 +206,110 @@ jobs:
             https://wow-governed-probability-engine.onrender.com/governance \
             > artifacts/wow-engine/v17/.release-evidence/governance.json
 
+      - name: Verify deterministic exact production state
+        if: steps.pr.outputs.number != ''
+        id: deterministic
+        shell: bash
+        env:
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+          RESULT_PATH: ${{ runner.temp }}/deterministic-release-result.json
+        run: |
+          set -euo pipefail
+          result="$RESULT_PATH"
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = Path("artifacts/wow-engine/v17/.release-evidence")
+          health = json.loads((evidence / "health-live.json").read_text(encoding="utf-8"))
+          governance = json.loads((evidence / "governance.json").read_text(encoding="utf-8"))
+          main_sha = (evidence / "main-sha.txt").read_text(encoding="utf-8").strip()
+
+          if not isinstance(health, dict) or health.get("status") != "ok":
+              raise SystemExit("RELEASE_HEALTH_LIVE_NOT_OK")
+          if health.get("can_execute") is not False:
+              raise SystemExit("RELEASE_HEALTH_CAN_EXECUTE_MUST_BE_FALSE")
+          if not isinstance(governance, dict):
+              raise SystemExit("RELEASE_GOVERNANCE_NOT_OBJECT")
+          if governance.get("can_execute") is not False:
+              raise SystemExit("RELEASE_GOVERNANCE_CAN_EXECUTE_MUST_BE_FALSE")
+          # Row-scoped publication leaves the global flag null; never allow true.
+          if governance.get("probability_publishable") not in (False, None):
+              raise SystemExit("RELEASE_GOVERNANCE_PROBABILITY_PUBLISHABLE_NOT_ROW_SCOPED")
+
+          live_sha = str(
+              governance.get("deployed_sha")
+              or health.get("deployed_sha")
+              or ""
+          ).strip()
+          if not live_sha:
+              payload = {
+                  "status": "PENDING",
+                  "main_sha": main_sha,
+                  "production_sha": "",
+                  "acceptance": "HEALTH_AND_GOVERNANCE_PASS",
+                  "reconciliation": "DEPLOYED_SHA_MISSING",
+                  "blocker": "DEPLOYED_SHA_MISSING",
+                  "next_action": "Wait for live /governance deployed_sha and rerun release verification",
+                  "can_execute": False,
+              }
+          elif live_sha != main_sha:
+              payload = {
+                  "status": "PENDING",
+                  "main_sha": main_sha,
+                  "production_sha": live_sha,
+                  "acceptance": "HEALTH_AND_GOVERNANCE_PASS",
+                  "reconciliation": "DEPLOYED_SHA_DRIFT",
+                  "blocker": "DEPLOYED_SHA_DRIFT",
+                  "next_action": (
+                      "Deploy protected main through the authorized release path, "
+                      "then confirm web/worker SHA parity and rerun verification"
+                  ),
+                  "can_execute": False,
+              }
+          else:
+              payload = {
+                  "status": "PENDING",
+                  "main_sha": main_sha,
+                  "production_sha": live_sha,
+                  "acceptance": "WEB_HEALTH_AND_GOVERNANCE_PASS_ONLY",
+                  "reconciliation": "WEB_SHA_MATCHES_MAIN_WORKER_UNVERIFIED",
+                  "blocker": "RELEASE_WORKER_SHA_UNVERIFIED",
+                  "next_action": (
+                      "Read both Render service LIVE SHAs, establish worker parity, "
+                      "then obtain independent SIRT acceptance"
+                  ),
+                  "can_execute": False,
+              }
+
+          Path(os.environ["RESULT_PATH"]).write_text(
+              json.dumps(payload, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          compact=$(jq -c . "$result")
+          echo "result=$compact" >> "$GITHUB_OUTPUT"
+          cat "$result" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Release / Production Verification agent
         if: steps.pr.outputs.number != ''
         id: release_agent
+        continue-on-error: true
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling only.
-            Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
-            the merged PR, and artifacts/wow-engine/v17/.release-evidence/**.
-            The workflow verified source-pinned exact-head regression CI and the five
-            deterministic App-pinned release checks, including QA and Release Authority.
-            This does NOT certify independent semantic review. The GitHub merge SHA is
-            on protected main. Independently verify production LIVE SHA, health, model
-            behavior and settlement/persistence. Without exact proof return PENDING.
-            Do not edit, merge, deploy or authorize wagers. Preserve can_execute=false.
+            You are an advisory WOW V17 RELEASE_OBSERVABILITY_AGENT. Deterministic
+            exact-SHA health/governance comparison already owns the published status.
+            Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md
+            and artifacts/wow-engine/v17/.release-evidence/** only for advisory notes.
+            Independent SIRT scientific model certification remains separate from
+            routine source-merge checks and is never invented by this agent. Do not edit, merge, deploy
+            or authorize wagers. Preserve can_execute=false.
           output_schema: '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
 
       - name: Publish release verification receipt
@@ -214,7 +317,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
-          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          RESULT: ${{ steps.deterministic.outputs.result }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
         run: |
@@ -223,17 +326,18 @@ jobs:
           {
             echo "## Release / Production Verification Agent"
             echo
-            echo "Provider: OpenAI/ChatGPT"
+            echo "Provider: Deterministic GitHub/Render exact-SHA receipt"
             echo
-            echo "- governed_pr_head_sha: `$HEAD_SHA`"
-            echo "- protected_main_merge_sha: `$MERGE_SHA`"
-            echo "- v4_exact_head_qa_release_checks: VERIFIED"
+            printf -- '- governed_pr_head_sha: `%s`\n' "$HEAD_SHA"
+            printf -- '- protected_main_merge_sha: `%s`\n' "$MERGE_SHA"
+            echo "- protected_three_exact_head_checks: VERIFIED"
+            echo "- independent_scientific_model_certification: NOT_ESTABLISHED_BY_THIS_RECEIPT"
             echo
             echo '~~~json'
             echo "$RESULT"
             echo '~~~'
             echo
-            echo "`can_execute=false`"
+            printf '%s\n' '`can_execute=false`'
           } > "$body"
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
           cat "$body" >> "$GITHUB_STEP_SUMMARY"

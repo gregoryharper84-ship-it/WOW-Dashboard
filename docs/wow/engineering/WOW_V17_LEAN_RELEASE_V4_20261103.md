@@ -47,6 +47,20 @@ The new `wow-v17-lean-production-readback.yml` observes a genuine successful `wo
 
 SIRT independently verifies both deploy IDs and LIVE commits, production critical logs, genuine behavior, canaries, persistence, scorer/Action receipts and rollback readiness. Model publication is still separately controlled by certified fitted specialists and `V17_TERMINAL_REDUCER`.
 
+### Optional main-scoped observers never gate `checksPass`
+
+`schedule` and `workflow_run` workflows execute against the protected `main` tip, so GitHub attaches their job check runs to that SHA. Render's `checksPass` trigger waits for a terminal successful conclusion of every check on the SHA it deploys, so an optional autonomous observer that ends red blocks deploys of already-merged commits it never touched (incident #2422).
+
+Rules for every non-authoritative observer (Scout persistence resume, Engineering adoption/repair discovery and writer, read-only readback):
+
+- its check must conclude `success`; a genuine typed failure remains a FAIL/HOLD on the operation and source identity that own it, recorded in `$GITHUB_STEP_SUMMARY`;
+- `jobs.<job_id>.continue-on-error` is not sufficient: the job check run still concludes `failure`. Every step of an optional observer job must be isolated with step-level `continue-on-error: true`;
+- isolation may not create an action: steps that need a resolved source/target are guarded so no writer dispatch, comment, label, or adoption runs on empty input;
+- never synthesize a receipt, promote a superseded or foreign target, cancel a required check, drop an unrecoverable row, or re-enable the retired API deploy controller;
+- required merge gates (`wow-verify`, `wow-engine-verify`) and the protected contexts stay fail-closed and are never blanket-isolated.
+
+The regression contract is `artifacts/wow-engine/tests/test_v17_optional_observer_checkspass_isolation.py`; a new optional observer must be added to its job list before it is enabled. Implemented by PR #2608 (FIX-2026-11-11-001).
+
 ## Coordinated cutover, owner-authenticated
 
 1. Freeze the exact PR #2417 SHA and require the three native GitHub regressions PASS. Verify relevant security-negative tests and no unresolved hard findings. Do not trigger paid review.

@@ -16,7 +16,7 @@ from typing import Any, Callable, Mapping
 
 import httpx
 from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17 import memory_admission
@@ -51,6 +51,15 @@ class NFLForwardEvidenceRequest(BaseModel):
     requested_date: str
     candidate_offset: int = Field(default=0, ge=0, le=4000)
     max_candidates: int = Field(default=32, ge=1, le=64)
+    # Optional deterministic scheduler rotation; existing offset clients
+    # retain their exact historical semantics when this is absent.
+    candidate_rotation: int | None = Field(default=None, ge=0, le=2_147_483_647)
+
+    @model_validator(mode="after")
+    def _exclusive_paging(self) -> "NFLForwardEvidenceRequest":
+        if self.candidate_rotation is not None and self.candidate_offset != 0:
+            raise ValueError("candidate_rotation and candidate_offset are mutually exclusive")
+        return self
 
 
 def _aware(value: Any) -> datetime | None:
@@ -222,6 +231,8 @@ def acquire_nfl_forward_evidence_batch(
         "sport": SPORT,
         "requested_date": req.requested_date,
         "candidate_offset": req.candidate_offset,
+        "candidate_rotation": req.candidate_rotation,
+        "rotation_page_n": 0,
         "max_candidates": req.max_candidates,
         "total_candidates": 0,
         "window_candidate_n": 0,
@@ -247,7 +258,15 @@ def acquire_nfl_forward_evidence_batch(
         return result
 
     result["total_candidates"] = len(candidates)
-    start = min(req.candidate_offset, len(candidates))
+    page_n = (len(candidates) + req.max_candidates - 1) // req.max_candidates
+    result["rotation_page_n"] = page_n
+    if req.candidate_rotation is None:
+        start = min(req.candidate_offset, len(candidates))
+    else:
+        # Bound every scheduled batch to a real candidate page, including
+        # small slates; no fixed ten-page cap can starve the rest of a slate.
+        start = (req.candidate_rotation % page_n) * req.max_candidates if page_n else 0
+    result["candidate_offset"] = start
     end = min(start + req.max_candidates, len(candidates))
     window = candidates[start:end]
     result["window_candidate_n"] = len(window)
@@ -265,6 +284,7 @@ def acquire_nfl_forward_evidence_batch(
                 f"{candidate['player']}:{candidate['stat_type']}:NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}"
             )
             continue
+        writing = False
         try:
             raw = auto_hydrate_prop_evidence(
                 sport=SPORT,
@@ -302,11 +322,29 @@ def acquire_nfl_forward_evidence_batch(
             snapshot_id, _fingerprint, snapshot = _snapshot_payload(row, normalized)
             snapshot["source_snapshot_id"] = snapshot_id
             result["hydrated"] += 1
+            writing = True
             db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
             result["persisted"] += 1
         except PropAutoHydrationError as exc:
             result["held"] += 1
             result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{exc.code}")
+        except ValueError as exc:
+            if writing:
+                # A failure after validation, while writing the snapshot, is a genuine write failure.
+                result["held"] += 1
+                result["snapshot_write_failed"] += 1
+                result["blockers"].append(
+                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
+                )
+            else:
+                # Governed evidence validation (for example L10_GAME_LOG_INCOMPLETE) is a typed
+                # row-scoped HOLD with its reason, not a snapshot write failure. Nothing is
+                # persisted and no probability is produced for the row.
+                reason = " ".join(str(exc).split())[:120] or type(exc).__name__
+                result["held"] += 1
+                result["blockers"].append(
+                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_EVIDENCE_INVALID:{reason}"
+                )
         except Exception as exc:
             result["held"] += 1
             result["snapshot_write_failed"] += 1
