@@ -648,3 +648,33 @@ def test_historical_tipoff_timestamp_changes_are_bound_to_replay_evidence_sha():
     assert first["pregame_corpus"]["observed_corpus_manifest_sha256"] != second["pregame_corpus"]["observed_corpus_manifest_sha256"]
     assert first["replay_evidence_sha256"] != second["replay_evidence_sha256"]
     assert first["probability_publishable"] is second["probability_publishable"] is False
+
+
+def test_shared_endpoint_survives_an_uncaught_nba_replay_failure(monkeypatch):
+    """An unexpected NBA failure becomes a typed block, never a D1 outage."""
+    import v17.team_event_certification_replay as integration
+
+    def explode(_db):
+        raise RuntimeError("unexpected nba replay failure")
+
+    monkeypatch.setattr(integration, "run_nba_team_event_certification_replay", explode)
+    report = run_certification_replay(_DB(_fixture()))
+
+    assert report["status"] == "CERTIFICATION_REPLAY_COMPLETE"
+    assert report["sports"]
+    nba_block = report["nba_team_event_replay"]
+    assert nba_block["status"] == "REPLAY_UNCAUGHT_FAILURE"
+    assert nba_block["error_type"] == "RuntimeError"
+    assert nba_block["blockers"] == ["NBA_REPLAY_UNCAUGHT_FAILURE"]
+    assert report["summary"]["nba_team_event_replay_status"] == "REPLAY_UNCAUGHT_FAILURE"
+    assert report["summary"]["nba_team_event_exact_bundle_match"] is False
+    assert nba_block["artifact_ready"] is False
+    assert nba_block["calibrator_ready"] is False
+    assert nba_block["pregame_corpus_ready"] is False
+    assert nba_block["exact_bundle_match"] is False
+    assert nba_block["probability_publishable"] is False
+    assert nba_block["rank_eligible"] is False
+    assert nba_block["can_execute"] is False
+    assert report["automatic_certification"] is False
+    assert report["automatic_promotion"] is False
+    assert report["can_execute"] is False

@@ -14,7 +14,7 @@ from v17.multisport_team_event_calibration import (
 import hashlib
 import json
 import math
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Mapping
 
