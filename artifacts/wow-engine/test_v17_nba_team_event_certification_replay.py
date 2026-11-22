@@ -648,3 +648,80 @@ def test_historical_tipoff_timestamp_changes_are_bound_to_replay_evidence_sha():
     assert first["pregame_corpus"]["observed_corpus_manifest_sha256"] != second["pregame_corpus"]["observed_corpus_manifest_sha256"]
     assert first["replay_evidence_sha256"] != second["replay_evidence_sha256"]
     assert first["probability_publishable"] is second["probability_publishable"] is False
+
+
+def test_signed_calibrator_with_non_mapping_coefficients_fails_closed():
+    tables = _fixture()
+    calibrator = tables["wow_basketball_team_event_calibrators"][0]
+    payload = {
+        "model_version": calibrator["model_artifact_version"],
+        "calibration_version": calibrator["calibrator_version"],
+        "calibration_method": calibrator["calibration_method"],
+        "platt_a": 1.0, "platt_b": 0.0,
+        "probability_publishable": False,
+        "rank_eligible": False, "can_execute": False,
+    }
+    calibrator["calibration_artifact_payload"] = payload
+    calibrator["calibration_artifact_sha256"] = calibration_payload_sha256(payload)
+    calibrator["coefficients"] = ["not-a-mapping"]
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["status"] != "READ_FAILED"
+    assert report["calibrator_checksum_persisted"] is False
+    assert report["calibrator_model_artifact_version_match"] is False
+    assert "CALIBRATOR_NOT_READY" in report["blockers"]
+    assert report["probability_publishable"] is False
+    assert report["rank_eligible"] is False
+    assert report["can_execute"] is False
+
+
+def test_newer_settled_games_do_not_expand_original_holdout(monkeypatch):
+    from dataclasses import replace
+
+    original = nba_replay_module._corpus_replay
+
+    def additional_later_feature(*args, **kwargs):
+        rows, summary, valid = original(*args, **kwargs)
+        future = replace(
+            rows[-1], game_id="post-original-holdout",
+            game_date=date(2025, 3, 12),
+        )
+        return rows + [future], summary, valid
+
+    monkeypatch.setattr(nba_replay_module, "_corpus_replay", additional_later_feature)
+    report = run_nba_team_event_certification_replay(_DB(_fixture()))
+    assert report["numerical_replay_status"] == "PASS"
+    assert report["post_original_holdout_feature_rows"] == 1
+    assert report["exact_bundle_match"] is False
+    assert report["automatic_certification"] is False
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+
+def test_missing_original_holdout_end_date_blocks_numerical_replay():
+    tables = _fixture()
+    notes = tables["wow_basketball_team_event_certification"][0]["certification_notes"]
+    notes["untouched_holdout_evidence"].pop("holdout_end_date")
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["numerical_replay_status"] != "PASS"
+    assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in report["blockers"]
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+
+def test_forward_shadow_and_grades_use_unique_capture_pagination_key(monkeypatch):
+    calls = []
+
+    def read_rows(_db, table, _fields, **kwargs):
+        calls.append((table, kwargs.get("order_by")))
+        return []
+
+    monkeypatch.setattr(nba_replay_module, "_read_all", read_rows)
+    audit = nba_replay_module._forward_shadow_audit(_DB(_fixture()))
+    assert calls == [
+        ("wow_nba_candidate_forward_shadow", "capture_id"),
+        ("wow_nba_candidate_forward_verified_grades", "capture_id"),
+    ]
+    assert audit["shadow_capture_rows"] == 0
+    assert audit["official_verified_grade_rows"] == 0
+    assert audit["probability_publishable"] is False
+    assert audit["can_execute"] is False
