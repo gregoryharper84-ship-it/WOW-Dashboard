@@ -315,6 +315,84 @@ def _blocker_diagnostics(result: FetchResult) -> dict[str, Any]:
     return {key: result.data.get(key) for key in allowed if key in result.data}
 
 
+
+def resolve_nhl_nightly_identity(
+    event_identity: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """NHL-only official event reconciliation; preserve each provider row.
+
+    Exactly one official lookup per NHL event. A failure keeps the provider
+    alias and precise native identity code, but cannot offer a fake official ID
+    to the specialist or the reviewed-news handoff. No market/probability use.
+    """
+    if event_identity.get("sport_key") != "icehockey_nhl":
+        return event_identity, None
+
+    from v17.nhl_event_identity import (
+        SOURCE_PROVIDER, resolve_nhl_current_event_identity,
+    )
+
+    identity = dict(event_identity)
+    try:
+        result = resolve_nhl_current_event_identity(
+            event_start_time=str(identity.get("commence_time") or ""),
+            home_team=str(identity.get("home_team") or ""),
+            away_team=str(identity.get("away_team") or ""),
+        )
+        official_id = str(result.get("event_id") or "").strip()
+        body_sha = result.get("canonical_identity_source_sha256")
+        bytes_count = result.get("canonical_identity_source_byte_count")
+        url = result.get("identity_source")
+        verified_at = result.get("identity_verified_at")
+        if (
+            not official_id or not official_id.isdecimal()
+            or result.get("identity_provider") != SOURCE_PROVIDER
+            or not isinstance(body_sha, str) or len(body_sha) != 64
+            or any(ch not in "0123456789abcdef" for ch in body_sha)
+            or not isinstance(bytes_count, int) or bytes_count <= 0
+            or not isinstance(url, str)
+            or not url.startswith("https://api-web.nhle.com/v1/club-schedule-season/")
+            or not isinstance(verified_at, str) or not verified_at
+            or result.get("game_state") not in {"FUT", "PRE"}
+            or result.get("market_features_used") is not False
+            or result.get("can_execute") is not False
+        ):
+            raise ValueError("NHL_OFFICIAL_RESOLVER_PROVENANCE_INVALID")
+
+        identity.update({
+            "official_event_id": official_id,
+            "canonical_event_id": official_id,
+            "canonical_identity_status": "VERIFIED_OFFICIAL_EVENT",
+            "official_event_identity_verified": True,
+            "canonical_identity_source": SOURCE_PROVIDER,
+            "canonical_identity_source_url": url,
+            "canonical_identity_source_sha256": body_sha,
+            "canonical_identity_source_byte_count": bytes_count,
+            "canonical_identity_verified_at": verified_at,
+            "canonical_event_start_utc": result.get("event_start_time"),
+            "canonical_identity_market_features_used": False,
+        })
+        return identity, None
+    except Exception as exc:  # noqa: BLE001 - fail closed, retain typed reason
+        code = str(getattr(exc, "code", "") or "")
+        if not code.startswith("NHL_"):
+            code = "NHL_OFFICIAL_RESOLVER_PROVENANCE_INVALID"
+        identity.update({
+            "official_event_id": None,
+            "canonical_event_id": None,
+            "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+            "official_event_identity_verified": False,
+            "canonical_identity_blocker": code,
+        })
+        return identity, {
+            "scope": "event_identity",
+            "sport": "icehockey_nhl",
+            "provider_event_id": identity.get("provider_event_id"),
+            "status": "IDENTITY_UNRESOLVED",
+            "reason_code": code,
+        }
+
+
 def _team_event_candidate(
     event_identity: dict[str, Any],
     scripts: list[str],
@@ -424,6 +502,11 @@ def run() -> dict[str, Any]:
                 )
                 if event.get(field) is not None
             })
+            event_identity, identity_blocker = resolve_nhl_nightly_identity(event_identity)
+            if identity_blocker:
+                # Source acquisition/market errors remain separate. Exact NHL
+                # identity failures are visible without dropping a candidate.
+                coverage.append(identity_blocker)
             scripts = game_scripts(key)
             event_blockers: list[dict[str, Any]] = []
             event_rows: list[dict[str, Any]] = []
