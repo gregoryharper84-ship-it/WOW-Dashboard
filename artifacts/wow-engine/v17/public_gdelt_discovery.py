@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -46,14 +48,66 @@ SPORT_QUERIES = (
 # closed: a final 429 stays BLOCKED.
 RETRY_DELAYS_SECONDS = (900,)
 MAX_TOTAL_WAIT_SECONDS = 1200
-RETRY_POLICY = {
-    "ladder_seconds": list(RETRY_DELAYS_SECONDS),
-    "honours_retry_after": True,
-    "max_total_wait_seconds": MAX_TOTAL_WAIT_SECONDS,
+RETRY_MEASUREMENT = {
     "measured_block_floor_seconds": 735,
     "measured_at_utc": "2026-11-18T21:12:54Z",
     "measured_status": "SOURCE_RATE_LIMITED",
 }
+# The measured wait is worth paying only when a human asked for it. All three
+# scheduled source-refresh runs on 2026-11-18 were refused on their first
+# request from fresh GitHub runner addresses, so a cron run that sleeps 15
+# minutes and is then refused again just burns the job. Scheduled workflows
+# therefore set this to 0 (skip the retry); manual dispatches keep 900.
+RETRY_WAIT_ENV = "WOW_V17_NEWS_RETRY_WAIT_SECONDS"
+DISABLED_RETRY_VALUES = frozenset({"0", "none", "off", "skip", "disabled"})
+
+
+def parse_retry_delays(spec: str) -> tuple[int, ...]:
+    """Parse a comma-separated wait ladder; 0/off/skip disables retrying."""
+    text = (spec or "").strip().lower()
+    if text in DISABLED_RETRY_VALUES:
+        return ()
+    waits = []
+    for token in text.split(","):
+        token = token.strip()
+        try:
+            value = int(token)
+        except ValueError:
+            raise ValueError("WOW_NEWS_RETRY_WAIT_INVALID") from None
+        if value <= 0 or value > MAX_TOTAL_WAIT_SECONDS:
+            raise ValueError("WOW_NEWS_RETRY_WAIT_INVALID")
+        waits.append(value)
+    if not waits or sum(waits) > MAX_TOTAL_WAIT_SECONDS:
+        raise ValueError("WOW_NEWS_RETRY_WAIT_EXCEEDS_MAX_TOTAL")
+    return tuple(waits)
+
+
+def resolve_retry_delays(spec: str | None,
+                        env: Mapping[str, str] | None = None,
+                        ) -> tuple[tuple[int, ...], str]:
+    """CLI flag wins over the env var, which wins over the measured default."""
+    if spec is not None:
+        return parse_retry_delays(spec), "cli_flag"
+    env = os.environ if env is None else env
+    configured = env.get(RETRY_WAIT_ENV)
+    if configured is not None:
+        return parse_retry_delays(configured), f"env:{RETRY_WAIT_ENV}"
+    return RETRY_DELAYS_SECONDS, "default"
+
+
+def build_retry_policy(delays: tuple[int, ...], configured_by: str) -> dict:
+    return {
+        "ladder_seconds": [int(d) for d in delays],
+        "retries_disabled": not delays,
+        "configured_by": configured_by,
+        "config_env_var": RETRY_WAIT_ENV,
+        "honours_retry_after": True,
+        "max_total_wait_seconds": MAX_TOTAL_WAIT_SECONDS,
+        **RETRY_MEASUREMENT,
+    }
+
+
+RETRY_POLICY = build_retry_policy(RETRY_DELAYS_SECONDS, "default")
 
 
 def selection(at: datetime) -> tuple[str, str]:
@@ -64,7 +118,9 @@ def selection(at: datetime) -> tuple[str, str]:
 
 
 def discover(at: datetime | None = None, *, sport: str | None = None,
-             client=None) -> dict:
+             client=None, retry_delays: tuple[int, ...] | None = None,
+             retry_configured_by: str = "default") -> dict:
+    delays = RETRY_DELAYS_SECONDS if retry_delays is None else tuple(retry_delays)
     at = at or datetime.now(timezone.utc)
     selected = next(((key, query) for key, query in SPORT_QUERIES if key == sport), None) if sport else selection(at)
     if selected is None:
@@ -91,7 +147,7 @@ def discover(at: datetime | None = None, *, sport: str | None = None,
     # Real HTTP sessions only: an injected client keeps offline tests and
     # callers deterministic and keeps zero-pacing behaviour. Each step paces
     # from the measured ladder, lengthened to any Retry-After the source sends.
-    for scheduled_wait in RETRY_DELAYS_SECONDS:
+    for scheduled_wait in delays:
         if client is not None or result.code != "SOURCE_RATE_LIMITED":
             break
         hinted = getattr(result, "retry_after_seconds", None)
@@ -120,7 +176,7 @@ def discover(at: datetime | None = None, *, sport: str | None = None,
         "attempt_count": len(attempts),
         "attempts": attempts,
         "total_wait_seconds": round(waited, 1),
-        "retry_policy": RETRY_POLICY,
+        "retry_policy": build_retry_policy(delays, retry_configured_by),
         "model_rescore_verified": False,
         "attribution": "The GDELT Project (https://www.gdeltproject.org/)",
         "query": query,
@@ -138,7 +194,20 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--candidate-manifest",
                         help="Same-run Scout handoff for active-sport research selection")
+    parser.add_argument("--retry-wait-seconds", metavar="SECONDS[,SECONDS]",
+                        help=("Paced 429 retry ladder in seconds. 0, off or skip "
+                              "disables retrying. Defaults to "
+                              f"${RETRY_WAIT_ENV} when set, else the measured "
+                              f"{RETRY_DELAYS_SECONDS[0]}s retry."))
     args = parser.parse_args()
+    try:
+        retry_delays, retry_configured_by = resolve_retry_delays(
+            args.retry_wait_seconds)
+    except ValueError as exc:
+        parser.error(
+            f"{exc}: --retry-wait-seconds / {RETRY_WAIT_ENV} must be a "
+            f"comma-separated ladder of positive seconds totalling at most "
+            f"{MAX_TOTAL_WAIT_SECONDS}, or 0/off/skip to disable")
     at = datetime.now(timezone.utc)
     sport = args.sport
     policy = "EXPLICIT_SPORT" if sport else "FIXED_ROTATION"
@@ -157,7 +226,8 @@ def main() -> int:
                 policy = "ACTIVE_SLATE_ROTATION"
         except (OSError, ValueError, UnicodeDecodeError):
             pass
-    receipt = discover(at, sport=sport)
+    receipt = discover(at, sport=sport, retry_delays=retry_delays,
+                       retry_configured_by=retry_configured_by)
     receipt["selection_policy"] = policy
     receipt["slate_active_event_counts"] = counts
     dest = Path(args.output)
@@ -168,6 +238,8 @@ def main() -> int:
                       "sport_key": receipt["sport_key"],
                       "article_count": len(receipt["articles"]),
                       "attempt_count": receipt["attempt_count"],
+                      "retry_waits_seconds": receipt["retry_policy"]["ladder_seconds"],
+                      "retry_configured_by": retry_configured_by,
                       "selection_policy": policy,
                       "prediction_authority": False, "can_execute": False}))
     # A single public news outage cannot block the structured Scout or models;

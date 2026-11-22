@@ -1,7 +1,10 @@
 """Offline tests for live-slate public news selection and bounded 429 recovery."""
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from v17.news_active_slate import select_active_slate
 from v17 import public_gdelt_discovery as runner
@@ -138,11 +141,100 @@ def test_retry_ladder_is_paced_in_minutes_and_bounded(monkeypatch):
     assert min(sleeps) >= runner.RETRY_POLICY["measured_block_floor_seconds"]
     assert receipt["attempt_count"] == 1 + len(runner.RETRY_DELAYS_SECONDS)
     assert receipt["retry_policy"]["ladder_seconds"] == list(runner.RETRY_DELAYS_SECONDS)
+    assert receipt["retry_policy"]["configured_by"] == "default"
 
 
+def test_retry_wait_defaults_to_the_measured_floor_when_unconfigured():
+    assert runner.resolve_retry_delays(None, {}) == ((900,), "default")
+
+
+def test_retry_wait_env_var_can_shorten_or_disable_the_wait():
+    assert runner.resolve_retry_delays(None, {runner.RETRY_WAIT_ENV: "0"}) == (
+        (), f"env:{runner.RETRY_WAIT_ENV}")
+    assert runner.resolve_retry_delays(None, {runner.RETRY_WAIT_ENV: "90,120"}) == (
+        (90, 120), f"env:{runner.RETRY_WAIT_ENV}")
+
+
+def test_retry_wait_cli_flag_wins_over_env_var():
+    env = {runner.RETRY_WAIT_ENV: "0"}
+    assert runner.resolve_retry_delays("60", env) == ((60,), "cli_flag")
+
+
+@pytest.mark.parametrize("spec", ["", "abc", "-30", "0,60", "900,900", "1201"])
+def test_invalid_retry_wait_configuration_is_rejected(spec):
+    with pytest.raises(ValueError):
+        runner.parse_retry_delays(spec)
+
+
+def test_disabled_retry_still_returns_an_honest_blocked_receipt(monkeypatch):
+    calls, sleeps = [], []
+    def blocked(*args, **kwargs):
+        calls.append(1)
+        return SimpleNamespace(ok=False, code="SOURCE_RATE_LIMITED", status=429,
+                               retry_after_seconds=None, observed_at=AT.isoformat(),
+                               data={"articles": []})
+    monkeypatch.setattr(runner, "fetch_gdelt_news", blocked)
+    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
+    receipt = runner.discover(AT, sport="basketball_nba", retry_delays=(),
+                              retry_configured_by=f"env:{runner.RETRY_WAIT_ENV}")
+    assert len(calls) == 1 and sleeps == []
+    assert receipt["source_status"] == "BLOCKED"
+    assert receipt["source_code"] == "SOURCE_RATE_LIMITED"
+    assert receipt["attempt_count"] == 1
+    assert receipt["total_wait_seconds"] == 0
+    assert [a["delay_before_seconds"] for a in receipt["attempts"]] == [0]
+    assert receipt["retry_policy"]["retries_disabled"] is True
+    assert receipt["retry_policy"]["ladder_seconds"] == []
+    assert receipt["retry_policy"]["configured_by"] == f"env:{runner.RETRY_WAIT_ENV}"
+    assert receipt["can_execute"] is False
+
+
+def test_shortened_ladder_is_what_actually_runs(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(runner, "fetch_gdelt_news",
+                        lambda *a, **k: SimpleNamespace(
+                            ok=False, code="SOURCE_RATE_LIMITED", status=429,
+                            retry_after_seconds=None, observed_at=AT.isoformat(), data={}))
+    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
+    receipt = runner.discover(AT, sport="basketball_nba", retry_delays=(45, 60),
+                              retry_configured_by="cli_flag")
+    assert sleeps == [45, 60]
+    assert receipt["attempt_count"] == 3
+    assert receipt["total_wait_seconds"] == 105
+    assert receipt["retry_policy"]["ladder_seconds"] == [45, 60]
+    assert receipt["source_status"] == "BLOCKED"
+
+
+def test_cli_retry_flag_is_wired_into_the_run(monkeypatch, tmp_path):
+    seen = {}
+    def fake_discover(at, *, sport=None, client=None, retry_delays=None,
+                      retry_configured_by="default"):
+        seen["retry_delays"] = retry_delays
+        seen["configured_by"] = retry_configured_by
+        return {
+            "source_status": "BLOCKED", "source_code": "SOURCE_RATE_LIMITED",
+            "sport_key": sport, "articles": [], "article_count": 0,
+            "attempt_count": 1, "total_wait_seconds": 0.0,
+            "retry_policy": runner.build_retry_policy(
+                retry_delays, retry_configured_by),
+        }
+    monkeypatch.setattr(runner, "discover", fake_discover)
+    monkeypatch.setattr(sys, "argv", [
+        "public_gdelt_discovery.py", "--sport", "basketball_nba",
+        "--retry-wait-seconds", "0", "--output", str(tmp_path / "receipt.json")])
+    assert runner.main() == 0
+    assert seen == {"retry_delays": (), "configured_by": "cli_flag"}
+    assert (tmp_path / "receipt.json").exists()
+
+
+def test_scheduled_workflows_skip_the_long_wait_and_manual_runs_keep_it():
     root = Path(__file__).resolve().parents[2] / ".github" / "workflows"
     nightly = (root / "wow-v17-nightly-multiscout.yml").read_text()
     source = (root / "wow-v17-scout-source-refresh.yml").read_text()
+    for raw in (nightly, source):
+        assert f"{runner.RETRY_WAIT_ENV}:" in raw
+    assert "github.event_name == 'schedule' && '0' || '900'" in source
+    assert "github.event_name == 'workflow_dispatch' && '900' || '0'" in nightly
     assert "--candidate-manifest" in nightly
     assert nightly.count("public-gdelt-receipt.json") >= 4
     assert "Report same-run news acquisition health (nonblocking)" in nightly

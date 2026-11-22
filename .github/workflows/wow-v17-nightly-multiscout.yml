@@ -264,6 +264,11 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       WOW_MARKET_EVIDENCE_ENABLED: "true"
+      # A measured 429 block outlives a fresh runner address, so an in-run
+      # 15-minute retry is wasted on every automated slot (cron, post-deploy,
+      # push). Automated runs record the honest BLOCKED receipt immediately;
+      # manual dispatches keep the measured 900s retry.
+      WOW_V17_NEWS_RETRY_WAIT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && '900' || '0' }}
       RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
       SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:

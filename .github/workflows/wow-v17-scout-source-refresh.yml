@@ -27,6 +27,11 @@ jobs:
       WOW_FIRECRAWL_TARGETS_JSON: ${{ vars.WOW_FIRECRAWL_TARGETS_JSON || '[]' }}
       # Public GDELT Project research needs no API key, license flag or DB.
       WOW_CAN_EXECUTE: "false"
+      # A measured 429 block outlives a fresh runner address, so a 15-minute
+      # in-run retry is wasted on every cron slot. Scheduled runs skip the
+      # retry and record the honest BLOCKED receipt; manual dispatches keep
+      # the measured 900s retry.
+      WOW_V17_NEWS_RETRY_WAIT_SECONDS: ${{ github.event_name == 'schedule' && '0' || '900' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
