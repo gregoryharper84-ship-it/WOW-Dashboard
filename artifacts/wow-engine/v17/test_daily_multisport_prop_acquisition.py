@@ -48,9 +48,11 @@ def test_legacy_direct_acquisition_remains_mlb_only(monkeypatch):
 
 def test_nfl_receipts_and_hard_budget_are_reconciled(monkeypatch):
     windows = []
+    caches = []
 
-    def acquire(req, **_):
+    def acquire(req, **kwargs):
         windows.append((req.candidate_offset, req.max_candidates))
+        caches.append(kwargs["_discovery_cache"])
         if req.candidate_offset == 0:
             return _batch(
                 attempted=2, persisted=1, held=1, next_offset=2, excluded=1,
@@ -74,6 +76,7 @@ def test_nfl_receipts_and_hard_budget_are_reconciled(monkeypatch):
         max_candidates=12, include_nfl=True, now=NOW,
     )
     assert windows == [(0, 6), (2, 10)]
+    assert caches[0] is caches[1]  # one source snapshot across both pages
     assert mlb_budgets == [10]
     assert result["attempted"] == 3
     assert result["persisted"] == result["snapshot_write_succeeded"] == 2
@@ -195,6 +198,7 @@ def test_nonempty_stale_daily_manifest_requests_new_evidence_and_reports_source_
     assert len(calls) == 1
     assert calls[0]["include_nfl"] is True
     assert calls[0]["max_candidates"] >= 1
+    assert calls[0]["refresh_targets"][0]["player"] == "Existing Stale NFL"
     assert "NFL_PROP_DISCOVERY_FAILED:TimeoutError" in result["blockers"]
     assert result["rows"][0]["identity"]["sport"] == "NFL"
     assert result["rows"][0]["probability_publishable"] is False
@@ -218,4 +222,65 @@ def test_nonempty_fresh_daily_manifest_does_not_repeat_acquisition(monkeypatch):
         request, db=db, market_api=fixtures._Market(), event_api=object(),
     )
     assert len(result["rows"]) == 1
+    assert result["can_execute"] is False
+
+
+def test_trusted_forced_acquisition_with_fresh_existing_manifest(monkeypatch):
+    from v17 import test_active_season_phase_a_daily_chain as fixtures
+    from v17 import daily_snapshot_runtime as runtime
+    from v17.sep21_orchestration_integrity_repair import _DAILY_CONTEXT
+
+    db = fixtures._DB([fixtures._snapshot("Already Fresh NFL", index=501)])
+    calls = []
+    monkeypatch.setattr(
+        runtime, "acquire_daily_prop_snapshots",
+        lambda **kwargs: calls.append(kwargs) or {
+            "status": "COMPLETED", "attempted": 0, "persisted": 0,
+            "snapshot_write_succeeded": 0, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0, "receipts": [],
+            "blockers": [], "can_execute": False,
+        },
+    )
+    token = _DAILY_CONTEXT.set({"force_current_acquisition": True})
+    try:
+        result = runtime._run_daily_snapshot_impl(
+            runtime.DailySnapshotRequest(
+                requested_slate_date=fixtures.SLATE, requested_timezone="America/Chicago",
+                lanes=["PROPS"],
+            ),
+            db=db, market_api=fixtures._Market(), event_api=object(),
+        )
+    finally:
+        _DAILY_CONTEXT.reset(token)
+    assert len(calls) == 1
+    assert calls[0]["refresh_targets"] == []
+    assert calls[0]["include_nfl"] is True
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["identity"]["player"] == "Already Fresh NFL"
+    assert result["can_execute"] is False
+
+
+def test_priority_stale_manifest_identity_routes_to_nfl_source(monkeypatch):
+    from v17 import nfl_prop_evidence_control_plane as source
+    seen = []
+
+    def acquire(req, **kwargs):
+        seen.append(kwargs["priority_targets"])
+        return _batch()
+
+    monkeypatch.setattr(source, "acquire_nfl_forward_evidence_batch", acquire)
+    monkeypatch.setattr(daily, "_acquire_mlb_daily_prop_snapshots", lambda **kwargs: _batch())
+    result = daily.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-22",
+        requested_timezone="America/Chicago",
+        max_candidates=6, include_nfl=True, now=NOW,
+        refresh_targets=[
+            {"sport": "NFL", "event_id": "2026_11_DAL_PHI",
+             "player": "Exact Stale Player", "stat_type": "RECEIVING_YARDS",
+             "line": 65.5},
+            {"sport": "MLB", "event_id": "MLB:123", "player": "Other",
+             "stat_type": "PITCHER_STRIKEOUTS"},
+        ],
+    )
+    assert seen == [(("2026_11_DAL_PHI", "Exact Stale Player", "RECEIVING_YARDS"),)]
     assert result["can_execute"] is False
