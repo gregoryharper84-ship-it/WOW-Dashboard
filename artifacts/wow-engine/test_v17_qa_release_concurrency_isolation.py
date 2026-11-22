@@ -11,7 +11,16 @@ ROLES = (
     'wow-v17-independent-qa-check',
     'wow-v17-release-authority-check',
 )
-QA_EXPRESSION = "${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || github.run_id }}"
+MAIN_TIP_CLAUSE = (
+    "(github.event_name == 'workflow_run' && "
+    "github.event.workflow_run.event == 'push' && "
+    "github.event.workflow_run.head_branch == 'main' && "
+    "format('main-{0}', github.event.workflow_run.head_sha))"
+)
+QA_EXPRESSION = (
+    "${{ inputs.pr_number || " + MAIN_TIP_CLAUSE +
+    " || github.event.workflow_run.pull_requests[0].number || github.run_id }}"
+)
 RELEASE_EXPRESSION = "${{ needs.admit-release.outputs.pr_number }}"
 
 
@@ -57,6 +66,22 @@ def _group(role, *, manual=None, upstream=None, run_id=None):
 def test_manual_and_upstream_same_pr_share_a_serialized_queue(role):
     assert _group(role, manual='2012', run_id=11) == _group(role, upstream=2012, run_id=12)
     assert _group(role, manual='2012', run_id=11) != _group(role, upstream=2011, run_id=12)
+
+
+def test_post_merge_callbacks_queue_per_commit_not_per_merged_pr():
+    # GitHub attaches the merge commit's pull_requests[0] (the merged PR) to
+    # every post-merge push callback. Keying those callbacks by that PR parks
+    # all of them behind the PR's long exact-head review lane, which is how
+    # duplicate workflow_run triggers end up queued for the review duration.
+    group = config(ROLES[0])['concurrency']['group']
+    assert MAIN_TIP_CLAUSE in group, 'post-merge callbacks must be commit-keyed'
+    sha = 'a' * 40
+    first = f'{ROLES[0]}-main-{sha}'
+    second = f'{ROLES[0]}-main-{sha}'
+    assert first == second, 'duplicates for one commit share one lane'
+    assert first != f'{ROLES[0]}-2795', 'must not use the merged PR lane'
+    assert first != f'{ROLES[0]}-main-{"b" * 40}', 'distinct commits stay independent'
+    assert config(ROLES[0])['concurrency']['cancel-in-progress'] is False
 
 
 def test_qa_release_principals_have_disjoint_queues():
