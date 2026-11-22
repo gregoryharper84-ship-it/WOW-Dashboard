@@ -618,6 +618,18 @@ def canonicalize_nhl_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_blocker"] = "NHL_CANONICAL_EVENT_ID_MISSING"
         return replace(event, official_event_id=None, raw=raw)
 
+    # The canonical id is publishable as identity only with its exact
+    # first-party schedule bytes fingerprint. A standalone wall clock is not
+    # source provenance; never fabricate a digest from parsed JSON.
+    identity_sha = resolution.get("canonical_identity_source_sha256")
+    if (
+        not isinstance(identity_sha, str) or len(identity_sha) != 64
+        or any(ch not in "0123456789abcdef" for ch in identity_sha)
+    ):
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "NHL_OFFICIAL_SOURCE_BYTES_UNAVAILABLE"
+        return replace(event, official_event_id=None, raw=raw)
+
     if provider_event_id:
         raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
@@ -626,6 +638,11 @@ def canonicalize_nhl_discovery_identity(event: Any) -> Any:
     )
     raw["canonical_identity_resolution"] = "OFFICIAL_NHL_SCHEDULE_EXACT_MATCH"
     raw["canonical_identity_verified_at"] = resolution.get("identity_verified_at")
+    raw["canonical_identity_source_sha256"] = identity_sha
+    raw["canonical_identity_source_url"] = resolution.get("identity_source")
+    raw["canonical_identity_source_byte_count"] = resolution.get(
+        "canonical_identity_source_byte_count"
+    )
     raw["canonical_identity_market_features_used"] = False
     return replace(event, official_event_id=canonical_event_id, raw=raw)
 
