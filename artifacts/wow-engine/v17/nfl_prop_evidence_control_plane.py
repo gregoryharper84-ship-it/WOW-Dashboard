@@ -10,7 +10,7 @@ ranking, pricing, or execution authority is created. can_execute=false.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Callable, Mapping
 
@@ -25,6 +25,7 @@ from prop_auto_hydration import PropAutoHydrationError
 from prop_auto_hydration_router import auto_hydrate_prop_evidence
 import nfl_prop_auto_hydration as nfl
 from v17.nfl_prop_event_aware_player_identity import install_nfl_event_aware_player_identity
+from v17.player_availability_gate import evaluate_player_availability
 
 CAN_EXECUTE = False
 ROUTE_PATH = "/internal/v17/nfl-prop-forward-evidence/acquire"
@@ -203,18 +204,40 @@ def _candidate_line(game_log: list[float], stat_type: str) -> float:
     return float(int(float(median(values))) + 0.5)
 
 
-def _existing_snapshot(db: Any, candidate: dict[str, Any]) -> bool:
+def _existing_snapshot(db: Any, candidate: dict[str, Any], *, now: datetime) -> bool:
+    """Only skip a current, officially ready snapshot; stale/blocked evidence must refresh.
+
+    Historical existence alone is not proof of present availability. A prior
+    blocked or stale snapshot cannot permanently starve an exact NFL prop
+    identity from evidence re-acquisition. The scorer's independent pregame
+    gate remains authoritative after a newly captured snapshot.
+    """
     result = (
         db.table("wow_prop_evidence_snapshots")
-        .select("source_snapshot_id")
+        .select("source_snapshot_id,captured_at,hydration_status,blockers,role_status")
         .eq("event_id", str(candidate["canonical_event_id"]))
         .eq("sport", SPORT)
         .eq("player", str(candidate["player"]))
         .eq("stat_type", str(candidate["stat_type"]))
+        .order("captured_at", desc=True)
         .limit(1)
         .execute()
     )
-    return bool(result.data or [])
+    rows = result.data or []
+    if not rows:
+        return False
+    latest = rows[0]
+    if str(latest.get("hydration_status") or "").upper() != "PASS":
+        return False
+    if latest.get("blockers"):
+        return False
+    availability = evaluate_player_availability(latest.get("role_status"))
+    if availability.blocker or availability.requires_revalidation:
+        return False
+    captured_at = _aware(latest.get("captured_at"))
+    if captured_at is None or captured_at > now:
+        return False
+    return now - captured_at <= timedelta(minutes=30)
 
 
 def acquire_nfl_forward_evidence_batch(
@@ -291,7 +314,7 @@ def acquire_nfl_forward_evidence_batch(
         }
         result["receipts"].append(receipt)
         try:
-            if _existing_snapshot(db, candidate):
+            if _existing_snapshot(db, candidate, now=now):
                 result["already_captured"] += 1
                 result["explicit_prewrite_exclusions"] += 1
                 receipt["write_status"] = "ALREADY_CAPTURED"
