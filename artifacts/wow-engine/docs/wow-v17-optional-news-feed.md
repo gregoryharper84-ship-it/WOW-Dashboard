@@ -164,3 +164,51 @@ sports coverage to all 13 sports per run, independently authenticate a
 publisher, produce a fitted feature or establish news-triggered specialist
 rescoring. Only end-to-end evidence and independent QA can accept those
 distinct objectives. It remains research only; `can_execute=false`.
+
+### November 22, 2026 — measured 429 block and the single-request success
+
+This section is the standing record of what was actually measured against the
+GDELT DOC 2.0 endpoint from this runtime, kept so the evidence outlives the
+retry proposals it settles. It adds no code, workflow or test change: the
+merged single-request fail-fast policy above is unchanged.
+
+**Probe series, November 18, 2026.** Each row was a single `NBA injury` ArtList
+request. Every refusal returned HTTP 429 with the body "Please limit requests
+to one every 5 seconds" and **no `Retry-After` header**.
+
+| Silence before the request | Result |
+| --- | --- |
+| 0 s | 429 |
+| 45 s | 429 |
+| 90 s | 429 |
+| 135 s | 429 |
+| 735 s (12.3 min) | 429 |
+| 688 s (11.5 min), after a runtime restart that changed egress | **200, 5 articles** |
+
+The block is a sustained per-IP penalty measured in minutes, not the advertised
+five-second interval. The single 200 cannot separate elapsed silence from the
+egress change, so it is evidence that the block lifts, not a recovery
+threshold. Three scheduled source-refresh runs the same day (10:27Z, 18:58Z and
+the 02:5xZ slot) each received 429 on their **first** request from separate
+GitHub-hosted runner addresses, so a fresh runner IP is not by itself a remedy.
+
+**The success that settles the policy.** Scheduled Multi-Scout [run
+#44789095413](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44789095413)
+emitted a real `SOURCE_FETCH_OK` receipt at 2026-11-20 18:17:02 UTC: NHL, 11
+article URLs, **one request, HTTP 200**. It came from the merged collector on a
+scheduled trigger, with no wait and no in-run retry, so a real nonempty
+acquisition is reachable through one bounded request once the block lifts —
+which is what the merged policy counts on.
+
+What this does and does not support: no measurement shows a 900-second sleep
+lifting the block, and nothing supports occupying a worker for 15 minutes to
+make a second request inside a penalty window. The opt-in paced retry ladder
+drafted against this evidence is deliberately not merged, because nothing
+exercises it and adopting it as a default would reverse the merged decision.
+Recovery is still not verified: the receipt records `recovery_verified=false`
+and the next scheduled run remains an independent new attempt.
+
+This remains discovery metadata. The 2026-11-20 receipt does not verify a
+publisher claim, does not map an article to an official fixture, and does not
+produce a fitted feature or a specialist rescore: `model_feature_eligible=false`,
+`model_rescore_verified=false`, `can_execute=false`.
