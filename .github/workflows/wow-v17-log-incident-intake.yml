@@ -2,7 +2,7 @@ name: wow-v17-log-incident-intake
 
 # Read-only telemetry producer for the EXISTING WOW Engineering Reporter and
 # single-writer supervisor. It is NOT an independent controller or repair bot.
-# Enable only when GitHub Datadog read credentials have been provisioned.
+# RETIRED (2026-11-22): Datadog is no longer a WOW source. Keep only\n# pull_request offline regression/security tests; no scheduled/manual fetch.\n# Existing engineering dispatch, QA and release controls are unaffected.
 on:
   pull_request:
     paths:
@@ -13,9 +13,6 @@ on:
       - "artifacts/wow-engine/v17/engineering_resident_supervisor.py"
       - "artifacts/wow-engine/test_v17_log*.py"
       - "artifacts/wow-engine/test_v17_engineering_log_reporter.py"
-  schedule:
-    - cron: "17 * * * *"
-  workflow_dispatch:
 
 permissions:
   contents: read
