@@ -9,7 +9,14 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+from pathlib import Path
+import sys
 from typing import Any
+
+# Scripts launched from the repository root otherwise cannot import sibling v17.
+_ENGINE_ROOT = str(Path(__file__).resolve().parents[1])
+if _ENGINE_ROOT not in sys.path:
+    sys.path.insert(0, _ENGINE_ROOT)
 
 SCHEMA = "wow.v17.specialized_swarm.research.v1"
 POLICY = {
