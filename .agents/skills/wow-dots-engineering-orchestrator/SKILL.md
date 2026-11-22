@@ -155,6 +155,16 @@ Every discovered engineering issue must finish the current cycle in exactly one 
 
 These are engineering lifecycle dispositions and must never be copied into sporting model terminal labels.
 
+
+**DUPLICATE is a relationship, not a completed repair.** A duplicate disposition
+must include the exact open canonical issue/PR, current engineering owner, and
+next authorized action. Resume that same item through the existing dispatcher
+instead of terminating it or creating another issue. If canonical identity is
+ambiguous, retain the original finding open with a typed identity blocker.
+Owner-only secrets and protected approvals restrict those operations only;
+other authorized diagnosis, tests, implementation branches, and nonconflicting
+work continue without requesting issue-by-issue selection from the operator.
+
 ## Durable operating receipt
 
 Every cycle records:

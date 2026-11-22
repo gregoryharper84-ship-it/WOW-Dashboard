@@ -47,6 +47,31 @@ Every audit finding enters the ordinary engineering lifecycle for repair:
 
 `AUDIT_FINDING -> REPORTER/INTAKE -> RESEARCH_TRIAGE -> ENGINEERING -> INDEPENDENT_REVIEW -> QA_VERIFICATION -> RELEASE_OBSERVABILITY -> CLOSURE`
 
+
+## Mandatory repair handoff after audit
+
+An auditor observation is never a repair or a completed engineering cycle.
+For every open actionable finding, retain the canonical open issue/PR identity,
+observed source SHA, typed mechanism, accountable **ENGINEERING_AGENT** or
+existing authorized dispatcher, verified writer-lease admission status, and a
+concrete next repair or independent-verification action. An unverified worker
+identity or lease must be recorded as unverified; it cannot be inferred from
+Claude's interactive repository access.
+
+**DUPLICATE means the finding references an existing active canonical repair,
+not that the defect is fixed.** Refresh that canonical work item's evidence and
+handoff; do not start a parallel branch, silently discard the fault, or ask the
+operator to select an issue already present in the findings. If the canonical
+work item cannot be positively identified, retain the open finding and record
+the identity blocker. Do not create a second queue.
+
+The auditor does not write code and does not grant a lease. The **existing**
+Engineering dispatcher performs authenticated task admission and assigns the
+single writer; protected review/QA/Release remain independent. Credentials and
+owner-only approvals block that protected operation, not investigation and
+unrelated authorized repairs. Follow up on the same item until actual
+production evidence clears the finding; a dashboard annotation never does.
+
 ## Durable finding types
 
 - `STALE_WORK` — unfinished work exceeded its severity-aware progress deadline.

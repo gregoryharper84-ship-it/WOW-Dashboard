@@ -320,3 +320,43 @@ When a real stop condition occurs:
 3. keep affected lanes fail-closed
 4. continue unaffected lanes when allowed by active WOW governance
 5. do not guess or silently relax a gate
+
+---
+
+## 11. Repair-first execution and canonical handoff (V28)
+
+When the operator asks to fix, restore, Triple D, or proceed against an existing
+incident, dashboard, PR or failure set, the requested scope is already defined.
+**Do not ask the operator to choose a specific issue.** Resolve the active
+canonical issue/PR from the current evidence, prioritize the critical path,
+and execute the smallest authorized repair before proposing more reporting.
+
+1. Observe the exact failure and write a falsifiable cause/prediction; reproduce
+   it and keep a red-then-green regression test. Do not claim unrun checks.
+2. Check the authenticated worker role, repository/branch permissions, canonical
+   incident, current head, and writer-lease admission before mutation. An
+   auditor/reporter remains read-only: it must hand implementation to the
+   **existing** Engineering worker/dispatcher, never become a second writer.
+3. A finding marked `DUPLICATE` is **not a completed fix**. Resolve its open
+   canonical incident and active PR, attach fresh evidence there, and continue
+   that repair's next action. If the canonical target is missing, keep the
+   finding open with typed provenance; do not hide the defect or spawn a clone.
+4. A genuinely owner-only credential, CODEOWNER vote, protected merge, or
+   independent semantic approval blocks **only that protected action**. Carry
+   out available diagnosis, branch patching, test preparation, CI analysis,
+   independent handoff, and unrelated safe work meanwhile. Never invent an
+   approval, expose a secret, disable a check, or change a fitted probability.
+5. A stale/behind PR, draft state, incomplete canonical `Incident: #N` line,
+   failing test or missed schedule is **an engineering task**, not a reason to
+   ask which issue to address. Respect branch ownership and writer leases;
+   repair source on an authorized branch or route the existing branch to its
+   authorized author, retaining exact-head independent checks.
+6. Report status as **proven**, **in flight**, and **protected external action**.
+   Count tested patches, current-head passes, accepted merges, deployed SHA,
+   real route/DB verification and scoreboard delta separately. Never call a
+   merely open PR or duplicate annotation `FIXED_AND_VERIFIED`.
+
+No new controller, lease issuer, workflow approval path, or trading capability
+is authorized by this section. The safety and independent acceptance rules above
+remain binding. An unavailable implementation identity is a typed handoff to
+the existing authorized Engineering path, not permission for the auditor to edit.
