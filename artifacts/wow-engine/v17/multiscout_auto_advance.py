@@ -101,7 +101,35 @@ def _event_date(value: Any, timezone_name: str = USER_TIMEZONE) -> str | None:
         return None
 
 
+def _nhl_identity_hold(candidate: dict[str, Any]) -> str | None:
+    """Keep a source-native NHL identity refusal in terminal row accounting.
+
+    Never let a provider-only alias reach the fitted scoring request; keep this
+    separate from genuine model input or scorer capability failures.
+    """
+    if candidate.get("sport_key") != "icehockey_nhl":
+        return None
+    native = str(candidate.get("canonical_identity_blocker") or "").strip()
+    if native.startswith("NHL_"):
+        return native
+    official_id = str(candidate.get("official_event_id") or "").strip()
+    canonical_id = str(candidate.get("canonical_event_id") or "").strip()
+    digest = candidate.get("canonical_identity_source_sha256")
+    if (
+        candidate.get("official_event_identity_verified") is not True
+        or candidate.get("canonical_identity_status") != "VERIFIED_OFFICIAL_EVENT"
+        or not official_id or canonical_id != official_id
+        or not isinstance(digest, str) or len(digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in digest)
+    ):
+        return "NHL_EVENT_IDENTITY_UNVERIFIED"
+    return None
+
+
 def _prop_row(candidate: dict[str, Any], *, generated_at: str, index: int) -> tuple[dict[str, Any] | None, str | None]:
+    nhl_blocker = _nhl_identity_hold(candidate)
+    if nhl_blocker:
+        return None, nhl_blocker
     evidence = candidate.get("market_evidence")
     if not isinstance(evidence, dict):
         return None, "PROP_MARKET_EVIDENCE_MISSING"
@@ -158,6 +186,9 @@ def _prop_dedupe_key(row: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list[dict[str, Any]], str | None]:
+    nhl_blocker = _nhl_identity_hold(candidate)
+    if nhl_blocker:
+        return [], nhl_blocker
     event_id = str(candidate.get("official_event_id") or "").strip()
     sport, league = _sport_identity(str(candidate.get("sport_key") or ""))
     event_start = str(candidate.get("commence_time") or "").strip()
