@@ -610,7 +610,7 @@ def _prop_manifest_rows(
     """
     selected = (
         "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,"
-        "stat_type,line,hydration_status,blockers,role_status"
+        "stat_type,line,hydration_status,blockers,role_status,source_timestamps"
     )
     manifest: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -1147,14 +1147,44 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 and _prop_outcome_rank_eligible(x["payload"])
                 for x in outcomes
             )
-            rows.append(
-                _terminal_row(
-                    "PROPS",
-                    identity,
-                    {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False},
-                    _props_row_reduction(outcomes),
-                )
+            # This table freezes sporting evidence, not an authenticated
+            # sportsbook offer (offer ID/book/period/quote timestamp/price).
+            # Even a successful fitted sporting model cannot authorize a
+            # market-value edge or a multi-leg betting card from this source.
+            # Keep calibrated sporting evidence and model evaluation intact.
+            source_times = row.get("source_timestamps")
+            source_times = source_times if isinstance(source_times, dict) else {}
+            discovery_line = any(key in source_times for key in (
+                "WOW_AUTONOMOUS_DISCOVERY_LINE",
+                "INPUT_CAPTURE_V17_DAILY_AUTONOMOUS_DISCOVERY",
+            ))
+            offer_receipt = {
+                "status": "MARKET_OFFER_NOT_ATTESTED",
+                "line_provenance": (
+                    "AUTONOMOUS_DISCOVERY_PRIOR10_HALF_POINT"
+                    if discovery_line else "UNVERIFIED_SOURCE_LINE"
+                ),
+                "exact_offer_verified": False,
+                "market_value_edge_eligible": False,
+                "market_card_eligible": False,
+                "can_execute": False,
+            }
+            terminal_row = _terminal_row(
+                "PROPS", identity,
+                {
+                    "outcomes": outcomes,
+                    "probability_publishable": publishable,
+                    "rank_eligible": publishable,
+                    "market_offer_verification": offer_receipt,
+                    "market_value_edge_eligible": False,
+                    "market_card_eligible": False,
+                    "can_execute": False,
+                },
+                _props_row_reduction(outcomes),
             )
+            terminal_row["market_offer_verification"] = offer_receipt
+            terminal_row["market_card_eligible"] = False
+            rows.append(terminal_row)
 
     if "PROPS" in requested_lanes:
         scored_prop_rows = sum(1 for row in rows if row.get("lane") == "PROPS")
