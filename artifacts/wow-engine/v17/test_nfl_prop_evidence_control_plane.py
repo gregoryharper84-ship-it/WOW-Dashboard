@@ -91,6 +91,55 @@ def _install(monkeypatch, candidates):
     ))
 
 
+
+def test_roster_identity_conflict_blocks_duplicate_snapshot_accounting(monkeypatch):
+    """Two ESPN IDs for one canonical display name must not write one ID twice."""
+    event = {
+        "canonical_event_id": "2026_04_CHI_PHI",
+        "event_start_time": EVENT.isoformat(),
+        "teams": [{"team_id": "1", "abbr": "PHI"}, {"team_id": "2", "abbr": "CHI"}],
+    }
+    monkeypatch.setattr(subject, "_pregame_events", lambda *_a, **_k: [event])
+    monkeypatch.setattr(subject, "_roster", lambda team_id, **_k: [
+        {"player": "Duplicate WR", "player_id": "100", "position": "WR"},
+        {"player": "Duplicate WR", "player_id": "200", "position": "WR"},
+    ] if team_id == "1" else [])
+    monkeypatch.setattr(
+        subject, "auto_hydrate_prop_evidence",
+        lambda **_k: pytest.fail("ambiguous roster must not hydrate or persist"),
+    )
+    db = _DB()
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=6),
+        db=db, now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["status"] == "DATA_UNOBTAINABLE"
+    assert result["blockers"] == ["NFL_PROP_ROSTER_IDENTITY_CONFLICT"]
+    assert result["total_candidates"] == 0
+    assert result["attempted"] == result["persisted"] == 0
+    assert result["receipts"] == []
+    assert db.upserts == []
+    assert result["can_execute"] is False
+
+
+def test_exact_duplicate_official_roster_entry_is_deduplicated(monkeypatch):
+    event = {
+        "canonical_event_id": "2026_04_CHI_PHI",
+        "event_start_time": EVENT.isoformat(),
+        "teams": [{"team_id": "1", "abbr": "PHI"}, {"team_id": "2", "abbr": "CHI"}],
+    }
+    monkeypatch.setattr(subject, "_pregame_events", lambda *_a, **_k: [event])
+    monkeypatch.setattr(subject, "_roster", lambda team_id, **_k: [
+        {"player": "Duplicate WR", "player_id": "100", "position": "WR"},
+        {"player": "Duplicate WR", "player_id": "100", "position": "WR"},
+    ] if team_id == "1" else [])
+    candidates = subject._discover_candidates(
+        "2026-09-28", now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert len(candidates) == 2  # WR RECEIVING_YARDS and ANYTIME_TD, once each
+    assert {c["stat_type"] for c in candidates} == {"RECEIVING_YARDS", "ANYTIME_TD"}
+
+
 def test_position_route_map_stays_core_only():
     assert subject.POSITION_STATS["QB"] == ("PASSING_YARDS","RUSHING_YARDS","ANYTIME_TD")
     assert subject.POSITION_STATS["WR"] == ("RECEIVING_YARDS","ANYTIME_TD")
