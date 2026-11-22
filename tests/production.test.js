@@ -19,7 +19,7 @@ function stagingDocsUrl() {
   // Require both a repository-approved exact host and the known WOW non-production
   // service boundary. A generic "staging" substring on an arbitrary domain is unsafe.
   const approvedHost = (process.env.WOW_TESTDRIVER_APPROVED_STAGING_HOST || "").trim().toLowerCase();
-  const approvedService = /^wow-governed-probability-engine-(?:staging|preview|sandbox)\\.onrender\\.com$/.test(url.hostname);
+  const approvedService = /^wow-governed-probability-engine-(?:staging|preview|sandbox)\.onrender\.com$/.test(url.hostname);
   const stagingHost = Boolean(approvedHost) && url.hostname === approvedHost && approvedService;
   if (
     url.protocol !== "https:" ||
