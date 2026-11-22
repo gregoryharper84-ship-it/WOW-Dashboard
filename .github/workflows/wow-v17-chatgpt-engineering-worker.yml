@@ -70,6 +70,13 @@ jobs:
             exit 1
           }
 
+      - name: Pin Viktor advisory helper from trusted dispatch checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          install -m 0600 artifacts/wow-engine/v17/viktor_audit_evidence.py "$RUNNER_TEMP/wow-viktor-audit-evidence.py"
+
       - name: Mint wow-engineering App token
         id: eng_token
         uses: ./.github/actions/wow-engineering-token
@@ -452,8 +459,7 @@ jobs:
             echo "::notice::VIKTOR_ADVISORY_NOT_OBSERVED:incomplete comment page"
             exit 0
           fi
-          PYTHONPATH=artifacts/wow-engine python \
-            artifacts/wow-engine/v17/viktor_audit_evidence.py \
+          PYTHONPATH=artifacts/wow-engine python "$RUNNER_TEMP/wow-viktor-audit-evidence.py" \
             --incident "$RESTORATION" \
             --head-sha "$GITHUB_SHA" \
             --comments "$comments_file" \
