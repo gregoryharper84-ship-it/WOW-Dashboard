@@ -183,6 +183,14 @@ def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None,
         ):
             blockers.append("CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE")
 
+        # Training dates are metadata outside the coefficient checksum.
+        # Reject malformed or reversed cutoffs before replay partitioning so
+        # the shared D1 replay endpoint cannot crash on a corrupt NBA artifact.
+        train_start_day = date.fromisoformat(str(payload["train_start_date"]))
+        train_end_day = date.fromisoformat(str(payload["train_end_date"]))
+        if train_end_day < train_start_day:
+            raise ValueError("NBA_REPLAY_ARTIFACT_TRAIN_DATES_REVERSED")
+
         artifact = LogisticArtifact(
             sport=str(payload["sport"]),
             model_family=str(payload["model_family"]),
@@ -717,11 +725,20 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
     declared_calibration_digest = str(
         calibrator_row.get("calibration_artifact_sha256") or ""
     ).strip().lower()
+    # Preserve the *observed* content hash even when declared evidence is
+    # invalid. Distinct tampering events must not collapse into the same
+    # replay receipt just because both remain correctly blocked.
+    observed_calibration_payload_sha256 = None
+    if isinstance(calibration_payload, Mapping):
+        try:
+            observed_calibration_payload_sha256 = calibration_payload_sha256(calibration_payload)
+        except (CalibrationArtifactDigestError, ValueError, TypeError, OverflowError):
+            observed_calibration_payload_sha256 = None
     calibrator_checksum_persisted = False
-    if isinstance(calibration_payload, Mapping) and _is_sha256(declared_calibration_digest):
+    if observed_calibration_payload_sha256 and _is_sha256(declared_calibration_digest):
         try:
             calibrator_checksum_persisted = bool(
-                calibration_payload_sha256(calibration_payload) == declared_calibration_digest
+                observed_calibration_payload_sha256 == declared_calibration_digest
                 and calibration_payload.get("model_version") == version
                 and calibration_payload.get("calibration_version") == calibrator_row.get("calibrator_version")
                 and calibration_payload.get("calibration_method") == calibrator_row.get("calibration_method")
@@ -937,6 +954,10 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "artifact_checksum": artifact_row.get("artifact_checksum"),
         "calibrator_id": calibrator_row.get("calibrator_id"),
         "calibrator_version": calibrator_row.get("calibrator_version"),
+        "calibrator_sha256_observed": calibrator_checksum,
+        "calibration_artifact_sha256_declared": declared_calibration_digest,
+        "calibration_artifact_sha256_observed": observed_calibration_payload_sha256,
+        "calibration_artifact_digest_and_identity_valid": calibrator_checksum_persisted,
         "calibrator_fit_replay_status": calibrator_fit_replay_status,
         "calibrator_fit_replay_sha256": calibrator_fit_replay_sha256,
         "observed_corpus_manifest_sha256": corpus_summary.get("observed_corpus_manifest_sha256"),
