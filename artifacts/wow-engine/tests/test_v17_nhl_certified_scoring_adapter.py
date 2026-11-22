@@ -294,8 +294,11 @@ def test_score_matching_uses_receipt_bound_loader_without_replacing_helper(monke
     db = _Database([candidate])
     seen: dict[str, object] = {}
 
-    def fake_score(req, *, db, now_utc=None):
-        loaded = nhl.load_nhl_fitted_candidate(db, as_of_utc=now_utc)
+    def fake_score(req, *, db, now_utc=None, certified_candidate=None):
+        # Candidate is already validated against the exact persisted receipt.
+        # No process-global loader replacement is permitted during inference.
+        assert isinstance(certified_candidate, nhl.NHLFittedCandidate)
+        loaded = certified_candidate
         seen["model_version"] = loaded.model_version
         seen["artifact_checksum"] = loaded.artifact_checksum
         return {
@@ -339,8 +342,11 @@ def test_adapter_end_to_end_does_not_mutate_candidate_rows(monkeypatch):
 
     monkeypatch.setattr(adapter, "resolve_certification", lambda *_a, **_k: receipt)
 
-    def fake_score(req, *, db, now_utc=None):
-        loaded = nhl.load_nhl_fitted_candidate(db, as_of_utc=now_utc)
+    def fake_score(req, *, db, now_utc=None, certified_candidate=None):
+        # Candidate is already validated against the exact persisted receipt.
+        # No process-global loader replacement is permitted during inference.
+        assert isinstance(certified_candidate, nhl.NHLFittedCandidate)
+        loaded = certified_candidate
         assert loaded.artifact_checksum == receipt.artifact_sha256
         return {
             "raw_home_probability": 0.58,
@@ -369,3 +375,40 @@ def test_adapter_end_to_end_does_not_mutate_candidate_rows(monkeypatch):
     assert package["settlement_basis"] == "HOME_AWAY_INCLUDING_OT_SO"
     assert db.tables[adapter.CANDIDATE_TABLE][0] == before
     assert db.tables[adapter.CANDIDATE_TABLE][0]["probability_publishable"] is False
+
+
+def test_receipt_bound_scoring_never_mutates_global_loader(monkeypatch):
+    receipt = parse_certification(_receipt_payload())
+    db = _Database([_candidate_row()])
+    original = nhl.load_nhl_fitted_candidate
+    observed = []
+
+    def fake_score(req, *, db, now_utc=None, certified_candidate=None):
+        assert nhl.load_nhl_fitted_candidate is original
+        assert isinstance(certified_candidate, nhl.NHLFittedCandidate)
+        observed.append((certified_candidate.model_version, certified_candidate.artifact_checksum))
+        return {
+            "raw_home_probability": 0.58,
+            "calibrated_home_probability": 0.56,
+            "calibrated_home_lower_bound": 0.51,
+            "calibrated_home_upper_bound": 0.61,
+            "immutable_model_timestamp": "2026-11-22T12:00:00+00:00",
+            "home_team": "BOS",
+            "away_team": "NYR",
+            "official_event_id": "2026020001",
+            "model_artifact_checksum": receipt.artifact_sha256,
+        }
+
+    monkeypatch.setattr(nhl, "score_current_nhl_event", fake_score)
+    request = SimpleNamespace(
+        sport_specific_evidence=_evidence(), home_team="BOS", away_team="NYR",
+        event_start_time_utc="2026-11-22T20:00:00+00:00",
+        settlement_basis="HOME_AWAY_INCLUDING_OT_SO",
+    )
+    for _ in range(2):
+        result = adapter._score_matching_certified_artifacts(
+            db=db, req=request, receipt=receipt, evidence=_evidence(), now_utc=NOW,
+        )
+        assert result["lower"] == pytest.approx(0.51)
+    assert observed == [(receipt.model_version, receipt.artifact_sha256)] * 2
+    assert nhl.load_nhl_fitted_candidate is original
