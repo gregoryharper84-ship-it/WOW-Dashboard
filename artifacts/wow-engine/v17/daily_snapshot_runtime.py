@@ -44,6 +44,7 @@ from v17.daily_terminal_reduction import (
     classify_stage_status,
     reduce_row_terminal,
 )
+from v17.team_event_probability_preservation import _annotate_probability_visibility
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
@@ -156,15 +157,23 @@ def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
             unclassified += 1
     rows_in = len(rows)
     terminal_total = sum(counts.values())
+    # Hard terminals (REJECTED/PURGED/INVALID) all count toward rows_rejected so
+    # the governed identity rows_in = completed + held + rejected remains true
+    # whenever every row has exactly one classified terminal.
+    rows_rejected = counts["REJECTED"] + counts["PURGED"] + counts["INVALID"]
     return {
         "rows_in": rows_in,
         "rows_completed": counts["COMPLETED"],
         "rows_held": counts["HELD"],
-        "rows_rejected": counts["REJECTED"],
+        "rows_rejected": rows_rejected,
         "rows_purged": counts["PURGED"],
         "rows_invalid": counts["INVALID"],
         "rows_unclassified": unclassified,
-        "balanced": unclassified == 0 and terminal_total == rows_in,
+        "balanced": (
+            unclassified == 0
+            and terminal_total == rows_in
+            and rows_in == counts["COMPLETED"] + counts["HELD"] + rows_rejected
+        ),
     }
 
 
@@ -257,9 +266,23 @@ def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
     """
     result = row.get("result") or {}
     code = str(result.get("code") or result.get("model_status") or result.get("terminal_status") or "")
-    blockers = [str(b) for b in (result.get("blockers") or [])]
+    blockers = [str(b) for b in (result.get("blockers") or []) if str(b).strip()]
     if not blockers and code:
         blockers = [code]
+    # Cross-sport discovery nests the controlling scorer package under detail.
+    # Harvest nested typed blockers for stage telemetry without promoting the row.
+    # Outer typed status stays when already captured; nested codes are additive.
+    inner = result.get("detail")
+    if isinstance(inner, dict):
+        if not code:
+            code = str(inner.get("code") or inner.get("model_status") or "")
+            if code and code not in blockers:
+                blockers.append(code)
+        inner_blockers = inner.get("blockers")
+        if isinstance(inner_blockers, (list, tuple)):
+            for item in inner_blockers:
+                if isinstance(item, str) and item.strip() and item not in blockers:
+                    blockers.append(item)
     input_failures = (
         "MODEL_INPUTS_INSUFFICIENT",
         "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT",
@@ -862,17 +885,89 @@ def _settlement_basis(sport: str) -> str:
     }.get(sport, "FULL_GAME_OUTRIGHT")
 
 
+def _promote_cross_sport_scorer_result(row: dict[str, Any]) -> dict[str, Any]:
+    """Surface the controlling scorer package on the Daily row result.
+
+    Cross-sport discovery nests the actual scorer completion under ``detail``.
+    Daily reduction, stage telemetry, and compact moneyline transport read
+    top-level fields. Promoting the nested package preserves the real scorer
+    codes/probabilities/blockers without inventing probability or soft-holding
+    a hard rejection. Envelope ``rank_eligible`` / ``probability_publishable``
+    win over nested values so the publication-chain rank ceiling still demotes.
+    Visibility metadata is recomputed from those final eligibility flags so a
+    demoted row cannot keep a stale ``OFFICIAL_QUALIFIED`` label.
+    """
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    if not detail:
+        promoted = dict(row)
+    else:
+        promoted = {**row, **detail}
+        promoted["detail"] = detail
+        if "rank_eligible" in row:
+            promoted["rank_eligible"] = row.get("rank_eligible") is True
+        if "probability_publishable" in row:
+            promoted["probability_publishable"] = row.get("probability_publishable") is True
+        if "bucket" in row:
+            promoted["bucket"] = row.get("bucket")
+        if row.get("model_status") is not None:
+            promoted["model_status"] = row.get("model_status")
+
+    # Recompute presentation metadata from the final eligibility surface.
+    # Numerical probabilities are preserved; only the visibility label/flags
+    # are refreshed so rank-ceiling demotion cannot advertise OFFICIAL_QUALIFIED.
+    return _annotate_probability_visibility(promoted)
+
+
 def _cross_sport_stage_status(row: dict[str, Any]) -> str:
     """Native Daily stage terminal for one discovered cross-sport row.
 
-    ``bucket`` records the model outcome and is set before the full-board
-    overlay runs. The overlay may later withdraw ``rank_eligible`` when the
-    publication-chain audit proves a mandatory stage unproven; a row without
-    rank eligibility is not an approved stage. Pre-overlay, MODEL_COMPLETED
-    already implies rank_eligible, so this only ever lowers a row to HELD.
+    Hard terminals are read from the controlling scorer package (nested
+    ``detail`` or promoted surface) so ``pick_rejected`` / purge labels are
+    never soft-held as ``HELD``. ``bucket`` records the model outcome before
+    the full-board overlay runs. The overlay may later withdraw
+    ``rank_eligible`` when the publication-chain audit proves a mandatory
+    stage unproven; a row without rank eligibility is not an approved stage.
+    Pre-overlay, MODEL_COMPLETED already implies rank_eligible, so the
+    completed path only ever lowers a row to HELD.
     """
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    native = classify_stage_status(detail) if detail else classify_stage_status(row)
+    if native in ("INVALID", "PURGED", "REJECTED"):
+        return native
     completed = row.get("bucket") == discovery.MODEL_COMPLETED
     return "COMPLETED" if completed and row.get("rank_eligible") is True else "HELD"
+
+
+def _build_cross_sport_terminal_rows(
+    scan_rows: list[dict[str, Any]],
+    covered_event_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Shared Daily MONEYLINE terminal builder for base and installed paths."""
+    rows: list[dict[str, Any]] = []
+    for row in scan_rows:
+        if str(row.get("official_event_id") or "") in covered_event_ids:
+            continue
+        payload = _promote_cross_sport_scorer_result(row)
+        rows.append(
+            _terminal_row(
+                "MONEYLINE",
+                {
+                    key: row.get(key)
+                    for key in (
+                        "official_event_id",
+                        "commence_time_utc",
+                        "home_team",
+                        "away_team",
+                        "sport",
+                    )
+                },
+                payload,
+                assert_no_terminal_upgrade(
+                    reduce_row_terminal([_cross_sport_stage_status(row)])
+                ),
+            )
+        )
+    return rows
 
 
 def _cross_sport_moneyline_rows(
@@ -970,21 +1065,7 @@ def _cross_sport_moneyline_rows(
         # MLB-only even though the provider registry contained those events.
         include_regime_variants=True,
     )
-    rows = [
-        _terminal_row(
-            "MONEYLINE",
-            {
-                key: row.get(key)
-                for key in ("official_event_id", "commence_time_utc", "home_team", "away_team", "sport")
-            },
-            row,
-            assert_no_terminal_upgrade(
-                reduce_row_terminal([_cross_sport_stage_status(row)])
-            ),
-        )
-        for row in scan["rows"]
-        if str(row.get("official_event_id") or "") not in covered_event_ids
-    ]
+    rows = _build_cross_sport_terminal_rows(list(scan.get("rows") or []), covered_event_ids)
     return rows, scan
 
 
