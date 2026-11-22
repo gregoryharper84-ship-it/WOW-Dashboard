@@ -856,7 +856,13 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         )
         immutable_certification = _read_one(
             db, IMMUTABLE_CERTIFICATION_TABLE, IMMUTABLE_CERTIFICATION_FIELDS,
-            filters={"sport": SPORT}, order_by="certified_at",
+            # A prior-model (or same-version different-artifact) receipt cannot
+            # count as a certificate for this exact fitted candidate.
+            filters={
+                "sport": SPORT,
+                "model_version": version,
+                "artifact_sha256": artifact_row.get("artifact_checksum"),
+            }, order_by="certified_at",
         )
     except Exception as exc:  # noqa: BLE001
         return _read_failure("CERTIFICATION_REGISTRY", exc)
@@ -957,6 +963,11 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
             try:
                 outcomes = [row.outcome for row in holdout_rows]
                 raw_probabilities = [artifact.raw_probability(row.values) for row in holdout_rows]
+                # Reject JSON NaN/Inf and invalid logits before persisting
+                # any numerical metrics into a report served by FastAPI.
+                if not all(math.isfinite(float(prob)) and 0.0 < float(prob) < 1.0
+                           for prob in raw_probabilities):
+                    raise ValueError("NBA_REPLAY_RAW_PROBABILITY_INVALID")
                 raw_metrics = _metrics(raw_probabilities, outcomes)
                 calibrated_metrics = evaluate_untouched_calibrated_holdout(
                     artifact,
@@ -980,6 +991,10 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
                 )
                 numerical_replay_status = "PASS" if replay_metrics_match else "METRICS_MISMATCH"
             except Exception:  # noqa: BLE001 - no numeric fallback on replay failure
+                # Never return NaN/Inf partial metrics after a failed replay;
+                # strict JSON serialization must remain safe and fail closed.
+                raw_metrics = None
+                calibrated_metrics = None
                 numerical_replay_status = "FAILED"
         else:
             numerical_replay_status = "CALIBRATOR_IDENTITY_INVALID"
