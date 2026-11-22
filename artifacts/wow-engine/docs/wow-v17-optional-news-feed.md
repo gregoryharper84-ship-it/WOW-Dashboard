@@ -83,8 +83,8 @@ This repair retains typed health failure steps, article counts and 90-day
 receipt retention. The earlier six-second retry was superseded by the
 single-attempt fail-fast policy below; there is no in-run 429 retry. Nightly Multi-Scout
 uses its own future canonical candidate manifest for one active-sport choice;
-it never invents news, executes more than two GDELT requests per run, or turns
-the discovery receipt into a verified publisher claim. The independent
+it never invents news, exceeds its single bounded GDELT request per run, or
+turns the discovery receipt into a verified publisher claim. The independent
 source-refresh workflow retains its original fixed 13-sport rotation. This
 does not certify same-day news coverage across active leagues.
 
@@ -110,8 +110,9 @@ The proposed 900-second retry in the original PR was never shown to
 work from the modified collector; later tests had timeouts.
 
 The source refresh already runs every six hours. Instead of occupying a
-worker for 15 minutes and making a second request in a blocked period,
-`v17/public_gdelt_discovery.py` now makes **one bounded DOC request per run**.
+worker for 15 minutes and making a second request while the source is refusing
+requests, `v17/public_gdelt_discovery.py` now makes **one bounded DOC request
+per run**.
 When GDELT returns 429, the receipt records `SOURCE_RATE_LIMITED`,
 `http_status=429`, `attempt_count=1`, `total_wait_seconds=0`,
 `retry_deferred=true`, any `Retry-After` value and the normal
@@ -127,10 +128,12 @@ spacing exceeds that bounded hint. An unusual manually dispatched run
 could violate the interval; operators should not repeatedly dispatch
 blocked sources.
 
-**Still blocked until proven otherwise:** actual nonempty GDELT acquisition
-on the current merged code, independent news fact verification, fresh exact
-event identity linkage, and a genuine controlling fitted-specialist rescore
-receipt. Workflow-level green alone never proves source health.
+**Not yet accepted as proven:** repeatable nonempty GDELT acquisition on the
+current merged code, independent news fact verification, fresh exact event
+identity linkage, and a genuine controlling fitted-specialist rescore
+receipt. One nonempty receipt does exist on the current merged code (the
+`SOURCE_FETCH_OK` acquisition noted below), but a single receipt is not
+repeatable acquisition. Workflow-level green alone never proves source health.
 `model_feature_eligible=false`, `model_rescore_verified=false` and
 `can_execute=false` stay unchanged.
 
@@ -142,10 +145,12 @@ GDELT receipt at 2026-11-20 18:17:02 UTC: NHL, 11 article
 URLs, one request, HTTP 200. However it declared
 `selection_policy=SLATE_UNAVAILABLE_FIXED_ROTATION`,
 `slate_active_event_counts={}`, even though that exact run's early
-discovery artifact contained 298 team-event candidates. This is because
-its original `model-handoff.json` is roughly **596 MB** due to large
-market evidence: the legacy GDELT loader refuses a manifest over 64 MB,
-then silently uses an unrelated fixed sport rotation.
+discovery artifact contained 298 team-event candidates. The explanation on
+record is manifest size: its original `model-handoff.json` is roughly
+**596 MB** due to large market evidence, and the legacy GDELT loader refuses a
+manifest over 64 MB, so that path falls back to an unrelated fixed sport
+rotation — a fallback this run labelled `SLATE_UNAVAILABLE_FIXED_ROTATION`
+rather than hid.
 
 The existing Scout script now emits a *second, bounded event-only* file
 `news-active-slate.json` alongside the full model handoff. It contains
@@ -164,3 +169,57 @@ sports coverage to all 13 sports per run, independently authenticate a
 publisher, produce a fitted feature or establish news-triggered specialist
 rescoring. Only end-to-end evidence and independent QA can accept those
 distinct objectives. It remains research only; `can_execute=false`.
+
+### November 22, 2026 — measured 429 block and the single-request success
+
+This section is the standing record of what was actually measured against the
+GDELT DOC 2.0 endpoint from this runtime, kept so the evidence outlives the
+retry proposals it bears on. It adds no code, workflow or test change: the
+merged single-request fail-fast policy above is unchanged.
+
+**Probe series, November 18, 2026.** Each row was an ArtList request for
+`NBA injury`. The November 20 note above records that the initial probe issued
+paired requests, so the silence column is the observed gap before each request,
+not a verified quiet period. Every refusal returned HTTP 429 with the body
+"Please limit requests to one every 5 seconds" and **no `Retry-After` header**.
+
+| Silence before the request | Result |
+| --- | --- |
+| 0 s | 429 |
+| 45 s | 429 |
+| 90 s | 429 |
+| 135 s | 429 |
+| 735 s (12.3 min) | 429 |
+| 688 s (11.5 min), after a runtime restart and a possible egress change | **200, 5 articles** |
+
+The refusals were sustained across minutes, not the advertised five-second
+interval. **What carries the block is not established.** The probing runtime
+stayed refused through 735 s of silence, yet three scheduled source-refresh
+runs the same day (10:27Z, 18:58Z and the 02:5xZ slot) each received 429 on
+their **first** request, on separate scheduled runs from fresh GitHub-hosted
+runners, so a per-IP allowance does not account for what was observed. The
+single 200 cannot separate elapsed silence from that possible egress change, so
+it is evidence that the block lifts, not a recovery threshold.
+
+**The success that supports the merged policy.** Scheduled Multi-Scout [run
+#44789095413](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44789095413)
+emitted a real `SOURCE_FETCH_OK` receipt at 2026-11-20 18:17:02 UTC: NHL, 11
+article URLs, **one request, HTTP 200**. It came from the merged collector on a
+scheduled trigger, with no wait and no in-run retry, so a nonempty acquisition
+was reachable through one bounded request on that run. One receipt shows that
+reachability, not that it repeats; that reachability is what the merged policy
+counts on.
+
+What this does and does not support: no measurement shows a 900-second sleep
+lifting the block, and nothing supports occupying a worker for 15 minutes to
+make a second request while the source is refusing requests. The opt-in
+paced retry ladder drafted against this evidence is deliberately not merged,
+because nothing exercises it and adopting it as a default would reverse the
+merged decision.
+Recovery is still not verified: the receipt records `recovery_verified=false`
+and the next scheduled run remains an independent new attempt.
+
+This remains discovery metadata. The 2026-11-20 receipt does not verify a
+publisher claim, does not map an article to an official fixture, and does not
+produce a fitted feature or a specialist rescore: `model_feature_eligible=false`,
+`model_rescore_verified=false`, `can_execute=false`.
