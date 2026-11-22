@@ -143,3 +143,64 @@ def test_genuine_write_failure_cannot_be_reclassified_as_model_unavailable(monke
     assert result["status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
     assert result["snapshot_write_failed"] == 1
     assert result["can_execute"] is False
+
+
+def test_refresh_trigger_only_for_selected_stale_captures():
+    from datetime import timedelta
+    from v17.daily_snapshot_runtime import _prop_manifest_requires_refresh
+    fresh = {"captured_at": (NOW - timedelta(minutes=5)).isoformat()}
+    old = {"captured_at": (NOW - timedelta(minutes=31)).isoformat()}
+    assert _prop_manifest_requires_refresh([old], selected_limit=1, now=NOW)
+    assert not _prop_manifest_requires_refresh([fresh], selected_limit=1, now=NOW)
+    assert not _prop_manifest_requires_refresh([fresh, old], selected_limit=1, now=NOW)
+    assert _prop_manifest_requires_refresh([fresh, old], selected_limit=2, now=NOW)
+    assert not _prop_manifest_requires_refresh([old], selected_limit=0, now=NOW)
+    assert not _prop_manifest_requires_refresh([], selected_limit=4, now=NOW)
+    assert _prop_manifest_requires_refresh([{}], selected_limit=1, now=NOW)
+
+
+def test_nonempty_stale_daily_manifest_requests_new_evidence_and_reports_source_error(monkeypatch):
+    from datetime import timedelta
+    from v17 import test_active_season_phase_a_daily_chain as fixtures
+    from v17 import daily_snapshot_runtime as runtime
+
+    db = fixtures._DB([
+        {**fixtures._snapshot("Existing Stale NFL", index=100),
+         "captured_at": (fixtures.NOW - timedelta(hours=2)).isoformat()},
+    ])
+    calls = []
+
+    def acquire(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "COMPLETED_WITH_SOURCE_BLOCKERS",
+            "attempted": 0, "persisted": 0,
+            "snapshot_write_succeeded": 0, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0, "receipts": [],
+            "blockers": ["NFL_PROP_DISCOVERY_FAILED:TimeoutError"],
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(runtime, "acquire_daily_prop_snapshots", acquire)
+    result = fixtures._run(db, fixtures._Market())
+    assert len(calls) == 1
+    assert calls[0]["include_nfl"] is True
+    assert calls[0]["max_candidates"] >= 1
+    assert "NFL_PROP_DISCOVERY_FAILED:TimeoutError" in result["blockers"]
+    assert result["rows"][0]["identity"]["sport"] == "NFL"
+    assert result["rows"][0]["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_nonempty_fresh_daily_manifest_does_not_repeat_acquisition(monkeypatch):
+    from v17 import test_active_season_phase_a_daily_chain as fixtures
+    from v17 import daily_snapshot_runtime as runtime
+
+    db = fixtures._DB([fixtures._snapshot("Current NFL", index=101)])
+    monkeypatch.setattr(
+        runtime, "acquire_daily_prop_snapshots",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("FRESH_MANIFEST_REACQUIRED")),
+    )
+    result = fixtures._run(db, fixtures._Market())
+    assert len(result["rows"]) == 1
+    assert result["can_execute"] is False
