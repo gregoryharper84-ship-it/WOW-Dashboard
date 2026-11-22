@@ -1,0 +1,248 @@
+"""Read-only historical MLB pitcher-strikeout evaluation on official game identities.
+
+This is a RESEARCH-ONLY diagnostic. Settlement-source game IDs are usable only
+AFTER events for grouping; they must never hydrate a pregame scoring feature.
+All original predictions and authoritative settlements remain immutable.
+"""
+from __future__ import annotations
+
+from collections import Counter, defaultdict
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from hashlib import sha256
+import json
+from math import fsum, log, sqrt
+import re
+from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit
+
+CAN_EXECUTE = False
+MODEL_FAMILY = "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
+_SOURCE_PATH = re.compile(r"^/api/v1(?:\.1)?/game/([0-9]+)/feed/live/?$")
+_BAD_EVENT = re.compile(r"synthetic|fixture|probe|canary|test", re.I)
+
+
+def _time(value: Any) -> datetime | None:
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+
+
+def _game_pk(value: Any) -> str | None:
+    try:
+        uri = urlsplit(str(value))
+        match = _SOURCE_PATH.fullmatch(uri.path)
+        return match.group(1) if uri.scheme == "https" and uri.hostname == "statsapi.mlb.com" and match else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _line(value: Any) -> str | None:
+    try:
+        number = Decimal(str(value))
+        return str(number.normalize()) if number.is_finite() else None
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _finite_probability(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 0 < number < 1 else None
+
+
+def _row(raw: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Require actual frozen pregame identity, a verified postgame source and one binary settlement."""
+    if str(raw.get("sport") or "").upper() != "MLB" or raw.get("model_family") != MODEL_FAMILY:
+        return None, "OUT_OF_SCOPE"
+    if raw.get("probability_publishable") is not True:
+        return None, "ARCHIVED_PUBLICATION_FALSE"
+    if raw.get("void") is True or raw.get("push") is True:
+        return None, "VOID_OR_PUSH"
+    if raw.get("void") is not False or raw.get("push") is not False:
+        return None, "SETTLEMENT_FLAGS_UNVERIFIED"
+    if not isinstance(raw.get("hit"), bool):
+        return None, "OUTCOME_UNRESOLVED"
+    game_pk = _game_pk(raw.get("settlement_source"))
+    if game_pk is None:
+        return None, "OFFICIAL_GAME_ID_UNVERIFIED"
+    start = _time(raw.get("event_start_time"))
+    model = _time(raw.get("model_timestamp"))
+    created = _time(raw.get("created_at"))
+    settled = _time(raw.get("settlement_timestamp"))
+    locked = _time(raw.get("locked_at")) if raw.get("locked_at") is not None else None
+    if not all((start, model, created, settled)) or (raw.get("locked_at") is not None and locked is None):
+        return None, "TIMESTAMP_UNVERIFIED"
+    if model >= start or created >= start or settled < start or (locked is not None and locked >= start):
+        return None, "NOT_FROZEN_PREGAME"
+    event_id = str(raw.get("event_id") or "").strip()
+    if not event_id:
+        return None, "EXACT_IDENTITY_UNVERIFIED"
+    if _BAD_EVENT.search(event_id):
+        return None, "SYNTHETIC_OR_PROBE"
+    player = str(raw.get("player") or "").strip().casefold()
+    stat = str(raw.get("stat_type") or "").strip().upper()
+    direction = str(raw.get("direction") or "").strip().upper()
+    line = _line(raw.get("line"))
+    pid = str(raw.get("prediction_id") or "").strip()
+    artifact = str(raw.get("model_artifact_version") or "").strip()
+    calibrator = str(raw.get("calibration_version") or "").strip()
+    probability = _finite_probability(raw.get("calibrated_probability"))
+    if not all((player, stat, direction in {"MORE", "LESS"}, line, pid, artifact, calibrator)):
+        return None, "EXACT_IDENTITY_UNVERIFIED"
+    if probability is None:
+        return None, "PROBABILITY_INVALID"
+    if stat != "PITCHER_STRIKEOUTS":
+        return None, "OUT_OF_SCOPE"
+    # A name is only a retrospective surrogate; never assert certified player identity.
+    base = (game_pk, player, stat, line, artifact, calibrator)
+    thesis = (*base, direction)
+    try:
+        actual = Decimal(str(raw.get("actual_stat"))) if raw.get("actual_stat") is not None else None
+        if actual is not None and not actual.is_finite():
+            actual = None
+    except (InvalidOperation, ValueError, TypeError):
+        actual = None
+    # Pitcher strikeouts are nonnegative integers. A verified actual is
+    # mandatory; a missing value cannot justify grading a binary hit flag.
+    if actual is None or actual < 0 or actual != actual.to_integral_value():
+        return None, "ACTUAL_STAT_UNVERIFIED"
+    threshold = Decimal(line)
+    if actual == threshold:
+        return None, "PUSH_SETTLEMENT_CONFLICT"
+    expected_hit = actual > threshold if direction == "MORE" else actual < threshold
+    if expected_hit is not raw["hit"]:
+        return None, "OUTCOME_STAT_CONFLICT"
+    return {
+        "thesis": thesis, "base": base, "game_pk": game_pk,
+        "event_id": event_id, "prediction_id": pid,
+        "model_time": model, "created": created, "probability": probability,
+        "hit": int(raw["hit"]), "actual": actual,
+    }, None
+
+
+def audit_mlb_strikeout_forecasts(
+    records: Iterable[Mapping[str, Any]], *, selection: str = "latest"
+) -> dict[str, Any]:
+    """Pure audit: every result is advisory and never a governed sporting probability."""
+    if selection not in {"earliest", "latest"}:
+        raise ValueError("SELECTION_MUST_BE_EARLIEST_OR_LATEST")
+    rejected: Counter[str] = Counter()
+    eligible = []
+    for raw in records:
+        parsed, error = _row(raw)
+        if error:
+            rejected[error] += 1
+        else:
+            eligible.append(parsed)
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+    game_aliases: dict[str, set[str]] = defaultdict(set)
+    for r in eligible:
+        groups[r["thesis"]].append(r)
+        game_aliases[r["game_pk"]].add(r["event_id"])
+    # A player's game stat cannot vary with direction, line, artifact, or
+    # input alias. Validate against the official game/player/stat key first.
+    stat_values: dict[tuple[str, str, str], set[Decimal]] = defaultdict(set)
+    for r in eligible:
+        stat_values[(r["game_pk"], r["thesis"][1], r["thesis"][2])].add(r["actual"])
+    conflicting_stats = [k for k, values in stat_values.items() if len(values) > 1]
+    conflicts = [
+        k for k, rows in groups.items()
+        if len({r["hit"] for r in rows}) > 1 or len({r["actual"] for r in rows}) > 1
+    ]
+    contradictory_rows = sum(rejected[key] for key in
+                             ("OUTCOME_STAT_CONFLICT", "PUSH_SETTLEMENT_CONFLICT"))
+    must_hold = bool(conflicts or conflicting_stats or contradictory_rows)
+    base_result: dict[str, Any] = {
+        "schema_version": "WOW17_CANONICAL_HISTORICAL_RESEARCH_V1",
+        "status": "HOLD" if must_hold else "RESEARCH_ONLY",
+        "authority": "ADVISORY_ONLY", "certified": False, "can_execute": False,
+        "selection": selection, "eligible_forecast_rows": len(eligible),
+        "rejected_rows": sum(rejected.values()), "rejection_reasons": dict(sorted(rejected.items())),
+        "raw_event_keys": len({r["event_id"] for r in eligible}),
+        "official_game_clusters": len(game_aliases),
+        "official_games_with_aliases": sum(len(v) > 1 for v in game_aliases.values()),
+        "canonical_directional_theses": len(groups),
+        "canonical_base_markets": len({r["base"] for r in eligible}),
+        "conflicting_official_theses": len(conflicts),
+        "conflicting_game_player_stats": len(conflicting_stats),
+        "settlement_contradiction_rows": contradictory_rows,
+        "identity_level": "OFFICIAL_GAME_ID_AND_PLAYER_NAME_RESEARCH_ONLY",
+        "readiness": "FORWARD_CALIBRATION_AND_INDEPENDENT_HOLDOUT_UNVERIFIED",
+    }
+    if must_hold or not groups:
+        base_result["status"] = "HOLD"
+        base_result["blocker"] = (
+            "OFFICIAL_SETTLEMENT_CONFLICT" if conflicts or conflicting_stats
+            else "OFFICIAL_SETTLEMENT_INTERNAL_CONTRADICTION" if contradictory_rows
+            else "NO_VERIFIED_ROWS"
+        )
+        return base_result
+    selected = []
+    # Canonical thesis sorting is essential: source-record insertion order
+    # must never change a published historical scientific diagnostic.
+    for thesis in sorted(groups):
+        rows = groups[thesis]
+        ordered = sorted(rows, key=lambda r: (r["model_time"], r["created"], r["prediction_id"]))
+        selected.append(ordered[-1] if selection == "latest" else ordered[0])
+    losses = [(r["probability"] - r["hit"]) ** 2 for r in selected]
+    brier = fsum(losses) / len(losses)
+    log_loss = fsum(-log(r["probability"] if r["hit"] else 1 - r["probability"]) for r in selected) / len(selected)
+    gain = 0.25 - brier
+    per_game: dict[str, list[float]] = defaultdict(list)
+    for r, loss in zip(selected, losses):
+        per_game[r["game_pk"]].append(0.25 - loss)
+    cluster_se = None
+    if len(per_game) > 1:
+        n, g = len(selected), len(per_game)
+        cluster_se = sqrt(g / (g - 1) * sum(
+            (sum(a) - len(a) * gain) ** 2 for a in per_game.values()
+        )) / n
+    # Bind research replay to the actual selected snapshots, not just IDs.
+    # Separate selections or calibration artifacts must never share a receipt
+    # while the original ID-only digest remains available for older consumers.
+    selection_context = {
+        "selection": selection,
+        "snapshots": [{
+            "prediction_id": r["prediction_id"],
+            "official_game_pk": r["game_pk"],
+            "player_name_surrogate": r["thesis"][1],
+            "line": r["thesis"][3],
+            "model_artifact_version": r["thesis"][4],
+            "calibration_version": r["thesis"][5],
+            "direction": r["thesis"][6],
+            "model_time": r["model_time"].isoformat(),
+        } for r in selected],
+    }
+    selection_context_sha = sha256(
+        json.dumps(selection_context, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    # A normal CI from two or three dependent games is misleading.
+    # Keep the descriptive cluster SE but withhold normal CIs until at
+    # least 30 distinct official games; still never claim certification.
+    cluster_count = len(per_game)
+    interval_allowed = cluster_se is not None and cluster_count >= 30
+    base_result.update({
+        "brier_score": brier, "log_loss": log_loss,
+        "constant_half_brier": 0.25, "brier_gain_against_constant_half": gain,
+        "approx_game_cluster_se": cluster_se,
+        "independent_game_clusters_n": cluster_count,
+        "approx_game_cluster_status": (
+            "INSUFFICIENT_GAME_CLUSTERS" if cluster_count < 2
+            else "INSUFFICIENT_GAME_CLUSTERS_FOR_CI95" if not interval_allowed
+            else "APPROXIMATE_CORRELATED_MARKETS_ONLY"
+        ),
+        "approx_game_cluster_normal_ci95": [gain - 1.96 * cluster_se, gain + 1.96 * cluster_se]
+        if interval_allowed else None,
+        "selected_prediction_ids_sha256": sha256("\n".join(sorted(r["prediction_id"] for r in selected)).encode()).hexdigest(),
+        "selected_prediction_ids_digest_scope": "LEGACY_IDS_ONLY_NOT_AUTHORITATIVE",
+        "selection_context_sha256": selection_context_sha,
+        "independence_warning": "MORE_LESS_AND_SAME_GAME_CORRELATED; NOT_AN_INDEPENDENT_BET_CARD",
+    })
+    return base_result
