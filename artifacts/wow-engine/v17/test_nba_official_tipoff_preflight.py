@@ -10,6 +10,7 @@ from v17.nba_official_tipoff_preflight import (
     _verify_event,
     preflight,
     CAN_EXECUTE,
+    SCOREBOARD_URL,
 )
 
 NOW = datetime(2026, 11, 12, 12, tzinfo=timezone.utc)
@@ -56,7 +57,7 @@ class Response:
 def feed(events, calls):
     def http_get(url, *, params, headers, timeout):
         assert timeout == 12
-        assert "espn.com" in url
+        assert url == SCOREBOARD_URL
         assert params["limit"] == 100
         calls.append(params["dates"])
         return Response(events)
