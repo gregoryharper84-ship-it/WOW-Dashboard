@@ -360,7 +360,7 @@ def test_discovery_line_fitted_probability_never_becomes_verified_market_card():
     result = runtime._run_daily_snapshot_impl(
         runtime.DailySnapshotRequest(
             requested_slate_date=fixtures.SLATE,
-            requested_timezone="America/Chicago", lanes=["PROPS"],
+            requested_timezone="America/Chicago", lanes=["PROPS"], response_mode="FULL",
         ),
         db=db, market_api=fixtures._Market(publishable={"Synthetic Research NFL"}),
         event_api=object(),
@@ -387,7 +387,7 @@ def test_legacy_unproven_offer_also_cannot_authorize_a_card():
     result = runtime._run_daily_snapshot_impl(
         runtime.DailySnapshotRequest(
             requested_slate_date=fixtures.SLATE,
-            requested_timezone="America/Chicago", lanes=["PROPS"],
+            requested_timezone="America/Chicago", lanes=["PROPS"], response_mode="FULL",
         ),
         db=fixtures._DB([row]),
         market_api=fixtures._Market(publishable={"Unproven Offer Player"}),
@@ -399,3 +399,29 @@ def test_legacy_unproven_offer_also_cannot_authorize_a_card():
     assert result["rows"][0]["market_card_eligible"] is False
     assert result["rows"][0]["result"]["probability_publishable"] is True
     assert result["can_execute"] is False
+
+
+def test_compact_mode_preserves_unquoted_market_no_card_ceiling():
+    from v17 import test_active_season_phase_a_daily_chain as fixtures
+    from v17 import daily_snapshot_runtime as runtime
+    record = fixtures._snapshot("Compact Synthetic Prop", index=603)
+    record["source_timestamps"] = {"WOW_AUTONOMOUS_DISCOVERY_LINE": NOW.isoformat()}
+    report = runtime._run_daily_snapshot_impl(
+        runtime.DailySnapshotRequest(
+            requested_slate_date=fixtures.SLATE,
+            requested_timezone="America/Chicago", lanes=["PROPS"],
+            response_mode="COMPACT",
+        ),
+        db=fixtures._DB([record]),
+        market_api=fixtures._Market(publishable={"Compact Synthetic Prop"}),
+        event_api=object(),
+    )
+    assert report["response_mode"] == "COMPACT"
+    row = report["rows"][0]
+    assert row["probability_publishable"] is True
+    assert row["market_offer_verification"]["status"] == "MARKET_OFFER_NOT_ATTESTED"
+    assert row["market_offer_verification"]["exact_offer_verified"] is False
+    assert row["market_card_eligible"] is False
+    assert row["market_value_edge_eligible"] is False
+    assert "result" not in row  # full scoring evidence remains in detail retrieval
+    assert report["can_execute"] is False
