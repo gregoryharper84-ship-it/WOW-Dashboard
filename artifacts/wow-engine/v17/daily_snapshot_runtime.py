@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -501,6 +501,25 @@ def _snapshot_captured_at(row: dict[str, Any]) -> datetime:
     except (TypeError, ValueError):
         pass
     return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _prop_manifest_requires_refresh(
+    manifest: list[dict[str, Any]], *, selected_limit: int,
+    now: datetime | None = None,
+) -> bool:
+    """Request fresh research evidence for selected stale NFL/MLB snapshots.
+
+    Source freshness is not a certification or terminal decision. Refreshing
+    only selected stale rows keeps Daily bounded while preventing a historical
+    PASS snapshot from suppressing pregame acquisition indefinitely.
+    """
+    if selected_limit <= 0 or not manifest:
+        return False
+    cutoff = (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(minutes=30)
+    return any(
+        _snapshot_captured_at(row) < cutoff
+        for row in manifest[:selected_limit]
+    )
 
 
 def _read_side_availability_blocker(row: dict[str, Any]) -> str | None:
@@ -1054,7 +1073,14 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         # Acquisition exists to fill an empty canonical lane. A zero-length page
         # caused by max_props is not an empty lane, so it must not trigger a
         # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
-        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        if (
+            req.max_props > 0
+            and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
+            and (
+                not prop_manifest
+                or _prop_manifest_requires_refresh(prop_manifest, selected_limit=req.max_props)
+            )
+        ):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
@@ -1062,7 +1088,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 max_candidates=max(req.max_props * 3, req.max_props),
                 include_nfl=True,
             )
-            if prop_acquisition.get("status") == "DATA_UNOBTAINABLE":
+            if prop_acquisition.get("status") in {"DATA_UNOBTAINABLE", "COMPLETED_WITH_SOURCE_BLOCKERS"}:
                 blockers.extend(prop_acquisition.get("blockers") or [])
             elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
