@@ -16,7 +16,7 @@ def _sql():
 
 def test_complete_source_function_and_singular_reducer_only():
     sql = _sql()
-    assert sql.count("CREATE OR REPLACE FUNCTION public.wow_v17_reduce_nfl_event_terminal_label") == 1
+    assert sql.lower().count("create or replace function public.wow_v17_reduce_nfl_event_terminal_label") == 1
     assert sql.count("$function$") == 2
     assert sql.count("if r.event_start_time_utc <= now()") == 1
     assert sql.count("end;\n$function$;") == 1
