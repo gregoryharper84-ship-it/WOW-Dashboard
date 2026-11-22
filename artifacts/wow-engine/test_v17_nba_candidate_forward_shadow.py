@@ -216,16 +216,74 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
     calls = []
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: calls.append(db) or {"status": "X"})
     hook = maintenance.nba_candidate_forward_shadow_after_refresh
-    assert hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) == {"status": "X"} and calls == ["db"]
-    skipped = hook("db", [{"sport": "NBA", "status": "BLOCKED"}])
-    assert skipped["reason_code"] == "NBA_MAINTENANCE_NOT_UPDATED" and calls == ["db"]
+    assert hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) == {
+        "status": "X", "maintenance_row_status": "SHADOW_EVIDENCE_UPDATED", "maintenance_row_code": None, "capture_corpus_verified": True}
+    # Refits can fail after corpus checks. Prove those checks independently
+    # before capturing from the persisted model's training history.
+    monkeypatch.setattr(maintenance, "verify_training_provenance",
+                        lambda db, sport: {"provenance_complete": True})
+    monkeypatch.setattr(maintenance, "verify_training_freshness",
+                        lambda db, sport: {"freshness_status": "PASS"})
+    blocked_row = {"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"}
+    blocked = hook("db", [blocked_row])
+    assert blocked == {"status": "X", "maintenance_row_status": "BLOCKED",
+                       "maintenance_row_code": "BASKETBALL_MODEL_MAINTENANCE_FAILED",
+                       "capture_corpus_verified": True} and calls == ["db", "db"]
+    # A generic refit failure may actually originate from provenance/freshness
+    # readback, so neither a failed check nor a failed query authorizes capture.
+    monkeypatch.setattr(maintenance, "verify_training_freshness",
+                        lambda db, sport: {"freshness_status": "STALE"})
+    stale = hook("db", [blocked_row])
+    assert stale["status"] == "SKIPPED" and stale["can_execute"] is False
+    monkeypatch.setattr(maintenance, "verify_training_freshness",
+                        lambda db, sport: {"freshness_status": "PASS"})
+    monkeypatch.setattr(maintenance, "verify_training_provenance",
+                        lambda db, sport: (_ for _ in ()).throw(ConnectionError("transient")))
+    missing = hook("db", [blocked_row])
+    assert missing["status"] == "SKIPPED" and missing["can_execute"] is False
+    assert missing["capture_corpus_verification_code"] == "NBA_CANDIDATE_CORPUS_VERIFICATION_FAILED"
+    assert "transient" not in str(missing)
+    assert calls == ["db", "db"]
+    monkeypatch.setattr(maintenance, "verify_training_provenance",
+                        lambda db, sport: {"provenance_complete": True})
+
+    # Reproduction: partial hydration is not a safe historical corpus. A
+    # maintenance failure is allowed ONLY when replay/refit failed, not when
+    # acquisition is partial or the current-season proof is missing.
+    for unsafe_code in (
+        "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN",
+        "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING",
+        "BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED",
+    ):
+        held = hook("db", [{"sport": "NBA", "status": "BLOCKED", "code": unsafe_code}])
+        assert held["status"] == "SKIPPED" and held["can_execute"] is False
+        assert held["maintenance_row_code"] == unsafe_code
+    assert calls == ["db", "db"]
+    # Multiple NBA rows are possible when a caller repeats a sport. A later
+    # unsafe row must veto capture rather than trusting the first row.
+    safe_row = {"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}
+    for rows in (
+        [safe_row, {"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"}],
+        [blocked_row, {"sport": "NBA", "status": "BLOCKED", "code": "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"}],
+    ):
+        vetoed = hook("db", rows)
+        assert vetoed["status"] == "SKIPPED" and vetoed["capture_corpus_verified"] is False
+        assert vetoed["maintenance_row_code"] == rows[-1]["code"]
+        assert vetoed["can_execute"] is False
+    assert calls == ["db", "db"]
+    # Even when one row succeeds, a second eligible failed refit must
+    # reverify the persisted corpus rather than inherit the success flag.
+    mixed_allowed = hook("db", [safe_row, blocked_row])
+    assert mixed_allowed["status"] == "X" and mixed_allowed["capture_corpus_verified"] is True
+    assert calls == ["db", "db", "db"]
     assert hook("db", [{"sport": "WNBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) is None
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: (_ for _ in ()).throw(ValueError("x")))
     failed = hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}])
     assert failed["reason_code"] == "NBA_CANDIDATE_FORWARD_SHADOW_VALUEERROR" and failed["can_execute"] is False
-    # The maintenance report always carries the key, and a blocked NBA row skips capture.
+    # The maintenance report always carries the key.
+    monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: {"status": "Y"})
     out = maintenance.run_basketball_model_maintenance(object(), sports=["NBA"], now=NOW)
-    assert "nba_candidate_forward_shadow" in out and out["can_execute"] is False
+    assert out["nba_candidate_forward_shadow"]["status"] == "SKIPPED" and out["can_execute"] is False
 
 
 MIGRATION = (Path(__file__).parent / "migrations" / "20261121_nba_candidate_forward_shadow.sql").read_text()

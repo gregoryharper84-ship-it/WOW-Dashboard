@@ -30,7 +30,9 @@ from basketball_event_hydration_runtime import (
     BasketballHydrationPartialWriteError,
     hydrate,
 )
-from basketball_training_replay import run_training_replay
+from basketball_training_replay import (
+    run_training_replay, verify_training_provenance, verify_training_freshness,
+)
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_model_development_manifest import development_lane
 
@@ -433,21 +435,69 @@ def _nba_current_season_data_gap(
 def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Research-only pre-tipoff capture of the registered NBA candidate.
 
-    Runs only on a just-refreshed NBA history. Isolated and typed: it can never
-    change a maintenance row, a certification, a publication flag or execution.
+    Runs after a completed NBA replay or a refit-only maintenance failure.
+    It scores the already-registered candidate from persisted finals, but
+    must not capture when hydration is partially written, current-season
+    evidence is absent, or replay was held. The maintenance row status is
+    recorded with the receipt. Research-only: never changes certification,
+    publication, or execution.
     """
-    nba_row = next((row for row in results if row.get("sport") == "NBA"), None)
-    if nba_row is None:
+    nba_rows = tuple(row for row in results if row.get("sport") == "NBA")
+    if not nba_rows:
         return None
-    if nba_row.get("status") != "SHADOW_EVIDENCE_UPDATED":
-        return {"status": "SKIPPED", "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
-                "probability_publishable": False, "can_execute": False}
+    # Every NBA maintenance row must be eligible. A later partial-write or
+    # replay hold must veto capture even if an earlier duplicate row succeeded.
+    def eligible(row: Mapping[str, Any]) -> bool:
+        return (
+            row.get("status") == "SHADOW_EVIDENCE_UPDATED"
+            or (row.get("status") == "BLOCKED"
+                and row.get("code") == "BASKETBALL_MODEL_MAINTENANCE_FAILED")
+        )
+
+    veto_row = next((row for row in nba_rows if not eligible(row)), None)
+    nba_row = veto_row if veto_row is not None else nba_rows[0]
+    capture_safe = veto_row is None
+    # A failed refit need not erase prospective evidence, but any unverified
+    # corpus must still fail closed. If any eligible row was blocked, recheck
+    # both preflights rather than trusting a different successful row.
+    corpus_verified = all(row.get("status") == "SHADOW_EVIDENCE_UPDATED" for row in nba_rows)
+    verification_failure_code = None
+    if capture_safe and not corpus_verified:
+        try:
+            provenance = verify_training_provenance(db, "NBA")
+            freshness = verify_training_freshness(db, "NBA")
+            corpus_verified = (
+                provenance.get("provenance_complete") is True
+                and freshness.get("freshness_status") == "PASS"
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed on unverified corpus
+            corpus_verified = False
+            verification_failure_code = _public_failure_code(
+                exc, "NBA_CANDIDATE_CORPUS_VERIFICATION_FAILED"
+            )
+    if not capture_safe or not corpus_verified:
+        receipt = {
+            "status": "SKIPPED",
+            "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
+            "maintenance_row_status": nba_row.get("status"),
+            "maintenance_row_code": nba_row.get("code"),
+            "capture_corpus_verified": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+        if verification_failure_code is not None:
+            receipt["capture_corpus_verification_code"] = verification_failure_code
+        return receipt
     try:
         from v17 import nba_candidate_forward_shadow as lane
-        return lane.run_nba_candidate_forward_shadow(db)
+        receipt = dict(lane.run_nba_candidate_forward_shadow(db))
     except Exception as exc:  # noqa: BLE001 - never fail maintenance on research capture
-        return {"status": "FAILED", "reason_code": f"NBA_CANDIDATE_FORWARD_SHADOW_{type(exc).__name__.upper()}",
-                "probability_publishable": False, "can_execute": False}
+        receipt = {"status": "FAILED", "reason_code": f"NBA_CANDIDATE_FORWARD_SHADOW_{type(exc).__name__.upper()}",
+                   "probability_publishable": False, "can_execute": False}
+    receipt["maintenance_row_status"] = nba_row.get("status")
+    receipt["maintenance_row_code"] = nba_row.get("code")
+    receipt["capture_corpus_verified"] = corpus_verified
+    return receipt
 
 
 def run_basketball_model_maintenance(
