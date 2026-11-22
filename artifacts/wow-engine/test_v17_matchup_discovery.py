@@ -1,7 +1,12 @@
 """Regression tests for default research-only matchup discovery."""
 from datetime import datetime, timezone
 
-from v17.matchup_discovery import discover_matchup, feature_requirements, profile_for
+from v17.matchup_discovery import (
+    discover_matchup,
+    feature_requirements,
+    matchup_consumption_audit,
+    profile_for,
+)
 from v17.sport_scout_enrichment import enrich_candidate
 
 NOW = datetime(2026, 11, 19, 17, 5, tzinfo=timezone.utc)
@@ -372,3 +377,28 @@ def test_nightly_coverage_summary_counts_reviews_and_missing_source_evidence():
     assert summary["model_rescore_verified"] is False
     assert summary["prediction_authority"] is False
     assert summary["can_execute"] is False
+
+
+def test_consumption_audit_never_infers_matchup_feature_use():
+    audit = {
+        "sport_key": "americanfootball_nfl",
+        "official_event_id": "evt-1",
+        "review_status": "PARTIAL_MATCHUP_REVIEW",
+        "screened_features": ["opponent_adjusted_strength"],
+        "missing_critical_features": ["exact_current_quote"],
+    }
+
+    unconsumed = matchup_consumption_audit(audit, [])
+    assert unconsumed["specialist_consumption_state"] == "NOT_DECLARED_BY_FITTED_VECTOR"
+    assert unconsumed["screened_features"] == ["opponent_adjusted_strength"]
+    assert unconsumed["consumed_matchup_features"] == []
+    assert unconsumed["can_execute"] is False
+
+    consumed = matchup_consumption_audit(audit, ["opponent_adjusted_strength"])
+    assert consumed["specialist_consumption_state"] == "CONSUMED"
+    assert consumed["consumed_matchup_features"] == ["opponent_adjusted_strength"]
+    assert consumed["prediction_authority"] is False
+
+    empty = matchup_consumption_audit(None, None)
+    assert empty["specialist_consumption_state"] == "NO_SCREENED_MATCHUP_EVIDENCE"
+    assert empty["can_execute"] is False
