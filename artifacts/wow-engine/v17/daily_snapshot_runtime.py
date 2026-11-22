@@ -46,6 +46,7 @@ from v17.daily_terminal_reduction import (
 )
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
+from v17.sep21_orchestration_integrity_repair import force_daily_prop_acquisition
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
 from v17.player_availability_gate import (
     PLAYER_AVAILABILITY_RECHECK_REQUIRED,
@@ -1070,15 +1071,23 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             prop_rows = []
             prop_manifest = []
             blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
-        # Acquisition exists to fill an empty canonical lane. A zero-length page
-        # caused by max_props is not an empty lane, so it must not trigger a
-        # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
+        # A trusted orchestration context can require a fresh acquisition
+        # even when the canonical slate is populated. Keep the initial manifest
+        # to prioritize exact stale NFL identities; never infer market offers.
+        refresh_targets = [
+            {key: row.get(key) for key in
+             ("event_id", "event_start_time", "sport", "player", "stat_type", "line")}
+            for row in prop_manifest[:req.max_props]
+            if _prop_manifest_requires_refresh([row], selected_limit=1)
+        ]
+        # max_props=0 is an explicit no-acquisition request, not an empty slate.
         if (
             req.max_props > 0
             and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
             and (
                 not prop_manifest
-                or _prop_manifest_requires_refresh(prop_manifest, selected_limit=req.max_props)
+                or bool(refresh_targets)
+                or force_daily_prop_acquisition()
             )
         ):
             prop_acquisition = acquire_daily_prop_snapshots(
@@ -1087,6 +1096,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 requested_timezone=req.requested_timezone,
                 max_candidates=max(req.max_props * 3, req.max_props),
                 include_nfl=True,
+                refresh_targets=refresh_targets,
             )
             if prop_acquisition.get("status") in {"DATA_UNOBTAINABLE", "COMPLETED_WITH_SOURCE_BLOCKERS"}:
                 blockers.extend(prop_acquisition.get("blockers") or [])
