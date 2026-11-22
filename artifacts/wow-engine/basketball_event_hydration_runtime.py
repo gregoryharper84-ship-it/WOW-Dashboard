@@ -887,11 +887,18 @@ def hydrate(
                 clock.month in (11, 12, 1, 2, 3, 4, 5, 6)
                 if sport == "NBA" else clock.month in (5, 6, 7, 8, 9, 10)
             )
+            # UTC may already be tomorrow while NBA games are still being
+            # played in New York. Only fully completed Eastern days may count
+            # toward the missing-settlement supplement threshold.
+            last_completed_et = (
+                clock.astimezone(ZoneInfo("America/New_York")).date()
+                - timedelta(days=1)
+            )
             if (
                 provider == "SPORTSDATAVERSE_ESPN"
                 and in_season
                 and year >= current_season_label and latest_before is not None
-                and 2 <= (clock.date() - latest_before).days <= 200
+                and 1 <= (last_completed_et - latest_before).days <= 200
                 and not has_new
             ):
                 # No certified ESPN-to-SportsDataverse settlement provider
@@ -912,10 +919,6 @@ def hydrate(
                     # Eastern calendar days. A June corpus cannot safely jump
                     # straight to yesterday's games in October: doing so would
                     # move the monotonic date fence past an unacquired gap.
-                    last_completed_et = (
-                        clock.astimezone(ZoneInfo("America/New_York")).date()
-                        - timedelta(days=1)
-                    )
                     first_covered_et = last_completed_et - timedelta(days=13)
                     if latest_before < first_covered_et - timedelta(days=1):
                         # Never silently omit a requested season from the
