@@ -265,6 +265,27 @@ def _opportunity_blockers(leg: Mapping[str, Any], as_of: datetime, start: dateti
     return reasons
 
 
+def _prizepicks_offer_binding(offer: Any) -> dict[str, str] | None:
+    """Canonical exact lineup identity; missing pieces cannot match a payout.
+
+    Not an independent provider authentication. The receipt must come from
+    a separately verified current provider response before publication.
+    """
+    if not isinstance(offer, Mapping):
+        return None
+    result = {
+        "source_receipt_id": _text(offer.get("source_receipt_id")),
+        "sport": _text(offer.get("sport")).upper(),
+        "official_event_id": _text(offer.get("official_event_id")),
+        "official_player_id": _text(offer.get("official_player_id")),
+        "stat_type": _text(offer.get("stat_type")).upper(),
+        "direction": _text(offer.get("direction")).upper(),
+        "exact_line": _line_key(offer.get("exact_line")),
+        "projection_type": _text(offer.get("projection_type")).upper(),
+    }
+    return result if all(result.values()) else None
+
+
 def _prizepicks_offer_blockers(
     leg: Mapping[str, Any], as_of: datetime, start: datetime,
 ) -> list[str]:
@@ -279,6 +300,7 @@ def _prizepicks_offer_blockers(
     reasons: list[str] = []
     if (not _text(offer.get("source_receipt_id"))
             or _text(offer.get("platform")).upper() != "PRIZEPICKS"
+            or _text(offer.get("sport")).upper() != _text(leg.get("sport")).upper()
             or _text(offer.get("official_event_id")) != _text(leg.get("official_event_id"))
             or _text(offer.get("official_player_id")) != _text(leg.get("official_player_id"))
             or _text(offer.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
@@ -298,6 +320,7 @@ def _prizepicks_offer_blockers(
     if not isinstance(receipt, Mapping):
         reasons.append("PRIZEPICKS_EXACT_MODEL_RECEIPT_MISSING")
     elif (not _text(receipt.get("immutable_prediction_id"))
+          or _text(receipt.get("sport")).upper() != _text(leg.get("sport")).upper()
           or _text(receipt.get("official_event_id")) != _text(leg.get("official_event_id"))
           or _text(receipt.get("official_player_id")) != _text(leg.get("official_player_id"))
           or _text(receipt.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
@@ -307,20 +330,50 @@ def _prizepicks_offer_blockers(
           or _time(receipt.get("frozen_at_utc")) > as_of
           or _time(receipt.get("frozen_at_utc")) >= start):
         reasons.append("PRIZEPICKS_EXACT_MODEL_RECEIPT_MISMATCH_RESCORING_REQUIRED")
+    news = leg.get("news_evidence")
+    if isinstance(news, Mapping) and news.get("material_change") is True:
+        latest_news = _time(news.get("last_reviewed_at_utc"))
+        frozen = _time(receipt.get("frozen_at_utc")) if isinstance(receipt, Mapping) else None
+        expected_id = _text(news.get("new_model_receipt_id"))
+        bound_id = _text(receipt.get("immutable_prediction_id")) if isinstance(receipt, Mapping) else ""
+        if (latest_news is None or frozen is None or frozen < latest_news
+                or not expected_id or expected_id != bound_id):
+            reasons.append("PRIZEPICKS_MATERIAL_NEWS_PREDICTION_STALE")
     return reasons
 
 
 def _prizepicks_lineup_blockers(
-    slip: Mapping[str, Any], as_of: datetime, legs: list[Mapping[str, Any]],
+    slip: Mapping[str, Any], as_of: datetime, legs: list[Any],
 ) -> list[str]:
-    """Check provider-declared lineup payout context; never infer a multiplier."""
+    """Fail closed unless the payout quote binds to *these exact offers*.
+
+    Caller-supplied receipt metadata is research context, not authenticated
+    payout evidence. An optimizer replacement invalidates the old lineup quote.
+    """
     receipt = slip.get("platform_lineup_payout")
     if not isinstance(receipt, Mapping):
         return ["PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISSING"]
     observed = _time(receipt.get("captured_at_utc"))
+    actual_offers = [
+        leg.get("platform_offer") if isinstance(leg, Mapping) else None
+        for leg in legs
+    ]
     actual_types = [
-        _text((leg.get("platform_offer") or {}).get("projection_type")).upper()
-        if isinstance(leg.get("platform_offer"), Mapping) else ""
+        _text(offer.get("projection_type")).upper() if isinstance(offer, Mapping) else ""
+        for offer in actual_offers
+    ]
+    expected_bindings = [_prizepicks_offer_binding(offer) for offer in actual_offers]
+    raw_bindings = receipt.get("ordered_offer_bindings")
+    supplied_bindings = (
+        [_prizepicks_offer_binding(item) for item in raw_bindings]
+        if isinstance(raw_bindings, list) else []
+    )
+    offer_times = [
+        _time(offer.get("captured_at_utc")) if isinstance(offer, Mapping) else None
+        for offer in actual_offers
+    ]
+    starts = [
+        _time(leg.get("event_start_utc")) if isinstance(leg, Mapping) else None
         for leg in legs
     ]
     if (not _text(receipt.get("source_receipt_id"))
@@ -328,12 +381,16 @@ def _prizepicks_lineup_blockers(
             or _text(receipt.get("structure")).upper() != _text(slip.get("structure")).upper()
             or type(receipt.get("leg_count")) is not int or receipt.get("leg_count") != len(legs)
             or receipt.get("projection_types") != actual_types
+            or len(supplied_bindings) != len(legs)
+            or any(binding is None for binding in expected_bindings + supplied_bindings)
+            or supplied_bindings != expected_bindings
             or _number(receipt.get("gross_payout_multiple"), minimum=1.000001) is None
             or observed is None or observed > as_of
-            or (as_of - observed).total_seconds() > 15 * 60):
+            or (as_of - observed).total_seconds() > 15 * 60
+            or any(t is None or observed < t for t in offer_times)
+            or any(t is None or observed >= t for t in starts)):
         return ["PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH"]
     return []
-
 
 def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
     news = leg.get("news_evidence")
@@ -408,9 +465,13 @@ def audit_research_slips(
             if start is not None:
                 reasons.extend(_quote_blockers(leg, at, start))
                 reasons.extend(_news_blockers(leg, at, start))
+                card_platform = _text(slip.get("platform")).upper()
+                leg_platform = _text(leg.get("platform")).upper()
+                if card_platform and leg_platform and card_platform != leg_platform:
+                    reasons.append("SLIP_CARD_LEG_PLATFORM_CONFLICT")
                 if market in _PROPS:
                     reasons.extend(_opportunity_blockers(leg, at, start))
-                    if (_text(leg.get("platform")) or _text(slip.get("platform"))).upper() == "PRIZEPICKS":
+                    if card_platform == "PRIZEPICKS" or leg_platform == "PRIZEPICKS":
                         reasons.extend(_prizepicks_offer_blockers(leg, at, start))
                 if market in _TOTALS:
                     reasons.extend(_total_blockers(leg, at, start))
