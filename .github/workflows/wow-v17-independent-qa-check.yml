@@ -46,16 +46,19 @@ concurrency:
   # behind unrelated targetless observer runs. Actual PR numbers retain
   # exact-PR serialization and all source/identity checks.
   # Post-merge push callbacks are not PR work. GitHub associates the merge
-  # commit with the merged PR, so keying them by that PR number parks every
-  # duplicate behind the PR's own exact-head review lane and makes the main
-  # check sit queued for the full review duration. They are keyed by the
-  # immutable main commit instead: superseded pending duplicates collapse in
-  # that commit lane and at most one evaluation runs per commit.
+  # commit with the merged PR, so keying them by that PR number parks them
+  # behind the PR's own exact-head review lane. Keying them by the commit
+  # still made every duplicate callback wait for the first one, so they get
+  # no shared lane at all. A push callback's PR is the merged (closed) one,
+  # which the resolver classifies neutral before any check is published, so
+  # these callbacks carry no decision and need no peer serialization: each is
+  # keyed by its own run_id and starts immediately, never pending behind
+  # another run.
   # cancel-in-progress stays false, so no queued exact-head decision is
   # ever canceled and every target still reaches its own terminal decision.
   # Malformed or foreign targets reaching the resolver fail closed.
   # Queue bounded by GitHub Actions maximum of 100 pending runs per group.
-  group: wow-v17-independent-qa-check-${{ inputs.pr_number || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && format('main-{0}', github.event.workflow_run.head_sha)) || github.event.workflow_run.pull_requests[0].number || github.run_id }}
+  group: wow-v17-independent-qa-check-${{ inputs.pr_number || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && format('main-callback-{0}', github.run_id)) || github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: false
   queue: max
 
