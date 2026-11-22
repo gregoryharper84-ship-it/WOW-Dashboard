@@ -85,7 +85,7 @@ def _has_forbidden_key(value: Any) -> bool:
         for key, item in value.items():
             normalized = str(key).lower().replace("-", "_")
             if (normalized in FORBIDDEN_KEYS or "probability" in normalized
-                    or normalized.endswith("_confidence") or normalized.endswith("_edge")):
+                    or "confidence" in normalized or normalized.endswith("_edge")):
                 return True
             if _has_forbidden_key(item):
                 return True
@@ -213,10 +213,11 @@ def validate_submission(manifest: dict[str, Any], submission: Any,
                    for k in ("feature", "source_id", "source_class")):
             errors.append(f"fact {index}: source or feature missing")
         value = fact.get("value")
-        if value is None or value == {} or value == []:
+        if (value is None or value == {} or value == []
+                or (isinstance(value, str) and not value.strip())):
             errors.append(f"fact {index}: measurement missing")
-        if fact.get("conflict") is True:
-            errors.append(f"fact {index}: unresolved evidence conflict")
+        if "conflict" in fact and fact["conflict"] is not False:
+            errors.append(f"fact {index}: unresolved or malformed evidence conflict")
         try:
             captured = _time(fact.get("captured_at"))
             if captured >= cutoff or captured > now:
