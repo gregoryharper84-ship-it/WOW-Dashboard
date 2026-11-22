@@ -60,6 +60,11 @@ def _home_result(source: dict[str, Any], outcome: dict[str, Any]) -> str | None:
     winner = str(outcome.get("official_winner") or "").strip()
     if home_team and winner and home_team.casefold() == winner.casefold():
         return "WIN"
+    # Both sides must be unambiguously identified. With no final scores,
+    # an exact AWAY winner is a HOME loss; an unresolved alias remains unknown.
+    away_team = str(source.get("away_team") or "").strip()
+    if away_team and winner and away_team.casefold() == winner.casefold():
+        return "LOSS"
     return None
 
 
@@ -158,11 +163,14 @@ def capture_settled_event_observations(
             ).as_dict()
         )
 
-    if observations:
+    # Bound PostgREST payloads; retries remain safe through the immutable
+    # observation_id conflict key, including after a partial batch failure.
+    for start in range(0, len(observations), 250):
+        batch = observations[start:start + 250]
         _db_call(
             "wow_intelligence_observations.insert_event",
-            lambda: db.table("wow_intelligence_observations").upsert(
-                observations,
+            lambda batch=batch: db.table("wow_intelligence_observations").upsert(
+                batch,
                 on_conflict="observation_id",
                 ignore_duplicates=True,
             ).execute(),

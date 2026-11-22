@@ -158,11 +158,14 @@ def capture_settled_prop_observations(
         )
         observations.append(_observation_payload(observation))
 
-    if observations:
+    # Keep first-run historical backfills within bounded PostgREST payloads.
+    # Ignore duplicates so a partial failure can be retried deterministically.
+    for start in range(0, len(observations), 250):
+        batch = observations[start:start + 250]
         _db_call(
             "wow_intelligence_observations.insert",
-            lambda: db.table("wow_intelligence_observations").upsert(
-                observations,
+            lambda batch=batch: db.table("wow_intelligence_observations").upsert(
+                batch,
                 on_conflict="observation_id",
                 ignore_duplicates=True,
             ).execute(),
