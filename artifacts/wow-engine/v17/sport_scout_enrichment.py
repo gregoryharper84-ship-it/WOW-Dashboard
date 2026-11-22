@@ -25,7 +25,8 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
 
-def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None) -> dict[str, Any]:
+def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None,
+                     public_news_sha256: str | None = None) -> dict[str, Any]:
     enriched = dict(row)
     team = scout_team_for(str(row.get("sport_key") or ""))
     enriched["sport_scout_team"] = team.to_handoff()
@@ -43,6 +44,10 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
         for worker_id in SUPPORTED_RESEARCH_WORKERS
     }
     enriched["research_workers_may_create_probability"] = False
+    enriched["news_intelligence_status"] = "NEWS_NOT_OBSERVED"
+    enriched["news_latest_verified_at_utc"] = None
+    enriched["news_model_rescore_verified"] = False
+    enriched["news_research_rescore_requested"] = False
     # The optional news artifact is discovery metadata, never fitted-model input.
     # A reconciled research handoff can request (but cannot perform) rescoring.
     discovery = row.get("news_discovery_receipt") if isinstance(row.get("news_discovery_receipt"), dict) else public_news
@@ -53,6 +58,10 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
             {
                 "sport_key": row.get("sport_key"),
                 "official_event_id": row.get("official_event_id"),
+                "provider_event_id": row.get("provider_event_id"),
+                "provider_event_source": row.get("provider_event_source"),
+                "official_event_identity_verified": row.get("official_event_identity_verified"),
+                "canonical_identity_status": row.get("canonical_identity_status"),
                 "event_start_utc": (
                     row.get("event_start_utc")
                     or row.get("commence_time")
@@ -60,7 +69,14 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
                 ),
             },
             facts if isinstance(facts, list) else [],
+            source_receipt_sha256=(
+                row.get("news_discovery_sha256")
+                if isinstance(row.get("news_discovery_receipt"), dict)
+                else public_news_sha256
+            ),
         )
+        enriched["news_intelligence_status"] = enriched["news_research_handoff"]["research_status"]
+        enriched["news_research_rescore_requested"] = enriched["news_research_handoff"]["research_rescore_requested"]
     enriched["can_execute"] = False
     return enriched
 
@@ -78,7 +94,10 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         receipt = (common_news if isinstance(common_news, dict) and isinstance(digest, str)
                    and len(digest) == 64 and row.get("public_news_discovery_sha256") == digest
                    and row.get("sport_key") == common_news.get("sport_key") else None)
-        return enrich_candidate(row, lane, public_news=receipt)
+        return enrich_candidate(
+            row, lane, public_news=receipt,
+            public_news_sha256=digest if receipt is not None else None,
+        )
     handoff["team_event_candidates"] = [enrich(row, "TEAM_EVENT") for row in handoff.get("team_event_candidates", []) or [] if isinstance(row, dict)]
     handoff["prop_candidates"] = [enrich(row, "PROP") for row in handoff.get("prop_candidates", []) or [] if isinstance(row, dict)]
     out["model_handoff"] = handoff
@@ -172,8 +191,17 @@ def _attach_sibling_news(payload: dict[str, Any], source: Path) -> dict[str, Any
                 touched += 1
             updated.append(item)
         updated_handoff[lane] = updated
-    out = status("NEWS_DISCOVERY_ATTACHED" if touched else "NEWS_NO_MATCHING_SPORT",
-                 touched=touched, digest=digest)
+    bridge_status = ("NEWS_SOURCE_BLOCKED" if discovery["source_status"] == "BLOCKED"
+                     else "NEWS_DISCOVERY_ATTACHED" if touched else "NEWS_NO_MATCHING_SPORT")
+    out = status(bridge_status, touched=touched, digest=digest)
+    out["public_news_discovery_bridge"].update({
+        "source_status": discovery["source_status"],
+        "sport_key": discovery["sport_key"],
+        "source_code": discovery.get("source_code"),
+        "article_count": len(discovery["articles"]),
+        "source_observed_at": discovery.get("source_observed_at"),
+        "model_rescore_verified": False,
+    })
     out["model_handoff"] = updated_handoff
     if touched:
         out["public_news_discovery_receipt"] = discovery
@@ -205,6 +233,8 @@ def main() -> int:
         "snapshot_evidence_rows_attached": bridge.get("evidence_rows_attached", 0),
         "snapshot_candidates_touched": bridge.get("candidates_touched", 0),
         "news_bridge_status": enriched.get("public_news_discovery_bridge", {}).get("status", "NOT_PRESENT"),
+        "news_source_code": enriched.get("public_news_discovery_bridge", {}).get("source_code", "NOT_PRESENT"),
+        "news_article_count": enriched.get("public_news_discovery_bridge", {}).get("article_count", 0),
         "news_candidates_touched": enriched.get("public_news_discovery_bridge", {}).get("candidates_touched", 0),
         "can_execute": False,
     }))

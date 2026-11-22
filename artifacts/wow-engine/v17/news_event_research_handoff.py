@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -44,6 +46,20 @@ def _valid_https(url: Any) -> bool:
         return False
 
 
+def _headline_key(value: Any) -> str | None:
+    """Exact normalized headline fingerprint; conservative syndication signal.
+
+    Never treats domain diversity as independence when articles carry the
+    same headline. This is not semantic plagiarism detection: distinct
+    headlines can still share a wire service and require external review.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    tokens = re.findall(r"\w+", normalized, flags=re.UNICODE)
+    return " ".join(tokens) if tokens else None
+
+
 def _hash(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -56,6 +72,7 @@ def reconcile_news_handoff(
     reviewed_facts: Sequence[Mapping[str, Any]] = (),
     *,
     observed_at: datetime | None = None,
+    source_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Produce one auditable, non-authorizing event-specific news research receipt.
 
@@ -70,10 +87,24 @@ def reconcile_news_handoff(
     sport = event.get("sport_key")
     event_id = event.get("official_event_id")
     kickoff = _utc(event.get("event_start_utc"))
+    # The exact raw artifact checksum originates in the sibling artifact reader.
+    # Direct fixtures may omit it: never assert a raw-byte digest from parsed JSON.
+    raw_sha = (
+        source_receipt_sha256 if isinstance(source_receipt_sha256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", source_receipt_sha256) else None
+    )
     base = {
         "schema_version": "wow.v17.news_event_research_handoff.v1",
         "sport_key": sport,
         "official_event_id": event_id,
+        "provider_event_id": event.get("provider_event_id"),
+        "canonical_identity_status": event.get("canonical_identity_status"),
+        "official_event_identity_verified": event.get("official_event_identity_verified") is True,
+        "event_start_utc": kickoff.isoformat() if kickoff else None,
+        "research_observed_at_utc": now.isoformat(),
+        "discovery_observed_at_utc": None,
+        "source_receipt_sha256": raw_sha,
+        "discovery_canonical_sha256": None,
         "source_code": discovery.get("source_code"),
         "research_status": "NEWS_INPUT_INVALID",
         "news_context": [],
@@ -97,6 +128,23 @@ def reconcile_news_handoff(
         out["receipt_sha256"] = _hash(out)
         return out
 
+    if source_receipt_sha256 is not None and raw_sha is None:
+        return finish("NEWS_DISCOVERY_DIGEST_INVALID")
+    # Provider event UUIDs are discovery identifiers, not official fixtures.
+    # Existing downstream market routing may still carry a legacy
+    # official_event_id alias; do not let it authenticate news.
+    provider_id = event.get("provider_event_id")
+    if (
+        event.get("official_event_identity_verified") is False
+        or event.get("canonical_identity_status") == "PROVIDER_EVENT_ID_UNVERIFIED"
+        or (
+            isinstance(provider_id, str)
+            and provider_id.strip()
+            and provider_id == event_id
+            and event.get("official_event_identity_verified") is not True
+        )
+    ):
+        return finish("NEWS_CANONICAL_EVENT_UNVERIFIED")
     if not isinstance(sport, str) or not sport or not isinstance(event_id, str) or not event_id or kickoff is None:
         return finish("NEWS_CANONICAL_EVENT_UNVERIFIED")
     if now >= kickoff:
@@ -110,14 +158,31 @@ def reconcile_news_handoff(
     source_seen = _utc(discovery.get("source_observed_at"))
     if source_seen is None or source_seen > now or source_seen >= kickoff:
         return finish("NEWS_DISCOVERY_TIME_INVALID")
+    base["discovery_observed_at_utc"] = source_seen.isoformat()
 
     articles = discovery.get("articles")
     if not isinstance(articles, list):
+        return finish("NEWS_DISCOVERY_SHAPE_INVALID")
+    try:
+        # Canonical parsed-payload fingerprint is distinct from the exact
+        # source_receipt_sha256 of original on-disk bytes; retain BOTH.
+        base["discovery_canonical_sha256"] = _hash(discovery)
+    except (TypeError, ValueError, OverflowError):
         return finish("NEWS_DISCOVERY_SHAPE_INVALID")
     article_urls = {
         article.get("source_url")
         for article in articles
         if isinstance(article, dict) and _valid_https(article.get("source_url"))
+    }
+    # Map each discovery URL to a stable same-headline fingerprint.
+    # Retain every original URL and review row for provenance/conservation.
+    # The presence of different publishers alone is not independent evidence
+    # when the article headline is a copy of the same syndicated release.
+    headlines_by_url = {
+        article["source_url"]: _headline_key(article.get("title"))
+        for article in articles
+        if (isinstance(article, dict) and _valid_https(article.get("source_url"))
+            and article["source_url"] in article_urls)
     }
     if not article_urls:
         return finish("NEWS_NO_ATTRIBUTED_ARTICLES")
@@ -157,6 +222,7 @@ def reconcile_news_handoff(
             "source_class": fact["source_class"],
             "independent_review_ref": str(fact["independent_review_ref"]),
             "publisher_published_at_utc": published.isoformat(),
+            "independently_reviewed_at_utc": reviewed.isoformat(),
             "evidence_kind": fact["evidence_kind"],
             "subject_id": str(fact.get("subject_id") or ""),
             "fact_value": fact["fact_value"],
@@ -205,10 +271,22 @@ def reconcile_news_handoff(
                 and r["subject_id"] == row["subject_id"]
                 and r["fact_value"] == row["fact_value"]
             ]
+            # An official team/league confirmation stands on its own;
+            # a coincident secondary headline must not downgrade it.
+            if any(r["source_class"] in OFFICIAL_CLASSES for r in confirmations):
+                continue
             # Both distinct publisher URLs and distinct independent groups.
             if (len({r["source_url"] for r in confirmations}) < 2
                     or len({r["source_group"] for r in confirmations}) < 2):
                 return finish("NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED", rows)
+            headline_keys = {
+                headlines_by_url.get(r["source_url"]) for r in confirmations
+            }
+            if None in headline_keys or len(headline_keys) < 2:
+                return finish(
+                    "NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED", rows,
+                    conflicts=["SYNDICATED_OR_UNATTRIBUTED_HEADLINES"],
+                )
     return finish("NEWS_RESEARCH_RESCORE_REQUESTED", rows, request=True)
 
 

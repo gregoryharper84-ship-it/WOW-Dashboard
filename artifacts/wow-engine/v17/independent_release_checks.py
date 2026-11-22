@@ -418,6 +418,24 @@ def targets(repo: str, *, pr: str | None = None,
                     "disposition": "neutral",
                     "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
                 }
+            # A draft cannot be merged, so it is never a QA target. Mirrors
+            # Release's --neutral-if-draft-target: an automatic callback for a
+            # draft publishes no check and must not fail the protected-main
+            # commit Render's checksPass trigger is evaluating. Manual
+            # dispatch still evaluates drafts (QA_PR_DRAFT HOLD). Only a draft
+            # still at the exact event head qualifies; a moved draft keeps the
+            # strict identity-mismatch error below.
+            if (
+                neutral_superseded and len(workflow_run_prs) == 1
+                and same_origin and live.get("state") == "open"
+                and live.get("draft") is True and not live.get("merged_at")
+                and current_sha == sha
+            ):
+                return {
+                    "targets": [], "errors": [],
+                    "disposition": "neutral",
+                    "reason": "QA_SOURCE_PR_DRAFT",
+                }
             if (
                 live.get("number") != number
                 or head.get("sha") != sha

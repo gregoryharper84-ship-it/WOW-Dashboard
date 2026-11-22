@@ -12,7 +12,7 @@ import math
 import re
 from typing import Any, Mapping, Sequence
 
-from v17.propsmadness_multisport_public_explore import MARKETS
+from v17.propsmadness_multisport_public_explore import MARKETS, _config
 
 SCHEMA = "WOW_PM_SHARED_INTELLIGENCE_RESEARCH_V1"
 SOURCE_SCHEMA = "WOW_PM_MULTISPORT_PUBLIC_DISCOVERY_V1"
@@ -93,7 +93,8 @@ def build_shared_intelligence_handoff(receipts: Sequence[Mapping[str, Any]]) -> 
         _require(page not in seen_pages, "PM_HANDOFF_DUPLICATE_SOURCE_PAGE")
         seen_pages.add(page)
         stat = MARKETS[sport][market][0]
-        url = f"https://propsmadness.com/{sport.lower()}/props/{market}"
+        # Resolve provenance with the same allowlisted URL as the fetcher.
+        url = _config(sport, market)[2]
         digest = receipt.get("html_sha256")
         _require(receipt.get("source_url") == url and isinstance(digest, str)
                  and HEX64.fullmatch(digest) is not None,

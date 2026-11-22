@@ -37,13 +37,15 @@ def _gate_script():
 
 
 def _run(tmp_path, *, changed_name=None, changed_app=None, changed_status=None,
-         moved_head=False, omit=None):
+         moved_head=False, omit=None, lane=None, mergeable_state=None):
     pr = {
         "state": "open", "draft": False,
         "head": {"sha": "b" * 40 if moved_head else HEAD,
                  "repo": {"full_name": REPO}},
         "base": {"ref": "main", "repo": {"full_name": REPO}},
     }
+    if mergeable_state is not None:
+        pr["mergeable_state"] = mergeable_state
     checks = [
         {
             "id": i + 1, "name": name, "head_sha": HEAD,
@@ -86,6 +88,8 @@ def _run(tmp_path, *, changed_name=None, changed_app=None, changed_status=None,
         PR_NUMBER="11",
         GH_TOKEN="read-only-test",
     )
+    if lane is not None:
+        env["LANE"] = lane
     proc = subprocess.run(
         ["bash", "-c", _gate_script()], cwd=ROOT, env=env,
         capture_output=True, text=True, timeout=15, check=False,
@@ -115,3 +119,23 @@ def test_missing_foreign_failed_or_moved_head_never_approves(tmp_path, failure):
     assert "approved=true" not in output
     assert output.splitlines()[-1] == "approved=false"
     assert "V4_" in summary
+
+
+def test_ordinary_lane_merges_only_on_clean_current_branch(tmp_path):
+    proc, output, summary = _run(tmp_path, lane="ordinary", mergeable_state="clean")
+    assert proc.returncode == 0, proc.stderr
+    assert output.splitlines()[-1] == "approved=true"
+
+
+@pytest.mark.parametrize("state", ["behind", "dirty", "blocked", "unstable", "unknown", None])
+def test_ordinary_lane_holds_when_branch_not_clean(tmp_path, state):
+    proc, output, summary = _run(tmp_path, lane="ordinary", mergeable_state=state)
+    assert proc.returncode == 0, proc.stderr
+    assert output.splitlines()[-1] == "approved=false"
+    assert f"ORDINARY_BRANCH_NOT_CURRENT:{state or 'unknown'}" in summary
+
+
+def test_morning_green_lane_unchanged_by_mergeable_state(tmp_path):
+    proc, output, _ = _run(tmp_path, lane="morning-green", mergeable_state="behind")
+    assert proc.returncode == 0, proc.stderr
+    assert output.splitlines()[-1] == "approved=true"

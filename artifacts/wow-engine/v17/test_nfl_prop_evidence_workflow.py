@@ -38,3 +38,13 @@ def test_nfl_hourly_evidence_producer_includes_thursday_on_tuesday_without_extra
     assert 'probability_publishable' in source and 'WOW_CAN_EXECUTE: "false"' in source
     # Three bounded 180-second POSTs plus OIDC and health may exceed 10 minutes.
     assert 'timeout-minutes: 12' in source
+
+
+def test_nfl_hourly_evidence_producer_logs_bounded_row_blocker_codes():
+    """Held rows must be accountable in the run log: the endpoint's row-scoped blocker
+    codes (player:stat:CODE) are printed, bounded, and never replace the authority checks."""
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (repo_root / ".github" / "workflows" / "wow-v17-nfl-prop-forward-evidence.yml").read_text()
+    assert "'blockers': [str(b)[:200] for b in (payload.get('blockers') or [])[:40]]" in source
+    # The fail-closed authority assertions stay ahead of the summary print.
+    assert source.index("must remain false") < source.index("'blockers': [str(b)[:200]")
