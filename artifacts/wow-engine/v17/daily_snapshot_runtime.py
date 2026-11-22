@@ -257,9 +257,20 @@ def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
     """
     result = row.get("result") or {}
     code = str(result.get("code") or result.get("model_status") or result.get("terminal_status") or "")
-    blockers = [str(b) for b in (result.get("blockers") or [])]
+    blockers = [str(b) for b in (result.get("blockers") or []) if str(b).strip()]
     if not blockers and code:
         blockers = [code]
+    # Cross-sport discovery wraps the controlling specialist's typed input
+    # failure under result.detail.  Do not discard exact NBA/NCAAB hydration,
+    # NHL goalie/injury/source, or other provider blockers in stage telemetry.
+    # These codes remain evidence only; no held row is promoted by this audit.
+    inner = result.get("detail")
+    if isinstance(inner, dict):
+        inner_blockers = inner.get("blockers")
+        if isinstance(inner_blockers, (list, tuple)):
+            for item in inner_blockers:
+                if isinstance(item, str) and item.strip() and item not in blockers:
+                    blockers.append(item)
     input_failures = (
         "MODEL_INPUTS_INSUFFICIENT",
         "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT",
