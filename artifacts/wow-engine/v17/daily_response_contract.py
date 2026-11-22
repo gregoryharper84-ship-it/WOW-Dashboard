@@ -441,9 +441,10 @@ def compact_moneyline_result(result: dict[str, Any]) -> dict[str, Any]:
     compact["rank_eligible"] = rank_eligible
     compact["model_probability_available"] = model_available
     compact["official_leaderboard_eligible"] = official
-    compact["probability_visibility_status"] = str(
-        result.get("probability_visibility_status")
-        or ("OFFICIAL_QUALIFIED" if official else "MODELED_HELD" if model_available else "BLOCKED_UNSCORED")
+    # Always derive visibility from final eligibility. A stale
+    # OFFICIAL_QUALIFIED label surviving rank-ceiling demotion must not win.
+    compact["probability_visibility_status"] = (
+        "OFFICIAL_QUALIFIED" if official else "MODELED_HELD" if model_available else "BLOCKED_UNSCORED"
     )
     compact["can_execute"] = False
     return compact
