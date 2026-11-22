@@ -25,6 +25,7 @@ from v17.fitted_team_event_certification import (
 )
 from v17.nhl_candidate_preflight import NHLCandidatePreflightError
 from v17.nhl_starter_goalie_confirmation import (
+    START_TIME_TOLERANCE,
     TrustedProvider,
     confirm_starting_goalies,
 )
@@ -102,6 +103,99 @@ def _require_settlement_basis(evidence: Mapping[str, Any], req: Any | None = Non
     return evidence_basis.strip()
 
 
+def _text_upper(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _attested_receipt_matchup(receipts: Any) -> dict[str, Any]:
+    """Read event identity from attested receipts after confirmation agreement."""
+    if not isinstance(receipts, (list, tuple)) or not receipts:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT", ["NHL_STARTER_RECEIPTS_INCOMPLETE"]
+        )
+    first = receipts[0]
+    if not isinstance(first, Mapping):
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT", ["NHL_STARTER_RECEIPTS_INCOMPLETE"]
+        )
+    start = _aware(first.get("event_start_time_utc"))
+    if start is None:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT", ["NHL_STARTER_RECEIPTS_INCOMPLETE"]
+        )
+    return {
+        "official_event_id": str(first.get("official_event_id") or "").strip(),
+        "home_team_id": _text_upper(first.get("home_team_id")),
+        "away_team_id": _text_upper(first.get("away_team_id")),
+        "event_start_time_utc": start,
+    }
+
+
+def _bind_request_matchup_to_attested_receipts(
+    *,
+    receipts: Any,
+    confirmed: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    official_event_id: str | None,
+    home_team: str | None,
+    away_team: str | None,
+    event_start_time_utc: Any,
+) -> None:
+    """Require the scored request matchup to equal the attested receipt identity.
+
+    Valid receipts for one event must not authorize scoring a different
+    caller-selected home/away or start time. Missing request identity fails closed
+    (never skipped).
+    """
+    matchup = _attested_receipt_matchup(receipts)
+    expected_event = str(
+        official_event_id or evidence.get("official_event_id") or ""
+    ).strip()
+    expected_home = _text_upper(home_team or evidence.get("home_team"))
+    expected_away = _text_upper(away_team or evidence.get("away_team"))
+    expected_start = _aware(event_start_time_utc) or _aware(
+        evidence.get("event_start_time_utc")
+    )
+    if not expected_event or not expected_home or not expected_away or expected_start is None:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_STARTER_REQUEST_MATCHUP_INCOMPLETE"],
+            detail={
+                "official_event_id": expected_event or None,
+                "home_team": expected_home or None,
+                "away_team": expected_away or None,
+                "event_start_time_utc": None if expected_start is None else expected_start.isoformat(),
+            },
+        )
+    derived_event = str(confirmed.get("official_event_id") or matchup["official_event_id"]).strip()
+    if expected_event != derived_event:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_STARTER_EVENT_IDENTITY_MISMATCH"],
+            detail={"expected": expected_event, "derived": derived_event},
+        )
+    if expected_home != matchup["home_team_id"] or expected_away != matchup["away_team_id"]:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_STARTER_EVENT_IDENTITY_MISMATCH"],
+            detail={
+                "expected_home": expected_home,
+                "expected_away": expected_away,
+                "receipt_home": matchup["home_team_id"],
+                "receipt_away": matchup["away_team_id"],
+            },
+        )
+    if abs(expected_start - matchup["event_start_time_utc"]) > START_TIME_TOLERANCE:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_STARTER_START_TIME_DISAGREEMENT"],
+            detail={
+                "expected_start": expected_start.isoformat(),
+                "receipt_start": matchup["event_start_time_utc"].isoformat(),
+            },
+        )
+
+
 def resolve_server_confirmed_goalies(
     evidence: Mapping[str, Any],
     *,
@@ -109,13 +203,17 @@ def resolve_server_confirmed_goalies(
     trusted_providers: Mapping[str, TrustedProvider] | None,
     attestation_key: bytes | None,
     official_event_id: str | None = None,
+    home_team: str | None = None,
+    away_team: str | None = None,
+    event_start_time_utc: Any = None,
 ) -> dict[str, Any]:
     """Derive CONFIRMED goalies from two attested OFFICIAL receipts only.
 
     Caller-supplied ``goalie_status``, ``goalie_identity_snapshot_id``, or any
     ``derived_server_side`` / ``server_owned`` flag is never authority. Missing
     registry, key, or receipts fail closed through the starter confirmation
-    contract codes.
+    contract codes. The request event id, home/away teams, and start time must
+    bind exactly to the attested receipt matchup before scoring may proceed.
     """
     receipts = evidence.get(STARTER_PROVIDER_RECEIPTS_FIELD)
     providers = trusted_providers if isinstance(trusted_providers, Mapping) else {}
@@ -134,18 +232,15 @@ def resolve_server_confirmed_goalies(
             detail=str(exc),
         ) from exc
 
-    derived_event = str(confirmed.get("official_event_id") or "").strip()
-    expected_event = str(
-        official_event_id
-        or evidence.get("official_event_id")
-        or ""
-    ).strip()
-    if expected_event and derived_event and expected_event != derived_event:
-        raise NHLCertifiedScoringError(
-            "MODEL_INPUTS_INSUFFICIENT",
-            ["NHL_STARTER_EVENT_IDENTITY_MISMATCH"],
-            detail={"expected": expected_event, "derived": derived_event},
-        )
+    _bind_request_matchup_to_attested_receipts(
+        receipts=receipts,
+        confirmed=confirmed,
+        evidence=evidence,
+        official_event_id=official_event_id,
+        home_team=home_team,
+        away_team=away_team,
+        event_start_time_utc=event_start_time_utc,
+    )
     return confirmed
 
 
@@ -179,6 +274,9 @@ def _require_goalie_ready(
     trusted_providers: Mapping[str, TrustedProvider] | None = None,
     attestation_key: bytes | None = None,
     official_event_id: str | None = None,
+    home_team: str | None = None,
+    away_team: str | None = None,
+    event_start_time_utc: Any = None,
 ) -> dict[str, Any]:
     return resolve_server_confirmed_goalies(
         evidence,
@@ -186,6 +284,9 @@ def _require_goalie_ready(
         trusted_providers=trusted_providers,
         attestation_key=attestation_key,
         official_event_id=official_event_id,
+        home_team=home_team,
+        away_team=away_team,
+        event_start_time_utc=event_start_time_utc,
     )
 
 
@@ -254,12 +355,20 @@ def build_nhl_certified_envelope(
             "MODEL_OUTPUT_INVALID", ["NHL_IDENTITY_CALIBRATOR_FORBIDDEN"]
         )
     settlement_basis = _require_settlement_basis(evidence, req)
+    request_home = home_team or (getattr(req, "home_team", None) if req is not None else None)
+    request_away = away_team or (getattr(req, "away_team", None) if req is not None else None)
+    request_start = (
+        getattr(req, "event_start_time_utc", None) if req is not None else None
+    )
     _require_goalie_ready(
         evidence,
         now_utc=now_utc,
         trusted_providers=trusted_providers,
         attestation_key=attestation_key,
         official_event_id=official_event_id,
+        home_team=str(request_home or "") or None,
+        away_team=str(request_away or "") or None,
+        event_start_time_utc=request_start or evidence.get("event_start_time_utc"),
     )
 
     raw = _probability(raw_home)
@@ -434,7 +543,8 @@ def score_nhl_certified_event(
         )
 
     # Canonicalize goalies before scoring so specialist scalar checks cannot be
-    # satisfied by forged caller status/ID strings.
+    # satisfied by forged caller status/ID strings. Attested receipts must also
+    # bind to the request matchup (event id, home/away, start) — not only goalies.
     confirmed = resolve_server_confirmed_goalies(
         raw_evidence,
         now_utc=now,
@@ -444,6 +554,12 @@ def score_nhl_certified_event(
             getattr(req, "official_event_id", None)
             or raw_evidence.get("official_event_id")
             or ""
+        ),
+        home_team=str(getattr(req, "home_team", None) or raw_evidence.get("home_team") or ""),
+        away_team=str(getattr(req, "away_team", None) or raw_evidence.get("away_team") or ""),
+        event_start_time_utc=(
+            getattr(req, "event_start_time_utc", None)
+            or raw_evidence.get("event_start_time_utc")
         ),
     )
     evidence = rehydrate_evidence_with_server_goalies(raw_evidence, confirmed)
