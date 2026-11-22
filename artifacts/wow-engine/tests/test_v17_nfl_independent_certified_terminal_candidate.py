@@ -21,7 +21,8 @@ def test_complete_source_function_and_singular_reducer_only():
     assert sql.count("if r.event_start_time_utc <= now()") == 1
     assert sql.count("end;\n$function$;") == 1
     assert "v_certified := coalesce(" in sql
-    assert "and v_distinct_games>=v_health.minimum_forward_required," in sql
+    assert "and v_distinct_games>=v_health.minimum_forward_required" in sql
+    assert "and v_exact_quality," in sql
 
 
 def test_certification_is_external_exact_identity_and_not_retroactive():
@@ -58,3 +59,48 @@ def test_no_blind_mutation_or_registry_publication_override():
     ):
         assert forbidden not in live.lower()
     assert not re.search(r"\b(create|replace)\s+function\s+public\.wow_v17_nfl_team_event_governance_bridge", live, re.I)
+
+def test_sql_reducer_cannot_borrow_global_health_from_another_artifact():
+    sql = _sql()
+    exact = sql[sql.index("with exact_cohort as ("):sql.index("v_certified := coalesce(")]
+    for clause in (
+        "g.model_version=r.model_version",
+        "g.model_artifact_id=r.model_artifact_id",
+        "g.artifact_checksum=a.artifact_checksum",
+        "g.prediction_created_at < g.event_start_time_utc",
+        "v_exact_brier < 0.25",
+        "v_exact_log_loss < ln(2.0)",
+        "v_exact_ece <= 0.12",
+        "v_exact_abs_bias <= 0.08",
+        "v_exact_lower_gap >= -0.03",
+        "nullif(q.cohort_n,0)",
+        "sum(abs(net_probability_error))",
+    ):
+        assert clause in exact
+    assert "NFL_EXACT_COHORT_CALIBRATION_NOT_PASS" in sql
+    assert "and v_exact_quality," in sql
+    assert sql.index("v_exact_quality := coalesce(") < sql.index("v_certified := coalesce(")
+
+
+def test_ece_reducer_uses_same_ten_bins_and_sample_weight_as_python():
+    # Numerical adversarial example: a global PASS cannot certify a wholly
+    # miscalibrated exact cohort. This regression documents the SQL formula;
+    # a real PostgreSQL semantic replay is still mandatory before migration.
+    import math
+    grades = [(0.91, 0, 0.80)] * 100
+    bins = {}
+    for p, y, lower in grades:
+        bin_id = min(math.floor(p * 10), 9)
+        bins[bin_id] = bins.get(bin_id, 0.0) + p - y
+    ece = sum(abs(net) for net in bins.values()) / len(grades)
+    brier = sum((p-y)**2 for p,y,_ in grades) / len(grades)
+    log_loss = sum(-math.log(1-p) for p,_,_ in grades) / len(grades)
+    bias = abs(sum(p-y for p,y,_ in grades) / len(grades))
+    lower_gap = sum(y-lower for _,y,lower in grades) / len(grades)
+    assert ece > 0.12
+    assert brier > 0.25
+    assert log_loss > math.log(2)
+    assert bias > 0.08
+    assert lower_gap < -0.03
+
+
