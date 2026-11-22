@@ -709,3 +709,51 @@ def test_shared_endpoint_survives_an_uncaught_nba_replay_failure(monkeypatch):
     assert report["automatic_certification"] is False
     assert report["automatic_promotion"] is False
     assert report["can_execute"] is False
+
+
+def test_immutable_certification_lookup_binds_exact_model_and_artifact():
+    """A prior NBA certificate cannot masquerade as the current candidate."""
+    tables = _fixture()
+    artifact = tables["wow_basketball_team_event_model_artifacts"][0]
+    version, checksum = artifact["model_artifact_version"], artifact["artifact_checksum"]
+    certificates = [
+        {"certification_id": "other-version", "model_version": "NBA_OLDER",
+         "artifact_sha256": checksum, "sport": "NBA", "certified_at": "2026-01-01T00:00:00Z"},
+        {"certification_id": "other-artifact", "model_version": version,
+         "artifact_sha256": "f" * 64, "sport": "NBA", "certified_at": "2026-01-02T00:00:00Z"},
+    ]
+    tables["wow_team_event_specialist_certifications"] = certificates
+    db = _DB(tables)
+    report = run_nba_team_event_certification_replay(db)
+    assert report["immutable_certification_record_present"] is False
+    query = [q for name, q in db.queries
+             if name == "wow_team_event_specialist_certifications"][0]
+    assert ("model_version", version) in query.filters
+    assert ("artifact_sha256", checksum) in query.filters
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+    certificates.append({
+        "certification_id": "exact-candidate", "model_version": version,
+        "artifact_sha256": checksum, "sport": "NBA",
+        "certified_at": "2026-01-03T00:00:00Z",
+    })
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["immutable_certification_record_present"] is True
+    assert report["probability_publishable"] is False
+    assert report["automatic_certification"] is False
+
+
+def test_nonfinite_nba_candidate_remains_json_serializable_and_unpublished():
+    """A corrupt numeric artifact must not cause a D1 replay API JSON 500."""
+    tables = _fixture()
+    artifact = tables["wow_basketball_team_event_model_artifacts"][0]
+    artifact["artifact_payload"]["intercept"] = "NaN"
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+    assert report.get("numerical_replay_status") != "PASS"
+    # This fails if NaN/Infinity escapes through any partial replay metric.
+    json.dumps(report, allow_nan=False)
+
+
