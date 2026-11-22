@@ -104,6 +104,10 @@ def test_good_research_receipt_is_valid_not_prediction_authority():
 @pytest.mark.parametrize("mutation", [
     lambda s: s.update(official_event_id="other-game"),
     lambda s: s.update(worker_id="unauthorized-worker"),
+    lambda s: s.update(worker_id=["wow.source-provenance-researcher"]),
+    lambda s: s.update(worker_id={"name": "wow.source-provenance-researcher"}),
+    lambda s: s["facts"][0].update(feature="fitted_probability", value=0.8),
+    lambda s: s["facts"][0].update(feature="Model Win Probability", value=0.8),
     lambda s: s.update(run_id="wrong"),
     lambda s: s.update(can_execute=True),
     lambda s: s.update(research_ceiling="CERTIFIED"),
