@@ -48,7 +48,8 @@ def test_unknown_timezone_falls_back_to_utc_instead_of_raising():
 def _run_one_pass(monkeypatch, acquire: Any) -> list[str]:
     calls: list[str] = []
 
-    def _acquire(*, db, requested_date, requested_timezone, max_candidates):
+    def _acquire(*, db, requested_date, requested_timezone, max_candidates, include_nfl=False):
+        assert include_nfl is True  # The autonomous pass must include active-season NFL.
         calls.append(requested_date)
         return acquire(requested_date)
 
