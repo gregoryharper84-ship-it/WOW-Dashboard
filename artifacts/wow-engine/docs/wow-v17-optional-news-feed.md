@@ -83,8 +83,8 @@ This repair retains typed health failure steps, article counts and 90-day
 receipt retention. The earlier six-second retry was superseded by the
 single-attempt fail-fast policy below; there is no in-run 429 retry. Nightly Multi-Scout
 uses its own future canonical candidate manifest for one active-sport choice;
-it never invents news, executes more than two GDELT requests per run, or turns
-the discovery receipt into a verified publisher claim. The independent
+it never invents news, exceeds its single bounded GDELT request per run, or
+turns the discovery receipt into a verified publisher claim. The independent
 source-refresh workflow retains its original fixed 13-sport rotation. This
 does not certify same-day news coverage across active leagues.
 
@@ -144,10 +144,12 @@ GDELT receipt at 2026-11-20 18:17:02 UTC: NHL, 11 article
 URLs, one request, HTTP 200. However it declared
 `selection_policy=SLATE_UNAVAILABLE_FIXED_ROTATION`,
 `slate_active_event_counts={}`, even though that exact run's early
-discovery artifact contained 298 team-event candidates. This is because
-its original `model-handoff.json` is roughly **596 MB** due to large
-market evidence: the legacy GDELT loader refuses a manifest over 64 MB,
-then silently uses an unrelated fixed sport rotation.
+discovery artifact contained 298 team-event candidates. The explanation on
+record is manifest size: its original `model-handoff.json` is roughly
+**596 MB** due to large market evidence, and the legacy GDELT loader refuses a
+manifest over 64 MB, so that path falls back to an unrelated fixed sport
+rotation — a fallback this run labelled `SLATE_UNAVAILABLE_FIXED_ROTATION`
+rather than hid.
 
 The existing Scout script now emits a *second, bounded event-only* file
 `news-active-slate.json` alongside the full model handoff. It contains
@@ -198,13 +200,14 @@ runners, so a per-IP allowance does not account for what was observed. The
 single 200 cannot separate elapsed silence from that possible egress change, so
 it is evidence that the block lifts, not a recovery threshold.
 
-**The success that settles the policy.** Scheduled Multi-Scout [run
+**The success that supports the merged policy.** Scheduled Multi-Scout [run
 #44789095413](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44789095413)
 emitted a real `SOURCE_FETCH_OK` receipt at 2026-11-20 18:17:02 UTC: NHL, 11
 article URLs, **one request, HTTP 200**. It came from the merged collector on a
-scheduled trigger, with no wait and no in-run retry, so a real nonempty
-acquisition is reachable through one bounded request once the block lifts —
-which is what the merged policy counts on.
+scheduled trigger, with no wait and no in-run retry, so a nonempty acquisition
+was reachable through one bounded request on that run. One receipt shows that
+reachability, not that it repeats; that reachability is what the merged policy
+counts on.
 
 What this does and does not support: no measurement shows a 900-second sleep
 lifting the block, and nothing supports occupying a worker for 15 minutes to
