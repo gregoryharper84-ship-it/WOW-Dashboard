@@ -275,8 +275,8 @@ def build_dispatch(handoff: dict[str, Any]) -> dict[str, Any]:
             for i, rows in enumerate(_chunks(prop_rows, MAX_PROP_ROWS))
         ],
         "team_event_batches": [
-            {"rows": rows}
-            for rows in _chunks(team_rows, MAX_TEAM_EVENT_ROWS)
+            {"request_id": f"{research_run_id}:team_events:{i + 1}", "rows": rows}
+            for i, rows in enumerate(_chunks(team_rows, MAX_TEAM_EVENT_ROWS))
         ],
         "mapping": {
             "source_prop_rows": len(raw_props),
@@ -355,9 +355,12 @@ def _dispatch_batches(
             "body": {"code": "AUTO_ADVANCE_INVALID_RECEIPT"},
             "can_execute": False,
         }
-        result["batch_key"] = str(
-            batch.get("request_id") or f"{lane}:{index + 1}"
-        )
+        request_id = str(batch.get("request_id") or "").strip()
+        result["batch_key"] = request_id or f"{lane}:{index + 1}"
+        if request_id:
+            # Durable outbound request identity for sealed-destination readback.
+            # Synthetic batch_key labels are never persistence proof.
+            result["request_id"] = request_id
         result["batch_index"] = index + 1
         result["can_execute"] = False
         return index, result

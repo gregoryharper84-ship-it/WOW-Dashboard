@@ -34,8 +34,21 @@ def _clean_id(value: Any) -> str:
     return str(value or "").strip()
 
 
+_DURABLE_RECEIPT_FIELDS = (
+    "invocation_id",
+    "persistence_run_id",
+    "request_id",
+    "run_id",
+)
+
+
 def claimed_receipt_ids_from_auto_advance(receipt: Mapping[str, Any] | None) -> list[str]:
-    """Extract non-secret Action/run receipt IDs claimed by an auto-advance receipt."""
+    """Extract durable Action/run receipt IDs claimed by an auto-advance receipt.
+
+    Local ordering labels such as synthetic ``batch_key`` values
+    (``team_events:1``) are never durable persistence identity and must not be
+    claimed. Prefer one durable ID per row from the response/outbound request.
+    """
     if not isinstance(receipt, Mapping):
         return []
     found: list[str] = []
@@ -46,24 +59,20 @@ def claimed_receipt_ids_from_auto_advance(receipt: Mapping[str, Any] | None) -> 
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
-            for field in (
-                "invocation_id",
-                "persistence_run_id",
-                "request_id",
-                "run_id",
-                "batch_key",
-            ):
-                value = _clean_id(row.get(field))
-                if value:
-                    found.append(value)
+            durable = ""
+            for field in _DURABLE_RECEIPT_FIELDS:
+                durable = _clean_id(row.get(field))
+                if durable:
                     break
-            body = row.get("body")
-            if isinstance(body, Mapping):
-                for field in ("request_id", "run_id", "invocation_id"):
-                    value = _clean_id(body.get(field))
-                    if value:
-                        found.append(value)
-                        break
+            if not durable:
+                body = row.get("body")
+                if isinstance(body, Mapping):
+                    for field in _DURABLE_RECEIPT_FIELDS:
+                        durable = _clean_id(body.get(field))
+                        if durable:
+                            break
+            if durable:
+                found.append(durable)
     # Preserve order while dropping duplicates.
     return list(dict.fromkeys(found))
 

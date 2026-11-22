@@ -136,6 +136,50 @@ def test_auto_advance_http_artifact_alone_is_not_persistence_proof():
     assert green["can_execute"] is False
 
 
+def test_synthetic_batch_key_is_not_a_durable_receipt_claim():
+    """Local ordering labels must not poison sealed-destination readback."""
+    artifact = {
+        "prop_receipts": [],
+        "team_event_receipts": [
+            {
+                "ok": True,
+                "http_status": 200,
+                "batch_key": "team_events:1",
+                "body": {
+                    "request_id": "wow-scout-test-1:team_events:1",
+                    "can_execute": False,
+                },
+                "can_execute": False,
+            }
+        ],
+    }
+    claimed = claimed_receipt_ids_from_auto_advance(artifact)
+    assert claimed == ["wow-scout-test-1:team_events:1"]
+    assert "team_events:1" not in claimed
+
+    synthetic_only = claimed_receipt_ids_from_auto_advance(
+        {
+            "prop_receipts": [],
+            "team_event_receipts": [
+                {
+                    "ok": True,
+                    "batch_key": "team_events:1",
+                    "body": {"can_execute": False},
+                    "can_execute": False,
+                }
+            ],
+        }
+    )
+    assert synthetic_only == []
+    blocked = verify_action_persistence_provenance(
+        configured_supabase_url=SEALED_URL,
+        claimed_receipt_ids=synthetic_only,
+        readback_by_id=_store("team_events:1"),
+    )
+    assert blocked["code"] == PERSISTENCE_CLAIMED_RECEIPT_IDS_MISSING
+    assert blocked["can_execute"] is False
+
+
 @pytest.mark.parametrize(
     "mutate,code",
     [
