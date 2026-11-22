@@ -1,7 +1,8 @@
-"""Single-call, no-credential GDELT Project research receipt runner.
+"""No-credential GDELT Project research receipt runner.
 
-Runs without a Scout DB. Source errors are explicitly BLOCKED in the receipt
-but never turn into betting/prediction authority or crash a structured refresh.
+Runs without a Scout DB. A 429 is retried once on a measured, configurable
+wait ladder; any remaining source error is explicitly BLOCKED in the receipt
+but never turns into betting/prediction authority or crashes a refresh.
 """
 from __future__ import annotations
 
@@ -59,13 +60,12 @@ RETRY_MEASUREMENT = {
 # minutes and is then refused again just burns the job. Scheduled workflows
 # therefore set this to 0 (skip the retry); manual dispatches keep 900.
 RETRY_WAIT_ENV = "WOW_V17_NEWS_RETRY_WAIT_SECONDS"
-DISABLED_RETRY_VALUES = frozenset({"0", "none", "off", "skip", "disabled"})
 
 
 def parse_retry_delays(spec: str) -> tuple[int, ...]:
-    """Parse a comma-separated wait ladder; 0/off/skip disables retrying."""
+    """Parse a comma-separated wait ladder; 0 disables retrying."""
     text = (spec or "").strip().lower()
-    if text in DISABLED_RETRY_VALUES:
+    if text == "0":
         return ()
     waits = []
     for token in text.split(","):
@@ -105,9 +105,6 @@ def build_retry_policy(delays: tuple[int, ...], configured_by: str) -> dict:
         "max_total_wait_seconds": MAX_TOTAL_WAIT_SECONDS,
         **RETRY_MEASUREMENT,
     }
-
-
-RETRY_POLICY = build_retry_policy(RETRY_DELAYS_SECONDS, "default")
 
 
 def selection(at: datetime) -> tuple[str, str]:
@@ -195,8 +192,8 @@ def main() -> int:
     parser.add_argument("--candidate-manifest",
                         help="Same-run Scout handoff for active-sport research selection")
     parser.add_argument("--retry-wait-seconds", metavar="SECONDS[,SECONDS]",
-                        help=("Paced 429 retry ladder in seconds. 0, off or skip "
-                              "disables retrying. Defaults to "
+                        help=("Paced 429 retry ladder in seconds. 0 disables "
+                              "retrying. Defaults to "
                               f"${RETRY_WAIT_ENV} when set, else the measured "
                               f"{RETRY_DELAYS_SECONDS[0]}s retry."))
     args = parser.parse_args()
@@ -207,7 +204,7 @@ def main() -> int:
         parser.error(
             f"{exc}: --retry-wait-seconds / {RETRY_WAIT_ENV} must be a "
             f"comma-separated ladder of positive seconds totalling at most "
-            f"{MAX_TOTAL_WAIT_SECONDS}, or 0/off/skip to disable")
+            f"{MAX_TOTAL_WAIT_SECONDS}, or 0 to disable")
     at = datetime.now(timezone.utc)
     sport = args.sport
     policy = "EXPLICIT_SPORT" if sport else "FIXED_ROTATION"

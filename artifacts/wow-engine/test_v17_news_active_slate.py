@@ -138,7 +138,7 @@ def test_retry_ladder_is_paced_in_minutes_and_bounded(monkeypatch):
     receipt = runner.discover(AT, sport="icehockey_nhl")
     assert sleeps == list(runner.RETRY_DELAYS_SECONDS)
     assert sum(sleeps) <= runner.MAX_TOTAL_WAIT_SECONDS
-    assert min(sleeps) >= runner.RETRY_POLICY["measured_block_floor_seconds"]
+    assert min(sleeps) >= runner.RETRY_MEASUREMENT["measured_block_floor_seconds"]
     assert receipt["attempt_count"] == 1 + len(runner.RETRY_DELAYS_SECONDS)
     assert receipt["retry_policy"]["ladder_seconds"] == list(runner.RETRY_DELAYS_SECONDS)
     assert receipt["retry_policy"]["configured_by"] == "default"
@@ -160,7 +160,10 @@ def test_retry_wait_cli_flag_wins_over_env_var():
     assert runner.resolve_retry_delays("60", env) == ((60,), "cli_flag")
 
 
-@pytest.mark.parametrize("spec", ["", "abc", "-30", "0,60", "900,900", "1201"])
+# Only "0" disables retrying; word aliases are rejected rather than silently
+# accepted so a typo cannot look like a deliberate disable.
+@pytest.mark.parametrize("spec", ["", "abc", "-30", "0,60", "900,900", "1201",
+                                  "off", "skip"])
 def test_invalid_retry_wait_configuration_is_rejected(spec):
     with pytest.raises(ValueError):
         runner.parse_retry_delays(spec)
@@ -233,8 +236,11 @@ def test_scheduled_workflows_skip_the_long_wait_and_manual_runs_keep_it():
     source = (root / "wow-v17-scout-source-refresh.yml").read_text()
     for raw in (nightly, source):
         assert f"{runner.RETRY_WAIT_ENV}:" in raw
-    assert "github.event_name == 'schedule' && '0' || '900'" in source
+    # Manual dispatch is the only trigger that pays the long wait; every
+    # automated trigger (schedule, push, workflow_run) falls back to 0.
+    assert "github.event_name == 'workflow_dispatch' && '900' || '0'" in source
     assert "github.event_name == 'workflow_dispatch' && '900' || '0'" in nightly
+    assert "workflow_run:" in nightly and "push:" in nightly
     assert "--candidate-manifest" in nightly
     assert nightly.count("public-gdelt-receipt.json") >= 4
     assert "Report same-run news acquisition health (nonblocking)" in nightly
