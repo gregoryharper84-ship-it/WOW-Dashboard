@@ -182,8 +182,7 @@ def test_nonempty_stale_daily_manifest_requests_new_evidence_and_reports_source_
         }
 
     monkeypatch.setattr(runtime, "acquire_daily_prop_snapshots", acquire)
-    result = fixtures._run(db, fixtures._Market())
-    assert len(calls) == 1
+    # Bypass the globally installed Sep-21 wrapper, which intentionally forces\n    # acquisition even for fresh manifests; test the Daily core freshness rule.\n    request = runtime.DailySnapshotRequest(\n        requested_slate_date=fixtures.SLATE, requested_timezone="America/Chicago",\n        lanes=["PROPS"],\n    )\n    result = runtime._run_daily_snapshot_impl(\n        request, db=db, market_api=fixtures._Market(), event_api=object(),\n    )\n    assert len(calls) == 1
     assert calls[0]["include_nfl"] is True
     assert calls[0]["max_candidates"] >= 1
     assert "NFL_PROP_DISCOVERY_FAILED:TimeoutError" in result["blockers"]
@@ -201,6 +200,5 @@ def test_nonempty_fresh_daily_manifest_does_not_repeat_acquisition(monkeypatch):
         runtime, "acquire_daily_prop_snapshots",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("FRESH_MANIFEST_REACQUIRED")),
     )
-    result = fixtures._run(db, fixtures._Market())
-    assert len(result["rows"]) == 1
+    request = runtime.DailySnapshotRequest(\n        requested_slate_date=fixtures.SLATE, requested_timezone="America/Chicago",\n        lanes=["PROPS"],\n    )\n    result = runtime._run_daily_snapshot_impl(\n        request, db=db, market_api=fixtures._Market(), event_api=object(),\n    )\n    assert len(result["rows"]) == 1
     assert result["can_execute"] is False
