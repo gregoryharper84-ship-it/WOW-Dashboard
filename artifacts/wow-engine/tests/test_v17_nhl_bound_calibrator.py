@@ -126,3 +126,99 @@ def test_assess_rejects_missing_chronological_quality():
     )
     assert report["code"] == "NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING"
     assert report["g3_ready"] is False
+
+
+def test_build_normalizes_homogeneous_wilson_endpoints_for_scoring_contract():
+    # Force several low-probability all-loss observations so Wilson lower hits 0.
+    raw = [0.05 + 0.001 * i for i in range(60)] + [0.80 + 0.001 * i for i in range(60)]
+    y = [0] * 60 + [1] * 60
+    result = bound.build_nhl_certification_bound_calibrator(
+        raw, y, fit_end_timestamp=FIT_END
+    )
+    assert result["certification_calibrator_ready"] is True
+    for entry in result["calibrator_payload"]["bins"]:
+        assert 0.0 < entry["wilson_lower"] <= entry["calibrated_probability"] <= entry["wilson_upper"] < 1.0
+        assert 0.0 <= entry["raw_mean"] <= 1.0
+    report = bound.assess_nhl_certification_bound_calibrator(result["calibrator_payload"])
+    assert report["g3_ready"] is True
+
+
+def test_assess_rejects_missing_raw_mean_and_unusable_fit_end():
+    base_bin = {
+        "calibrated_probability": 0.5,
+        "wilson_lower": 0.4,
+        "wilson_upper": 0.6,
+    }
+    missing_center = bound.assess_nhl_certification_bound_calibrator(
+        {
+            "method": EMPIRICAL_CALIBRATION_METHOD,
+            "training_n": 100,
+            "bins": [base_bin],
+            "fit_end_timestamp": FIT_END.isoformat(),
+            "chronological_quality": {
+                "evaluation_n": 40,
+                "pre_brier": 0.2,
+                "post_brier": 0.19,
+                "pre_log_loss": 0.5,
+                "post_log_loss": 0.49,
+                "calibration_bias": 0.01,
+                "lower_bound_reliability_gap": 0.02,
+            },
+        }
+    )
+    assert missing_center["code"] == "NHL_BOUND_CALIBRATOR_BINS_INVALID"
+
+    bad_fit_end = bound.assess_nhl_certification_bound_calibrator(
+        {
+            "method": EMPIRICAL_CALIBRATION_METHOD,
+            "training_n": 100,
+            "bins": [{**base_bin, "raw_mean": 0.5}],
+            "fit_end_timestamp": "not-a-date",
+            "chronological_quality": {
+                "evaluation_n": 40,
+                "pre_brier": 0.2,
+                "post_brier": 0.19,
+                "pre_log_loss": 0.5,
+                "post_log_loss": 0.49,
+                "calibration_bias": 0.01,
+                "lower_bound_reliability_gap": 0.02,
+            },
+        }
+    )
+    assert bad_fit_end["code"] == "NHL_BOUND_CALIBRATOR_FIT_END_INVALID"
+
+
+def test_assess_rejects_nonfinite_quality_and_boundary_raw_inputs():
+    with pytest.raises(bound.NHLBoundCalibratorError) as exc:
+        bound.build_nhl_certification_bound_calibrator(
+            [0.0] + [0.4] * 60 + [0.7] * 60,
+            [0] + [0] * 60 + [1] * 60,
+            fit_end_timestamp=FIT_END,
+        )
+    assert exc.value.code == "NHL_BOUND_CALIBRATOR_INPUT_OUT_OF_RANGE"
+
+    report = bound.assess_nhl_certification_bound_calibrator(
+        {
+            "method": EMPIRICAL_CALIBRATION_METHOD,
+            "training_n": 100,
+            "bins": [
+                {
+                    "raw_mean": 0.5,
+                    "calibrated_probability": 0.5,
+                    "wilson_lower": 0.4,
+                    "wilson_upper": 0.6,
+                }
+            ],
+            "fit_end_timestamp": FIT_END.isoformat(),
+            "chronological_quality": {
+                "evaluation_n": 40,
+                "pre_brier": float("nan"),
+                "post_brier": 0.19,
+                "pre_log_loss": 0.5,
+                "post_log_loss": 0.49,
+                "calibration_bias": 0.01,
+                "lower_bound_reliability_gap": 0.02,
+            },
+        }
+    )
+    assert report["code"] == "NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING"

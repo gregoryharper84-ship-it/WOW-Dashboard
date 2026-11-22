@@ -28,6 +28,8 @@ PROBABILITY_PUBLISHABLE = False
 CERTIFICATION_CALIBRATOR_VERSION = "NHL_CERTIFICATION_BOUND_CALIBRATOR_V1"
 MIN_CALIBRATION_N = 50
 MIN_SELECTION_EVAL_N = 20
+# Match nhl_fitted_specialist._probability / scoring open-interval contract.
+OPEN_PROB_EPS = 1e-6
 
 
 class NHLBoundCalibratorError(RuntimeError):
@@ -49,16 +51,81 @@ def _sha256(value: Any) -> str:
     ).hexdigest()
 
 
+def _parse_aware_timestamp(value: Any) -> str:
+    """Require a timezone-aware fit-end timestamp; return canonical ISO text."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_FIT_END_TIMEZONE_REQUIRED")
+        return value.isoformat()
+    text = str(value or "").strip()
+    if not text:
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_FIT_END_INVALID")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_FIT_END_INVALID", text) from exc
+    if parsed.tzinfo is None:
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_FIT_END_TIMEZONE_REQUIRED", text)
+    return parsed.isoformat()
+
+
+def _open_probability(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or not (0.0 < number < 1.0):
+        return None
+    return number
+
+
+def _clip_open(value: float) -> float:
+    return min(max(float(value), OPEN_PROB_EPS), 1.0 - OPEN_PROB_EPS)
+
+
+def _normalize_bin(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Clip Wilson endpoints into the open unit interval used by scoring."""
+    try:
+        calibrated = float(entry["calibrated_probability"])
+        lower = float(entry["wilson_lower"])
+        upper = float(entry["wilson_upper"])
+        raw_mean = float(entry["raw_mean"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_BINS_INVALID") from exc
+    if not all(math.isfinite(v) for v in (calibrated, lower, upper, raw_mean)):
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_BINS_INVALID")
+    if not 0.0 <= raw_mean <= 1.0:
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_BINS_INVALID")
+    calibrated = _clip_open(calibrated)
+    lower = _clip_open(lower)
+    upper = _clip_open(upper)
+    lower = min(lower, calibrated)
+    upper = max(upper, calibrated)
+    if not (OPEN_PROB_EPS <= lower <= calibrated <= upper <= 1.0 - OPEN_PROB_EPS):
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_BOUNDS_ORDER_INVALID")
+    normalized = dict(entry)
+    normalized["calibrated_probability"] = calibrated
+    normalized["wilson_lower"] = lower
+    normalized["wilson_upper"] = upper
+    normalized["raw_mean"] = raw_mean
+    return normalized
+
+
+def _normalize_bins(bins: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    if not bins:
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_BINS_MISSING")
+    return [_normalize_bin(entry) for entry in bins]
+
+
 def _finite_unit_interval(values: Sequence[Any], *, label: str) -> np.ndarray:
     arr = np.asarray(values, dtype=float)
     if arr.ndim != 1 or len(arr) == 0:
         raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_INPUT_INVALID", label)
     if not np.all(np.isfinite(arr)):
         raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_INPUT_NONFINITE", label)
+    # Raw inputs must be open-interval; mapping clips after fit.
     if np.any((arr <= 0.0) | (arr >= 1.0)):
-        # Allow exact 0/1 only after clip at map time; raw inputs must be open.
-        if np.any((arr < 0.0) | (arr > 1.0)):
-            raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_INPUT_OUT_OF_RANGE", label)
+        raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_INPUT_OUT_OF_RANGE", label)
     return arr
 
 
@@ -169,8 +236,11 @@ def build_nhl_certification_bound_calibrator(
     except BinaryCandidateError as exc:
         raise NHLBoundCalibratorError(exc.code, str(exc)) from exc
 
+    # Normalize selection bins before evaluation so 0/1 Wilson endpoints match
+    # the open-interval contract used by nhl_fitted_specialist scoring.
+    selection_fit = dict(selection_fit)
+    selection_fit["bins"] = _normalize_bins(list(selection_fit.get("bins") or []))
     cal_eval, lower_eval, upper_eval = _map_bounds(eval_p, selection_fit)
-    # Bound order invariant on the evaluation mapping.
     if not np.all((lower_eval <= cal_eval) & (cal_eval <= upper_eval)):
         raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_BOUNDS_ORDER_INVALID")
 
@@ -206,23 +276,18 @@ def build_nhl_certification_bound_calibrator(
             "disposition": "WORKING_NOT_COMPLETE",
         }
 
-    fit_end = fit_end_timestamp
-    if fit_end is None:
-        fit_end = datetime.now(timezone.utc).isoformat()
-    elif isinstance(fit_end, datetime):
-        if fit_end.tzinfo is None:
-            raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_FIT_END_TIMEZONE_REQUIRED")
-        fit_end = fit_end.isoformat()
-    else:
-        fit_end = str(fit_end).strip()
-        if not fit_end:
-            raise NHLBoundCalibratorError("NHL_BOUND_CALIBRATOR_FIT_END_INVALID")
+    normalized_bins = _normalize_bins(list(full_fit["bins"]))
+    fit_end = _parse_aware_timestamp(
+        fit_end_timestamp
+        if fit_end_timestamp is not None
+        else datetime.now(timezone.utc)
+    )
 
     payload = {
         "method": EMPIRICAL_CALIBRATION_METHOD,
         "training_n": int(full_fit["training_n"]),
         "binning": str(full_fit.get("binning") or "CHRONOLOGICAL_CALIBRATION_BLOCK_EQUAL_COUNT"),
-        "bins": list(full_fit["bins"]),
+        "bins": normalized_bins,
         "selection_version": CALIBRATOR_SELECTION_VERSION,
         "selection": {
             "decision": "EMPIRICAL_WILSON_CERTIFICATION_BOUND",
@@ -263,132 +328,96 @@ def build_nhl_certification_bound_calibrator(
     }
 
 
+def _blocked_assess(code: str, **extra: Any) -> dict[str, Any]:
+    payload = {
+        "status": "BLOCKED",
+        "code": code,
+        "g3_ready": False,
+        "certification_calibrator_ready": False,
+        "can_execute": CAN_EXECUTE,
+        "probability_publishable": PROBABILITY_PUBLISHABLE,
+        "disposition": "WORKING_NOT_COMPLETE",
+    }
+    payload.update(extra)
+    return payload
+
+
 def assess_nhl_certification_bound_calibrator(
     calibrator_payload: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Fail-closed G3 assessment of an existing calibrator payload."""
     if not isinstance(calibrator_payload, Mapping):
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_BOUND_CALIBRATOR_PAYLOAD_MISSING",
-            "g3_ready": False,
-            "certification_calibrator_ready": False,
-            "can_execute": CAN_EXECUTE,
-            "probability_publishable": PROBABILITY_PUBLISHABLE,
-            "disposition": "WORKING_NOT_COMPLETE",
-        }
+        return _blocked_assess("NHL_BOUND_CALIBRATOR_PAYLOAD_MISSING")
 
     method = str(calibrator_payload.get("method") or "")
     if method == IDENTITY_CALIBRATION_METHOD or method == "":
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_IDENTITY_CALIBRATOR_FORBIDDEN",
-            "g3_ready": False,
-            "certification_calibrator_ready": False,
-            "calibration_method": method or None,
-            "can_execute": CAN_EXECUTE,
-            "probability_publishable": PROBABILITY_PUBLISHABLE,
-            "disposition": "WORKING_NOT_COMPLETE",
-        }
+        return _blocked_assess(
+            "NHL_IDENTITY_CALIBRATOR_FORBIDDEN",
+            calibration_method=method or None,
+        )
     if method != EMPIRICAL_CALIBRATION_METHOD:
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_BOUND_CALIBRATOR_METHOD_UNSUPPORTED",
-            "g3_ready": False,
-            "certification_calibrator_ready": False,
-            "calibration_method": method,
-            "can_execute": CAN_EXECUTE,
-            "probability_publishable": PROBABILITY_PUBLISHABLE,
-            "disposition": "WORKING_NOT_COMPLETE",
-        }
+        return _blocked_assess(
+            "NHL_BOUND_CALIBRATOR_METHOD_UNSUPPORTED",
+            calibration_method=method,
+        )
+
+    training_n = calibrator_payload.get("training_n")
+    if type(training_n) is not int or training_n < MIN_CALIBRATION_N:
+        return _blocked_assess("NHL_BOUND_CALIBRATOR_SAMPLE_INSUFFICIENT")
 
     bins = calibrator_payload.get("bins")
     if not isinstance(bins, list) or not bins:
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_BOUND_CALIBRATOR_BINS_MISSING",
-            "g3_ready": False,
-            "certification_calibrator_ready": False,
-            "can_execute": CAN_EXECUTE,
-            "probability_publishable": PROBABILITY_PUBLISHABLE,
-            "disposition": "WORKING_NOT_COMPLETE",
-        }
+        return _blocked_assess("NHL_BOUND_CALIBRATOR_BINS_MISSING")
 
     for entry in bins:
         if not isinstance(entry, Mapping):
-            return {
-                "status": "BLOCKED",
-                "code": "NHL_BOUND_CALIBRATOR_BINS_INVALID",
-                "g3_ready": False,
-                "certification_calibrator_ready": False,
-                "can_execute": CAN_EXECUTE,
-                "probability_publishable": PROBABILITY_PUBLISHABLE,
-                "disposition": "WORKING_NOT_COMPLETE",
-            }
+            return _blocked_assess("NHL_BOUND_CALIBRATOR_BINS_INVALID")
+        calibrated = _open_probability(entry.get("calibrated_probability"))
+        lower = _open_probability(entry.get("wilson_lower"))
+        upper = _open_probability(entry.get("wilson_upper"))
         try:
-            calibrated = float(entry["calibrated_probability"])
-            lower = float(entry["wilson_lower"])
-            upper = float(entry["wilson_upper"])
+            raw_mean = float(entry["raw_mean"])
         except (KeyError, TypeError, ValueError):
-            return {
-                "status": "BLOCKED",
-                "code": "NHL_BOUND_CALIBRATOR_BINS_INVALID",
-                "g3_ready": False,
-                "certification_calibrator_ready": False,
-                "can_execute": CAN_EXECUTE,
-                "probability_publishable": PROBABILITY_PUBLISHABLE,
-                "disposition": "WORKING_NOT_COMPLETE",
-            }
-        if not (
-            math.isfinite(calibrated)
-            and math.isfinite(lower)
-            and math.isfinite(upper)
-            and 0.0 < lower <= calibrated <= upper < 1.0
+            return _blocked_assess("NHL_BOUND_CALIBRATOR_BINS_INVALID")
+        if (
+            calibrated is None
+            or lower is None
+            or upper is None
+            or not math.isfinite(raw_mean)
+            or not 0.0 <= raw_mean <= 1.0
+            or not lower <= calibrated <= upper
         ):
-            return {
-                "status": "BLOCKED",
-                "code": "NHL_BOUND_CALIBRATOR_BOUNDS_ORDER_INVALID",
-                "g3_ready": False,
-                "certification_calibrator_ready": False,
-                "can_execute": CAN_EXECUTE,
-                "probability_publishable": PROBABILITY_PUBLISHABLE,
-                "disposition": "WORKING_NOT_COMPLETE",
-            }
+            return _blocked_assess("NHL_BOUND_CALIBRATOR_BOUNDS_ORDER_INVALID")
 
     quality = calibrator_payload.get("chronological_quality")
-    required_quality = (
+    if not isinstance(quality, Mapping):
+        return _blocked_assess("NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING")
+    evaluation_n = quality.get("evaluation_n")
+    if type(evaluation_n) is not int or evaluation_n < MIN_SELECTION_EVAL_N:
+        return _blocked_assess("NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING")
+    for name in (
         "pre_brier",
         "post_brier",
         "pre_log_loss",
         "post_log_loss",
         "calibration_bias",
         "lower_bound_reliability_gap",
-        "evaluation_n",
-    )
-    if not isinstance(quality, Mapping) or any(
-        not isinstance(quality.get(name), (int, float)) for name in required_quality
     ):
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING",
-            "g3_ready": False,
-            "certification_calibrator_ready": False,
-            "can_execute": CAN_EXECUTE,
-            "probability_publishable": PROBABILITY_PUBLISHABLE,
-            "disposition": "WORKING_NOT_COMPLETE",
-        }
+        value = quality.get(name)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return _blocked_assess("NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING")
+        number = float(value)
+        if not math.isfinite(number):
+            return _blocked_assess("NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING")
+        if name.endswith("brier") and not 0.0 <= number <= 1.0:
+            return _blocked_assess("NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING")
+        if name.endswith("log_loss") and number < 0.0:
+            return _blocked_assess("NHL_BOUND_CALIBRATOR_QUALITY_METRICS_MISSING")
 
-    fit_end = str(calibrator_payload.get("fit_end_timestamp") or "").strip()
-    if not fit_end:
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_BOUND_CALIBRATOR_FIT_END_INVALID",
-            "g3_ready": False,
-            "certification_calibrator_ready": False,
-            "can_execute": CAN_EXECUTE,
-            "probability_publishable": PROBABILITY_PUBLISHABLE,
-            "disposition": "WORKING_NOT_COMPLETE",
-        }
+    try:
+        fit_end = _parse_aware_timestamp(calibrator_payload.get("fit_end_timestamp"))
+    except NHLBoundCalibratorError as exc:
+        return _blocked_assess(exc.code)
 
     fingerprint = _sha256(dict(calibrator_payload))
     return {
