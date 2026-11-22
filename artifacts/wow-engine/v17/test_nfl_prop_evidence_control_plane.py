@@ -369,3 +369,69 @@ def test_blocked_or_unverified_latest_snapshot_must_rehydrate(monkeypatch):
         assert result["already_captured"] == 0, override
         assert result["persisted"] == 1, override
         assert result["can_execute"] is False
+
+
+def test_priority_identity_first_and_one_official_discovery_across_pages(monkeypatch):
+    candidates = [
+        _candidate("Alpha QB", "PASSING_YARDS"),
+        _candidate("Beta WR", "RECEIVING_YARDS", "WR"),
+        _candidate("Target WR", "RECEIVING_YARDS", "WR"),
+    ]
+    _install(monkeypatch, candidates)
+    discoveries = []
+
+    def discover(*_args, **_kwargs):
+        discoveries.append(True)
+        if len(discoveries) != 1:
+            raise AssertionError("NFL_DISCOVERY_REPEATED_BETWEEN_PAGES")
+        return list(candidates)
+
+    monkeypatch.setattr(subject, "_discover_candidates", discover)
+    cache = {}
+    targets = ((candidates[2]["canonical_event_id"], "Target WR", "RECEIVING_YARDS"),)
+    db = _DB()
+    page1 = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=db, now=NOW, http_get=lambda *_a, **_kw: object(),
+        priority_targets=targets, _discovery_cache=cache,
+    )
+    page2 = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", candidate_offset=1, max_candidates=2),
+        db=db, now=NOW, http_get=lambda *_a, **_kw: object(),
+        priority_targets=targets, _discovery_cache=cache,
+    )
+    assert discoveries == [True]
+    assert page1["receipts"][0]["player"] == "Target WR"
+    all_receipts = page1["receipts"] + page2["receipts"]
+    assert {(row["event_id"], row["player"], row["stat_type"]) for row in all_receipts} == {
+        (row["canonical_event_id"], row["player"], row["stat_type"]) for row in candidates
+    }
+    assert len({row["source_snapshot_id"] for row in all_receipts}) == 3
+    assert page1["persisted"] + page2["persisted"] == 3
+    assert all(row["can_execute"] is False for row in all_receipts)
+
+
+def test_embedded_injury_report_age_rechecked_even_if_snapshot_just_captured(monkeypatch):
+    from datetime import timedelta
+    candidate = _candidate()
+    _install(monkeypatch, [candidate])
+    existing = (candidate["canonical_event_id"], "NFL", candidate["player"], candidate["stat_type"])
+    row = {
+        "source_snapshot_id": "recent-with-stale-report",
+        "captured_at": NOW.isoformat(), "hydration_status": "PASS", "blockers": [],
+        "role_status": {"availability": {
+            "designation": "AVAILABLE", "source": "ESPN_NFL_ATHLETE_INJURY_REPORT",
+            "captured_at": (NOW - timedelta(hours=73)).isoformat(),
+            "evidence_status": "RETRIEVED", "fresh": True, "report_complete": True,
+            "athlete_id": "test-athlete", "event_id": candidate["canonical_event_id"],
+            "team": "PHI",
+        }},
+    }
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=_DB(existing={existing}, existing_row=row),
+        now=NOW, http_get=lambda *_a, **_kw: object(),
+    )
+    assert result["already_captured"] == 0
+    assert result["persisted"] == 1
+    assert result["can_execute"] is False
