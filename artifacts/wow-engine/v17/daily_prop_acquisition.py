@@ -268,6 +268,7 @@ def acquire_daily_prop_snapshots(
     now: datetime | None = None,
     http_get: Any = httpx.get,
     include_nfl: bool = False,
+    refresh_targets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Acquire official future NFL and MLB evidence with one bounded candidate budget.
 
@@ -291,6 +292,19 @@ def acquire_daily_prop_snapshots(
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     budget = max(1, int(max_candidates))
     nfl_pages: list[dict[str, Any]] = []
+    # Only stale, canonical, pregame identities from the server-owned manifest
+    # can influence the order. They never invent a player, event, stat or line.
+    priority_targets = tuple(dict.fromkeys(
+        (
+            str(row.get("event_id") or ""),
+            str(row.get("player") or ""),
+            str(row.get("stat_type") or ""),
+        )
+        for row in (refresh_targets or [])
+        if str(row.get("sport") or "").upper() == "NFL"
+        and row.get("event_id") and row.get("player") and row.get("stat_type")
+    ))
+    discovery_cache: dict[str, Any] = {}
 
     def nfl_page(offset: int, limit: int) -> dict[str, Any]:
         return acquire_nfl_forward_evidence_batch(
@@ -299,6 +313,7 @@ def acquire_daily_prop_snapshots(
                 max_candidates=max(1, min(limit, 64)),
             ),
             db=db, now=now, http_get=http_get,
+            priority_targets=priority_targets, _discovery_cache=discovery_cache,
         )
 
     first = nfl_page(0, min(budget, max(1, (budget + 1) // 2)))
