@@ -119,6 +119,13 @@ class TestLLPV171ShadowRuntime(unittest.TestCase):
         )
         unverified = dict(future)
         unverified.update(event_prediction_id="unaware", event_start_time="2026-11-22T16:00:00")
+        synthetic_future = dict(future)
+        synthetic_future.update(
+            event_prediction_id="far_future_fixture",
+            requested_slate_date="2099-08-27",
+            event_start_time="2099-08-28T00:10:00Z",
+            model_timestamp="2099-08-27T21:58:00Z",
+        )
 
         class Query:
             def __init__(self, db, name):
@@ -139,7 +146,7 @@ class TestLLPV171ShadowRuntime(unittest.TestCase):
                 return SimpleNamespace(data=[])
 
         class DB:
-            sources = [historical, future, unverified]
+            sources = [historical, future, unverified, synthetic_future]
             def __init__(self):
                 self.writes = []
             def table(self, name):
@@ -150,9 +157,9 @@ class TestLLPV171ShadowRuntime(unittest.TestCase):
             "v17.llp_v17_1_shadow_runtime._capture_now",
             return_value=datetime(2026, 11, 22, 15, 30, tzinfo=timezone.utc),
         ):
-            result = capture_event_prediction_shadows(db, max_predictions=3)
-        self.assertEqual(result["source_prediction_n"], 3)
-        self.assertEqual(result["skipped_nonprospective_source_n"], 2)
+            result = capture_event_prediction_shadows(db, max_predictions=4)
+        self.assertEqual(result["source_prediction_n"], 4)
+        self.assertEqual(result["skipped_nonprospective_source_n"], 3)
         self.assertEqual(result["shadow_observation_n"], 10)
         self.assertEqual(len(db.writes), 10)
         self.assertTrue(all(row["prediction_id"] == "pregame" for row in db.writes))
