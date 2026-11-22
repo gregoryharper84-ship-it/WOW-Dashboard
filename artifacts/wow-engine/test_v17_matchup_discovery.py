@@ -1,7 +1,12 @@
 """Regression tests for default research-only matchup discovery."""
 from datetime import datetime, timezone
 
-from v17.matchup_discovery import discover_matchup, feature_requirements, profile_for
+from v17.matchup_discovery import (
+    discover_matchup,
+    feature_requirements,
+    matchup_consumption_audit,
+    profile_for,
+)
 from v17.sport_scout_enrichment import enrich_candidate
 
 NOW = datetime(2026, 11, 19, 17, 5, tzinfo=timezone.utc)
@@ -295,3 +300,105 @@ def test_multiple_opposing_book_quotes_do_not_trigger_personnel_conflict():
     report = discover_matchup(c, now=NOW)
     assert "exact_current_quote" in report["screened_features"]
     assert report["review_status"] != "CONFLICT_QUARANTINED"
+
+
+def test_single_market_quote_dict_from_snapshot_bridge_is_screened():
+    # The active snapshot adapter preserves dict shape for a single quote.
+    # Previously iterating that dict yielded its keys and lost valid evidence.
+    c = candidate("basketball_nba")
+    c["market_evidence"] = {
+        "market_key": "totals",
+        "outcome_name": "Over",
+        "point": 224.5,
+        "price": -110,
+        "bookmaker": "book-1",
+        "market_last_update": "2026-11-19T17:00:00Z",
+    }
+    result = discover_matchup(c, now=NOW)
+    assert "exact_current_quote" in result["screened_features"]
+    assert result["review_status"] == "PARTIAL_MATCHUP_REVIEW"
+    assert result["confidence_or_model_probability_created"] is False
+    assert result["specialist_rescore_verified"] is False
+
+
+def test_single_market_quote_with_explicit_wrong_event_id_is_rejected():
+    c = candidate("basketball_nba")
+    c["market_evidence"] = {
+        "official_event_id": "other-event",
+        "market_key": "h2h",
+        "outcome_name": "Home",
+        "price": -110,
+        "bookmaker": "book-1",
+        "market_last_update": "2026-11-19T17:00:00Z",
+    }
+    rejected = discover_matchup(c, now=NOW)
+    assert "exact_current_quote" in rejected["missing_features"]
+    assert rejected["review_status"] == "MATCHUP_EVIDENCE_NOT_OBSERVED"
+    assert rejected["screened_count"] == 0
+
+
+def test_absent_and_wrong_shape_market_evidence_never_invents_quote():
+    c = candidate("basketball_nba")
+    for raw in ("oops", 10, None, []):
+        c["market_evidence"] = raw
+        report = discover_matchup(c, now=NOW)
+        assert "exact_current_quote" in report["missing_critical_features"]
+        assert report["screened_count"] == 0
+
+
+def test_nightly_coverage_summary_counts_reviews_and_missing_source_evidence():
+    from datetime import timedelta
+    from v17.sport_scout_enrichment import enrich_handoff
+
+    upcoming = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    team = {
+        **candidate("basketball_nba"),
+        "commence_time": upcoming,
+    }
+    prop = {
+        **candidate("americanfootball_nfl"),
+        "official_event_id": "evt-prop",
+        "commence_time": upcoming,
+    }
+    enriched = enrich_handoff({
+        "can_execute": False,
+        "model_handoff": {
+            "team_event_candidates": [team],
+            "prop_candidates": [prop],
+        },
+    })
+    summary = enriched["matchup_discovery_summary"]
+    assert summary["team_event_candidates"] == 1
+    assert summary["prop_candidates"] == 1
+    assert summary["review_requested_rows"] == 2
+    assert summary["review_status_counts"] == {"MATCHUP_EVIDENCE_NOT_OBSERVED": 2}
+    assert summary["rows_with_missing_critical_evidence"] == 2
+    assert summary["rows_with_screened_exact_quote"] == 0
+    assert summary["model_rescore_verified"] is False
+    assert summary["prediction_authority"] is False
+    assert summary["can_execute"] is False
+
+
+def test_consumption_audit_never_infers_matchup_feature_use():
+    audit = {
+        "sport_key": "americanfootball_nfl",
+        "official_event_id": "evt-1",
+        "review_status": "PARTIAL_MATCHUP_REVIEW",
+        "screened_features": ["opponent_adjusted_strength"],
+        "missing_critical_features": ["exact_current_quote"],
+    }
+
+    unconsumed = matchup_consumption_audit(audit, [])
+    assert unconsumed["specialist_consumption_state"] == "NOT_DECLARED_BY_FITTED_VECTOR"
+    assert unconsumed["screened_features"] == ["opponent_adjusted_strength"]
+    assert unconsumed["consumed_matchup_features"] == []
+    assert unconsumed["can_execute"] is False
+
+    consumed = matchup_consumption_audit(audit, ["opponent_adjusted_strength"])
+    assert consumed["specialist_consumption_state"] == "CONSUMED"
+    assert consumed["consumed_matchup_features"] == ["opponent_adjusted_strength"]
+    assert consumed["prediction_authority"] is False
+
+    empty = matchup_consumption_audit(None, None)
+    assert empty["specialist_consumption_state"] == "NO_SCREENED_MATCHUP_EVIDENCE"
+    assert empty["can_execute"] is False

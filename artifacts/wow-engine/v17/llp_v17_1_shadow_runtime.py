@@ -6,6 +6,7 @@ only: failures here must never alter or block production scoring/publication.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import log
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -48,6 +49,35 @@ def _chunks(values: list[str], size: int = IN_FILTER_CHUNK_SIZE) -> list[list[st
 def _text(value: Any) -> str | None:
     token = str(value or "").strip()
     return token or None
+
+
+def _capture_now() -> datetime:
+    """One server-owned timestamp for a complete prospective capture batch."""
+    return datetime.now(timezone.utc)
+
+
+def _aware_utc(value: Any) -> datetime | None:
+    token = _text(value)
+    if token is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(token.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _prospective_source_at(source: Mapping[str, Any], observed_at: datetime) -> bool:
+    """No after-kickoff backfill can masquerade as a forward shadow sample."""
+    event_start = _aware_utc(source.get("event_start_time") or source.get("scheduled_start_utc"))
+    model_timestamp = _aware_utc(source.get("model_timestamp"))
+    return bool(
+        event_start is not None
+        and model_timestamp is not None
+        and model_timestamp <= observed_at < event_start
+    )
 
 
 def _codes(*values: Any) -> tuple[str, ...]:
@@ -235,10 +265,22 @@ def capture_event_prediction_shadows(
 
     observations: list[dict[str, Any]] = []
     skipped_sources = 0
+    skipped_nonprospective = 0
+    captured_at = _capture_now()
+    if captured_at.tzinfo is None or captured_at.utcoffset() is None:
+        raise ValueError("SHADOW_CAPTURE_TIMEZONE_UNVERIFIED")
+    captured_at = captured_at.astimezone(timezone.utc)
+    observed_at = captured_at.isoformat()
     for source in sources[:max_predictions]:
         if source.get("can_execute") is True:
             raise ValueError("CAN_EXECUTE_INVARIANT_VIOLATION")
-        materialized = materialize_event_prediction_shadows(source, lambdas=lambdas)
+        if not _prospective_source_at(source, captured_at):
+            skipped_sources += 1
+            skipped_nonprospective += 1
+            continue
+        materialized = materialize_event_prediction_shadows(
+            source, lambdas=lambdas, observed_at=observed_at
+        )
         if not materialized:
             skipped_sources += 1
             continue
@@ -258,6 +300,7 @@ def capture_event_prediction_shadows(
         "status": "PASS",
         "source_prediction_n": len(sources[:max_predictions]),
         "skipped_source_n": skipped_sources,
+        "skipped_nonprospective_source_n": skipped_nonprospective,
         "shadow_observation_n": len(observations),
         "lambda_grid": tuple(float(value) for value in lambdas),
         "serving_mode": "SHADOW_ONLY",
