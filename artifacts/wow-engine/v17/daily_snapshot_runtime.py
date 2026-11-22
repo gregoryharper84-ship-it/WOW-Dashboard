@@ -26,6 +26,7 @@ from v17 import memory_admission
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.daily_snapshot_oidc_bridge import _render_deployed_sha
 from v17.daily_response_contract import (
     ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
     ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
@@ -1278,6 +1279,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
 
     response = {
         "run_id": run_id,
+        "deployed_sha": _render_deployed_sha(),
         "terminal": True,
         "run_status": run_status,
         "scoring_run_status": scoring_run_status,
