@@ -1232,3 +1232,54 @@ def test_sdv_invalid_fractional_and_nonfinite_scores_fail_closed():
         good, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
     )
     assert result is not None and result["home_score"] == 111
+
+
+@pytest.mark.parametrize(
+    ("as_of_utc", "expected_blocked"),
+    [
+        # 01:29 UTC on Nov 22 is 20:29 ET on Nov 21. Nov 20 is
+        # genuinely the last completed Eastern game day; no false fallback.
+        (datetime(2026, 11, 22, 1, 29, tzinfo=timezone.utc), False),
+        # Once Nov 21 is a fully completed Eastern day, Nov 20 is
+        # genuinely a complete day behind and the identity hold remains.
+        (datetime(2026, 11, 22, 13, 0, tzinfo=timezone.utc), True),
+        # Cross-midnight after the DST transition must not count a new
+        # Eastern day while it is still November 21 locally.
+        (datetime(2026, 11, 22, 4, 59, tzinfo=timezone.utc), False),
+    ],
+)
+def test_nba_recent_source_lag_uses_only_completed_eastern_days(
+    monkeypatch, as_of_utc, expected_blocked,
+):
+    """A UTC date rollover must not fabricate an NBA source-acquisition gap."""
+    latest = date(2026, 11, 20)
+    written_batches = []
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: latest)
+    monkeypatch.setattr(
+        hydration, "_persist_rows",
+        lambda _client, _sport, rows: (
+            written_batches.append(list(rows)),
+            len(rows),
+        )[1],
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_recent_espn_settlements",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unverified ESPN identity must never enter fitted corpus")
+        ),
+    )
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(), now=as_of_utc,
+    )
+    blocked = result["recent_supplement_status"].get(2027)
+    if expected_blocked:
+        assert blocked == "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+    else:
+        assert blocked is None
+    assert result["latest_game_date_before"] == "2026-11-20"
+    assert result["latest_game_date_after"] == "2026-11-20"
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["fresh_acquisition_new_settled_games"] == 0
+    assert written_batches == [[]]
+    assert result["can_execute"] is False
