@@ -23,6 +23,12 @@ declare
   v_health public.wow_nfl_forward_calibration_health%rowtype;
   v_exact_grades integer := 0;
   v_distinct_games integer := 0;
+  v_exact_brier double precision;
+  v_exact_log_loss double precision;
+  v_exact_ece double precision;
+  v_exact_abs_bias double precision;
+  v_exact_lower_gap double precision;
+  v_exact_quality boolean := false;
 begin
   select * into r from public.wow_nfl_event_predictions where score_snapshot_id=p_score_snapshot_id;
   if not found then
@@ -48,6 +54,49 @@ begin
      and artifact_checksum=a.artifact_checksum
      and can_execute is false
      and prediction_created_at < event_start_time_utc;
+  -- Global health can describe another model. Recalculate the unchanged V2
+  -- quality thresholds on the SAME immutable, verified artifact/version cohort.
+  -- A direct SQL reducer caller must not borrow global PASS from another cohort.
+  with exact_cohort as (
+    select g.calibrated_probability::double precision as p,
+           g.calibrated_lower_bound::double precision as lb,
+           g.outcome::double precision as y,
+           g.brier::double precision as brier,
+           g.log_loss::double precision as loss
+      from public.wow_nfl_forward_verified_grades g
+     where g.model_version=r.model_version
+       and g.model_artifact_id=r.model_artifact_id
+       and g.artifact_checksum=a.artifact_checksum
+       and g.can_execute is false
+       and g.prediction_created_at < g.event_start_time_utc
+  ), quality as (
+    select count(*) as cohort_n, avg(brier) as mean_brier,
+           avg(loss) as mean_log_loss,
+           abs(avg(p)-avg(y)) as absolute_bias,
+           avg(y)-avg(lb) as lower_gap
+      from exact_cohort
+  ), bins as (
+    -- Python calibration_health: ten half-open bins, p=1 in the last bin.
+    select least(floor(p*10.0)::integer,9) as bin,
+           sum(p-y) as net_probability_error
+      from exact_cohort
+     group by 1
+  )
+  select q.mean_brier, q.mean_log_loss,
+         (select sum(abs(net_probability_error)) from bins)
+           / nullif(q.cohort_n,0)::double precision,
+         q.absolute_bias, q.lower_gap
+    into v_exact_brier, v_exact_log_loss, v_exact_ece,
+         v_exact_abs_bias, v_exact_lower_gap
+    from quality q;
+  v_exact_quality := coalesce(
+    v_exact_brier < 0.25
+    and v_exact_log_loss < ln(2.0)
+    and v_exact_ece <= 0.12
+    and v_exact_abs_bias <= 0.08
+    and v_exact_lower_gap >= -0.03,
+    false
+  );
   v_certified := coalesce(
     (v_cert->>'ok')::boolean
     and v_cert->>'certification_status'='CERTIFIED'
@@ -77,7 +126,8 @@ begin
     and v_health.minimum_forward_required>=100
     and v_health.graded_n>=v_health.minimum_forward_required
     and v_exact_grades=v_distinct_games
-    and v_distinct_games>=v_health.minimum_forward_required,
+    and v_distinct_games>=v_health.minimum_forward_required
+    and v_exact_quality,
     false
   );
 
@@ -86,6 +136,9 @@ begin
   if not r.provenance_complete then v_blockers:=array_append(v_blockers,'PROVENANCE_INCOMPLETE'); end if;
   if not v_certified then
     v_blockers:=array_append(v_blockers,'NFL_INDEPENDENT_SPECIALIST_CERTIFICATION_UNPROVEN');
+  end if;
+  if not v_exact_quality then
+    v_blockers:=array_append(v_blockers,'NFL_EXACT_COHORT_CALIBRATION_NOT_PASS');
   end if;
   if not r.model_probability_publishable and not v_certified then
     v_blockers:=array_append(v_blockers,'MODEL_PROBABILITY_NOT_PUBLISHABLE');
