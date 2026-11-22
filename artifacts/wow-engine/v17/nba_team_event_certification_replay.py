@@ -42,6 +42,8 @@ CERTIFICATION_TABLE = "wow_basketball_team_event_certification"
 IMMUTABLE_CERTIFICATION_TABLE = "wow_team_event_specialist_certifications"
 TRAINING_TABLE = "wow_nba_training_games"
 FEATURE_TABLE = "wow_nba_pregame_feature_rows"
+FORWARD_SHADOW_TABLE = "wow_nba_candidate_forward_shadow"
+FORWARD_VERIFIED_GRADE_TABLE = "wow_nba_candidate_forward_verified_grades"
 
 ARTIFACT_FIELDS = (
     "artifact_id,sport,model_family,model_artifact_version,feature_schema_version,"
@@ -64,7 +66,7 @@ IMMUTABLE_CERTIFICATION_FIELDS = (
 )
 TRAINING_FIELDS = (
     "game_id,season,game_date,status,home_team_id,away_team_id,home_score,away_score,home_win,"
-    "source_provider,source_endpoint,source_retrieved_at,source_payload_sha256,settled"
+    "source_provider,source_endpoint,source_retrieved_at,source_payload_sha256,settled,scheduled_start_utc"
 )
 FEATURE_FIELDS = (
     "game_id,as_of,feature_schema_version,home_games_prior,away_games_prior,"
@@ -125,6 +127,7 @@ def _read_all(
     fields: str,
     *,
     settled_only: bool = False,
+    order_by: str = "game_id",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
@@ -133,7 +136,7 @@ def _read_all(
         if settled_only:
             query = query.eq("settled", True)
         result = (
-            query.order("game_id")
+            query.order(order_by)
             .range(offset, offset + PAGE_SIZE - 1)
             .execute()
         )
@@ -294,6 +297,7 @@ def _corpus_replay(
     providers: set[str] = set()
     endpoints: set[str] = set()
     source_provenance_fields_valid = True
+    observed_event_start_rows = 0
 
     for raw in games_raw:
         game_id = str(raw.get("game_id") or "").strip()
@@ -301,6 +305,8 @@ def _corpus_replay(
             blockers.append("CANDIDATE_PARTITIONS_INVALID")
             continue
         games_by_id[game_id] = raw
+        if _aware_timestamp(raw.get("scheduled_start_utc")) is not None:
+            observed_event_start_rows += 1
         try:
             training_games.append(_training_game(raw))
         except (TypeError, ValueError, OverflowError):
@@ -473,7 +479,9 @@ def _corpus_replay(
     # The corpus is reproducible and date-bounded, but the persisted training
     # schema has no event-start timestamp or official settlement receipt. A
     # midnight UTC date boundary cannot prove observed_at < actual tipoff.
-    event_start_attested = False
+    # A populated start timestamp is still not an independent official
+    # attestation of the event or its as-of feature provenance.
+    event_start_present = bool(games_raw) and observed_event_start_rows == len(games_raw)
     official_settlement_attested = False
     corpus_integrity_valid = (
         bool(games_raw)
@@ -501,14 +509,82 @@ def _corpus_replay(
         "feature_payload_hashes_valid": feature_hashes_valid,
         "feature_reconstruction_status": "PASS" if corpus_integrity_valid else "BLOCKED",
         "observed_corpus_manifest_sha256": digest.hexdigest(),
-        "event_start_timestamp_persisted": event_start_attested,
+        "event_start_timestamp_rows": observed_event_start_rows,
+        "event_start_timestamp_missing_rows": len(games_raw) - observed_event_start_rows,
+        "event_start_timestamp_persisted": event_start_present,
+        "event_start_independently_attested": False,
         "official_settlement_attestation_persisted": official_settlement_attested,
         "pregame_corpus_ready": False,
         "can_execute": False,
     }
-    if not event_start_attested or not official_settlement_attested:
+    if not event_start_present or not official_settlement_attested:
         blockers.append("SOURCE_PROVENANCE_NOT_CERTIFIED")
     return replay_rows, summary, corpus_integrity_valid
+
+
+def _forward_shadow_audit(db: Any) -> dict[str, Any]:
+    """Read-only inventory; a shadow capture/grade is never model certification."""
+    shadow_fields = (
+        "capture_id,official_event_id,event_start_time_utc,source_observed_at,"
+        "knowledge_cutoff,probability_publishable,rank_eligible,can_execute"
+    )
+    grade_fields = "capture_id,official_event_id,outcome,created_at,can_execute"
+    try:
+        shadow = _read_all(
+            db, FORWARD_SHADOW_TABLE, shadow_fields,
+            order_by="official_event_id",
+        )
+        grades = _read_all(
+            db, FORWARD_VERIFIED_GRADE_TABLE, grade_fields,
+            order_by="official_event_id",
+        )
+    except Exception as exc:  # noqa: BLE001 - reads never alter certification result
+        return {
+            "status": "FORWARD_AUDIT_READ_FAILED",
+            "error_type": type(exc).__name__,
+            "official_verified_grades_available": False,
+            "certification_authority": False,
+            "can_execute": False,
+        }
+
+    unique_events = {
+        str(row.get("official_event_id") or "").strip()
+        for row in shadow if str(row.get("official_event_id") or "").strip()
+    }
+    captured_ids = {
+        str(row.get("capture_id") or "").strip()
+        for row in shadow if str(row.get("capture_id") or "").strip()
+    }
+    official_grade_rows = len(grades)
+    grade_capture_matches = sum(
+        1 for row in grades
+        if str(row.get("capture_id") or "").strip() in captured_ids
+    )
+    timestamps_ordered = 0
+    for row in shadow:
+        start = _aware_timestamp(row.get("event_start_time_utc"))
+        observed = _aware_timestamp(row.get("source_observed_at"))
+        cutoff = _aware_timestamp(row.get("knowledge_cutoff"))
+        if start is not None and observed is not None and cutoff is not None and observed < start and cutoff <= start:
+            timestamps_ordered += 1
+
+    # Even valid timestamp ordering is insufficient without official start,
+    # official settlement and independent evidence provenance.
+    return {
+        "status": "FORWARD_UNGRADED" if official_grade_rows == 0 else "FORWARD_GRADES_PRESENT_REVIEW_REQUIRED",
+        "shadow_capture_rows": len(shadow),
+        "distinct_shadow_events": len(unique_events),
+        "official_verified_grade_rows": official_grade_rows,
+        "official_verified_grade_capture_matches": grade_capture_matches,
+        "capture_rows_with_ordered_timestamps": timestamps_ordered,
+        "shadow_publishable_claims": sum(row.get("probability_publishable") is True for row in shadow),
+        "official_start_attestation_verified": False,
+        "independent_grading_acceptance": False,
+        "certification_authority": False,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
 
 
 def _metrics(probabilities: list[float], outcomes: list[int]) -> dict[str, float]:
@@ -921,7 +997,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "calibrator_fit_replay_status": calibrator_fit_replay_status,
         "calibrator_fit_replay_sha256": calibrator_fit_replay_sha256,
         "official_settlement_attestation_persisted": False,
-        "event_start_timestamp_persisted": False,
+        "event_start_independently_attested": False,
     })
     pregame_corpus_ready = bool(
         corpus_integrity_valid
@@ -947,8 +1023,10 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         if numerical_replay_status == "PASS"
         else "NUMERICAL_REPLAY_BLOCKED"
     )
+    forward_shadow_audit = _forward_shadow_audit(db)
     evidence_identity = {
         "sport": SPORT,
+        "forward_shadow_audit": forward_shadow_audit,
         "artifact_id": artifact_row.get("artifact_id"),
         "model_artifact_version": version,
         "artifact_checksum": artifact_row.get("artifact_checksum"),
@@ -1004,6 +1082,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
             "calibration_bias": calibrator_row.get("calibration_bias"),
         },
         "pregame_corpus": corpus_summary,
+        "forward_shadow_audit": forward_shadow_audit,
         "pregame_corpus_ready": pregame_corpus_ready,
         "exact_bundle_match": exact_bundle_match,
         "certification_summary_status": certification_row.get("capability_status") if certification_row else None,
