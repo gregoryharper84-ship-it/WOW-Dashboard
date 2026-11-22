@@ -7,6 +7,7 @@ available when rights are held.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from fastapi import FastAPI
@@ -20,8 +21,11 @@ from v17.nhl_source_reingest import (
     nhl_source_rights_approved,
     run_nhl_source_reingest,
 )
+from v17 import nhl_fitted_specialist as fitted
 from v17.nhl_fitted_specialist import (
     NHLFittedSpecialistError,
+    RECEIPT_FUTURE_SKEW,
+    RECEIPT_MAX_AGE,
     load_nhl_season_events,
     load_nhl_season_timeline_receipt,
 )
@@ -69,24 +73,41 @@ def _blocked(code: str, **extra: Any) -> dict[str, Any]:
 
 
 def _season_provenance_stats(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    distinct: set[str] = set()
-    provenanced: set[str] = set()
+    """Count events that pass the fitted specialist's authoritative V2 projection.
+
+    A valid V2 sibling supersedes a legacy row for the same official event id,
+    matching ``reconstruct_nhl_pregame_features`` / ``_project_source_event``.
+    """
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
+        if not isinstance(row, Mapping):
+            continue
         event_id = str(row.get("official_event_id") or "").strip()
         if not event_id:
             continue
-        distinct.add(event_id)
-        outcome = row.get("outcome_json")
-        if not isinstance(outcome, Mapping):
-            continue
-        if (
-            outcome.get("provenance_version") == SOURCE_PROVENANCE_VERSION
-            and type(outcome.get("game_type")) is int
-            and outcome.get("game_type") == 2
-            and type(outcome.get("neutral_site")) is bool
-            and str(outcome.get("game_state") or "").upper() in {"FINAL", "OFF"}
-        ):
+        grouped.setdefault(event_id, []).append(row)
+
+    provenanced: set[str] = set()
+    for event_id, raw_rows in grouped.items():
+        v2_rows = [
+            raw
+            for raw in raw_rows
+            if isinstance(raw.get("outcome_json"), Mapping)
+            and raw["outcome_json"].get("provenance_version") == SOURCE_PROVENANCE_VERSION
+        ]
+        accepted = False
+        for raw in v2_rows or raw_rows:
+            try:
+                fitted._project_source_event(raw)
+            except NHLFittedSpecialistError:
+                continue
+            accepted = True
+            break
+        if accepted and v2_rows:
+            # Only count events that have at least one projecting V2 sibling.
             provenanced.add(event_id)
+
+    distinct = set(grouped)
     return {
         "distinct_event_n": len(distinct),
         "provenanced_event_n": len(provenanced),
@@ -94,6 +115,77 @@ def _season_provenance_stats(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any
         and distinct == provenanced
         and len(provenanced) > 0,
     }
+
+
+def _validate_current_season_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    season: str,
+    as_of_utc: datetime | None = None,
+) -> list[str]:
+    """Fail closed when a G1b receipt is stale or coverage lags settled games."""
+    blockers: list[str] = []
+    if receipt.get("provenance_complete") is not True:
+        blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_MISSING")
+    if str(receipt.get("season_scope") or "") != "FULL_SEASON":
+        blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_MISSING")
+    if str(receipt.get("season") or "") != season:
+        blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_MISSING")
+
+    digest = str(receipt.get("schedule_digest") or "").strip().lower()
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_INVALID")
+
+    settled = receipt.get("settled_events")
+    scheduled = receipt.get("scheduled_events")
+    if not isinstance(settled, list) or not isinstance(scheduled, list):
+        blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_INVALID")
+        return blockers
+
+    now = as_of_utc or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_INVALID")
+        return blockers
+
+    verified_at = fitted._aware(receipt.get("verified_at"))
+    if (
+        verified_at is None
+        or verified_at > now + RECEIPT_FUTURE_SKEW
+        or now - verified_at > RECEIPT_MAX_AGE
+    ):
+        blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_STALE")
+
+    settled_ids: set[str] = set()
+    for item in settled:
+        if not isinstance(item, Mapping):
+            continue
+        event_id = str(item.get("official_event_id") or "").strip()
+        if event_id:
+            settled_ids.add(event_id)
+
+    # Mirror timeline_receipt_for_target: a game still listed as scheduled whose
+    # start is already before as-of must have been re-ingested into settled.
+    for item in scheduled:
+        if not isinstance(item, Mapping):
+            blockers.append("NHL_CURRENT_SEASON_TIMELINE_COVERAGE_INCOMPLETE")
+            continue
+        scheduled_id = str(item.get("official_event_id") or "").strip()
+        scheduled_start = fitted._aware(item.get("event_start_time"))
+        if not scheduled_id or scheduled_start is None:
+            blockers.append("NHL_CURRENT_SEASON_TIMELINE_COVERAGE_INCOMPLETE")
+            continue
+        if scheduled_start < now and scheduled_id not in settled_ids:
+            blockers.append("NHL_CURRENT_SEASON_TIMELINE_COVERAGE_INCOMPLETE")
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for code in blockers:
+        if code in seen:
+            continue
+        seen.add(code)
+        ordered.append(code)
+    return ordered
 
 
 def assess_season_g1a(db: Any, *, season: int | str) -> dict[str, Any]:
@@ -166,7 +258,12 @@ def assess_season_g1a(db: Any, *, season: int | str) -> dict[str, Any]:
     }
 
 
-def assess_season_g1b(db: Any, *, season: int | str) -> dict[str, Any]:
+def assess_season_g1b(
+    db: Any,
+    *,
+    season: int | str,
+    as_of_utc: datetime | None = None,
+) -> dict[str, Any]:
     """Assess current-season hydration independently of training receipts."""
     season_token = str(season).strip()
     blockers: list[str] = []
@@ -206,14 +303,17 @@ def assess_season_g1b(db: Any, *, season: int | str) -> dict[str, Any]:
         receipt = None
         blockers.append("NHL_SOURCE_TIMELINE_RECEIPT_UNREADABLE")
 
-    timeline_ok = (
-        isinstance(receipt, Mapping)
-        and receipt.get("provenance_complete") is True
-        and str(receipt.get("season_scope") or "") == "FULL_SEASON"
-        and str(receipt.get("season") or "") == season_token
-    )
-    if not timeline_ok:
+    timeline_ok = False
+    if not isinstance(receipt, Mapping):
         blockers.append("NHL_CURRENT_SEASON_TIMELINE_RECEIPT_MISSING")
+    else:
+        receipt_blockers = _validate_current_season_receipt(
+            receipt, season=season_token, as_of_utc=as_of_utc
+        )
+        if receipt_blockers:
+            blockers.extend(receipt_blockers)
+        else:
+            timeline_ok = True
 
     ready = not blockers
     return {
@@ -237,6 +337,7 @@ def assess_nhl_corpus_certification_readiness(
     training_start_years: Sequence[int] | None = None,
     current_season: int | str | None = None,
     rights_approved: bool | None = None,
+    as_of_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Fail-closed G1 readiness report for Fix A; never certifies or publishes."""
     training_seasons = certification_training_season_ids(training_start_years)
@@ -257,7 +358,7 @@ def assess_nhl_corpus_certification_readiness(
     g1a_reports = [
         assess_season_g1a(db, season=season) for season in training_seasons
     ]
-    g1b_report = assess_season_g1b(db, season=current)
+    g1b_report = assess_season_g1b(db, season=current, as_of_utc=as_of_utc)
     g1a_ready = all(item.get("g1a_ready") is True for item in g1a_reports)
     g1b_ready = g1b_report.get("g1b_ready") is True
     rights_ok = nhl_source_rights_approved(rights_approved)
@@ -313,6 +414,7 @@ def run_nhl_g1_corpus_rebuild(
     rights_approved: bool | None = None,
     ingest_code_sha: str | None = None,
     session: Any = None,
+    as_of_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Rebuild G1a training seasons then G1b current season, rights-fail-closed.
 
@@ -373,6 +475,7 @@ def run_nhl_g1_corpus_rebuild(
         training_start_years=training_start_years,
         current_season=current,
         rights_approved=rights_approved,
+        as_of_utc=as_of_utc,
     )
     return {
         "status": (

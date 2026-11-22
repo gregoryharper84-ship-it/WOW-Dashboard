@@ -5,13 +5,18 @@ missing provenance/timeline/current-season hydration remain typed blockers.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import v17.nhl_corpus_certification_readiness as readiness
-from v17.nhl_provenance import SOURCE_PROVENANCE_VERSION
+from v17.nhl_provenance import (
+    SOURCE_PAYLOAD_HASH_SCOPE,
+    SOURCE_PROVENANCE_VERSION,
+    provenance_envelope_hash,
+)
 
 
 class _Query:
@@ -67,13 +72,21 @@ class _FakeDB:
         return _Query(self, name)
 
 
+NOW = datetime(2026, 11, 22, 17, 0, tzinfo=timezone.utc)
+
+
 def _event(season: str, event_id: str, *, provenanced: bool = True) -> dict:
+    start = "2024-10-10T00:00:00+00:00"
+    home, away = "BOS", "PIT"
+    home_score, away_score = 3, 2
     outcome = {
-        "home_score": 3,
-        "away_score": 2,
+        "home_score": home_score,
+        "away_score": away_score,
         "positive_outcome": True,
     }
+    payload_hash = "c" * 64
     if provenanced:
+        commitment = "b" * 64
         outcome.update(
             {
                 "game_type": 2,
@@ -81,34 +94,52 @@ def _event(season: str, event_id: str, *, provenanced: bool = True) -> dict:
                 "game_state": "FINAL",
                 "provenance_version": SOURCE_PROVENANCE_VERSION,
                 "ingest_code_sha": "a" * 40,
-                "source_payload_commitment": "b" * 64,
-                "payload_hash_scope": "NHL_OFFICIAL_EVENT_IDENTITY_V1",
+                "source_payload_commitment": commitment,
+                "payload_hash_scope": SOURCE_PAYLOAD_HASH_SCOPE,
             }
+        )
+        payload_hash = provenance_envelope_hash(
+            official_event_id=event_id,
+            season=season,
+            event_start_time=start,
+            home_team=home,
+            away_team=away,
+            home_score=home_score,
+            away_score=away_score,
+            game_type=2,
+            game_state="FINAL",
+            neutral_site=False,
         )
     return {
         "sport": "NHL",
         "season": season,
         "official_event_id": event_id,
-        "event_start_time": "2024-10-10T00:00:00+00:00",
-        "home_participant": "BOS",
-        "away_participant": "PIT",
+        "event_start_time": start,
+        "home_participant": home,
+        "away_participant": away,
         "outcome_json": outcome,
         "source_provider": "NHL_PUBLIC_WEB_API",
-        "source_uri": "https://example.test",
-        "source_payload_sha256": "c" * 64,
+        "source_uri": f"https://api-web.nhle.com/v1/club-schedule-season/{home}/{season}",
+        "source_payload_sha256": payload_hash,
     }
 
 
-def _receipt(season: str) -> dict:
+def _receipt(
+    season: str,
+    *,
+    verified_at: str | None = None,
+    settled_events=None,
+    scheduled_events=None,
+) -> dict:
     return {
         "season": season,
         "provenance_complete": True,
         "season_scope": "FULL_SEASON",
-        "settled_events": [],
-        "scheduled_events": [],
+        "settled_events": list(settled_events or []),
+        "scheduled_events": list(scheduled_events or []),
         "schedule_digest": "d" * 64,
-        "schedule_retrieved_at": "2026-11-22T00:00:00+00:00",
-        "verified_at": "2026-11-22T00:00:00+00:00",
+        "schedule_retrieved_at": verified_at or NOW.isoformat(),
+        "verified_at": verified_at or NOW.isoformat(),
         "ingest_code_sha": "a" * 40,
         "source": "NHL_SOURCE_REINGEST",
     }
@@ -139,11 +170,52 @@ def test_g1a_blocks_without_provenance_and_timeline():
     assert report["can_execute"] is False
 
 
+def test_g1a_rejects_partial_v2_envelope_that_specialist_cannot_consume():
+    row = _event("20212022", "2021020001", provenanced=True)
+    row["outcome_json"]["source_payload_commitment"] = "not-a-hash"
+    report = readiness.assess_season_g1a(
+        _FakeDB(events=[row], receipts=[_receipt("20212022")]),
+        season=20212022,
+    )
+    assert report["g1a_ready"] is False
+    assert report["provenanced_event_n"] == 0
+    assert "NHL_SOURCE_PROVENANCE_INCOMPLETE" in report["blockers"]
+
+
 def test_g1b_blocks_when_current_season_missing():
-    report = readiness.assess_season_g1b(_FakeDB(), season=20262027)
+    report = readiness.assess_season_g1b(_FakeDB(), season=20262027, as_of_utc=NOW)
     assert report["g1b_ready"] is False
     assert "NHL_CURRENT_SEASON_EVENTS_MISSING" in report["blockers"]
     assert "NHL_CURRENT_SEASON_TIMELINE_RECEIPT_MISSING" in report["blockers"]
+
+
+def test_g1b_blocks_stale_receipt_and_unresolved_scheduled_coverage():
+    event = _event("20262027", "2026020001", provenanced=True)
+    stale = _receipt(
+        "20262027",
+        verified_at=(NOW - timedelta(hours=25)).isoformat(),
+        settled_events=[
+            {
+                "official_event_id": "2026020001",
+                "event_start_time": "2026-11-20T00:00:00+00:00",
+            }
+        ],
+        scheduled_events=[
+            {
+                "official_event_id": "2026020099",
+                "event_start_time": "2026-11-21T00:00:00+00:00",
+                "game_state": "FUT",
+            }
+        ],
+    )
+    report = readiness.assess_season_g1b(
+        _FakeDB(events=[event], receipts=[stale]),
+        season=20262027,
+        as_of_utc=NOW,
+    )
+    assert report["g1b_ready"] is False
+    assert "NHL_CURRENT_SEASON_TIMELINE_RECEIPT_STALE" in report["blockers"]
+    assert "NHL_CURRENT_SEASON_TIMELINE_COVERAGE_INCOMPLETE" in report["blockers"]
 
 
 def test_aggregate_readiness_holds_on_rights_even_when_rows_complete():
@@ -154,11 +226,28 @@ def test_aggregate_readiness_holds_on_rights_even_when_rows_complete():
         events.append(_event(token, f"{token}0001", provenanced=True))
         receipts.append(_receipt(token))
     events.append(_event("20262027", "202620270001", provenanced=True))
-    receipts.append(_receipt("20262027"))
+    receipts.append(
+        _receipt(
+            "20262027",
+            settled_events=[
+                {
+                    "official_event_id": "202620270001",
+                    "event_start_time": "2026-11-20T00:00:00+00:00",
+                }
+            ],
+            scheduled_events=[
+                {
+                    "official_event_id": "202620279999",
+                    "event_start_time": "2026-11-23T00:00:00+00:00",
+                    "game_state": "FUT",
+                }
+            ],
+        )
+    )
     db = _FakeDB(events=events, receipts=receipts)
 
     blocked = readiness.assess_nhl_corpus_certification_readiness(
-        db, current_season=20262027, rights_approved=False
+        db, current_season=20262027, rights_approved=False, as_of_utc=NOW
     )
     assert blocked["status"] == "BLOCKED"
     assert blocked["g1a_ready"] is True
@@ -171,7 +260,7 @@ def test_aggregate_readiness_holds_on_rights_even_when_rows_complete():
     assert blocked["probability_publishable"] is False
 
     ready = readiness.assess_nhl_corpus_certification_readiness(
-        db, current_season=20262027, rights_approved=True
+        db, current_season=20262027, rights_approved=True, as_of_utc=NOW
     )
     assert ready["status"] == "G1_CORPUS_READY"
     assert ready["corpus_rebuild_ready"] is True
