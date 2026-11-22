@@ -44,7 +44,11 @@ async function launchIsolatedUi(testdriver) {
       "set -eu",
       `cd ${SANDBOX_ROOT}`,
       // A Vite-only local UI. No Render/Supabase/live data server is started.
-      "nohup env PORT=4173 BASE_PATH=/final-lock pnpm --filter @workspace/final-lock dev > /tmp/wow-e2e-vite.log 2>&1 < /dev/null &",
+      // Local fixture is the only reachable data endpoint; never start a model or provider.
+      "nohup node tests/fixtures/testdriver-props-mock.mjs > /tmp/wow-e2e-mock.log 2>&1 < /dev/null &",
+      "for i in 1 2 3 4 5 6 7 8 9 10; do if curl --fail --silent http://127.0.0.1:4184/health > /dev/null; then break; fi; sleep 1; done",
+      "curl --fail --silent http://127.0.0.1:4184/health > /dev/null || { cat /tmp/wow-e2e-mock.log; exit 1; }",
+      "nohup env PORT=4173 BASE_PATH=/final-lock DASHBOARD_API_PROXY_URL=http://127.0.0.1:4184 pnpm --filter @workspace/final-lock dev > /tmp/wow-e2e-vite.log 2>&1 < /dev/null &",
       "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do",
       "  if curl --fail --silent http://127.0.0.1:4173/final-lock/ > /dev/null; then exit 0; fi",
       "  sleep 2",
@@ -58,7 +62,7 @@ async function launchIsolatedUi(testdriver) {
 }
 
 describe("WOW Final Lock — isolated real-UI E2E", () => {
-  testUI("navigates product and safely handles NFL/NBA/NHL input", async (context) => {
+  testUI("navigates dashboard and verifies invalid and valid fixture-only props input", async (context) => {
     const testdriver = TestDriver(context);
     await launchIsolatedUi(testdriver);
 
@@ -91,5 +95,22 @@ describe("WOW Final Lock — isolated real-UI E2E", () => {
 
     await testdriver.find("Source Health icon in left navigation rail").click();
     expect(await testdriver.assert("The Source Health page is visible, without fabricated healthy provider status")).toBeTruthy();
+
+    // Valid manual intake through the actual React form. The request goes to a
+    // loopback-only deterministic mock and cannot query live providers or models.
+    await testdriver.find("Props Intake icon in left navigation rail").click();
+    await testdriver.find("Paste / Manual tab").click();
+    await testdriver.find("Paste props JSON textarea").click();
+    await testdriver.type(JSON.stringify({
+      player: "Test Fixture Player",
+      sport: "NBA",
+      prop_type: "Points",
+      side: "MORE",
+      line: 25.5,
+    }));
+    await testdriver.find("Normalize Props button").click();
+    expect(await testdriver.assert(
+      "1 props normalized from local_test_fixture is visible, showing a Test Fixture Player row with UNVERIFIED source grade"
+    )).toBeTruthy();
   });
 });
