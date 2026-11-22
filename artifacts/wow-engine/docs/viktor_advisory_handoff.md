@@ -20,7 +20,7 @@ Hashes above are placeholders, not evidence. Use exact observed 40-char current 
 - Existing worker context, model authority, certification, approval, leases and release remain unchanged. Every evidence link is independently reverified.
 
 ## Release prerequisites
-1. Independently enforce review on main first. Read on 2026-11-22: ruleset 24907422 requires zero approving PR reviews and no code-owner review. Preserve all three existing required checks, no bypass actors and stale-review dismissal; require at least one non-author approval and code-owner review as supported.
+1. Independently enforce review on main first. Read on 2026-11-22: ruleset 24907422 requires zero approving PR reviews and no code-owner review. Preserve all three existing required checks, zero bypass actors and stale-approval dismissal; require at least one independent non-author approval. Current CODEOWNERS assigns .github/** only to the owner, so mandatory code-owner review of owner-authored PRs requires a separate eligible code owner first; never create an unreviewable gate.
 2. Review the actual Viktor App installation's permissions; the App advertises broad Actions, contents, workflows and pull-request write rights. Scope it to least privilege before go-live.
 3. Exact-head CI and independent QA/Release/Security sign-off for the two protected worker workflow edits (class P).
 4. Verify a real admitted worker reads an authenticated Viktor pointer for an OPEN registered issue without duplicate dispatch or model release. A verified comment is not a worker run.
