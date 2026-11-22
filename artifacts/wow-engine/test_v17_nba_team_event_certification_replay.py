@@ -651,6 +651,11 @@ def test_forward_shadow_read_orders_by_event_then_capture_and_holds_duplicate_ca
         if name == nba_replay_module.FORWARD_SHADOW_TABLE
     ]
     assert shadow_orders == [["official_event_id", "capture_id"]]
+    grade_orders = [
+        query.orderings for name, query in db.queries
+        if name == nba_replay_module.FORWARD_VERIFIED_GRADE_TABLE
+    ]
+    assert grade_orders == [["official_event_id", "capture_id"]]
 
 
 def test_historical_training_tipoff_coverage_is_observed_not_inferred():
