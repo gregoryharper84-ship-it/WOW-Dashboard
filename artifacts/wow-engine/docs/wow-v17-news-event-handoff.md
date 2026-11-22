@@ -147,3 +147,48 @@ market quote with a canonical league ID. The approved verified-ID mapping
 must then reach the Scout event candidate before a research rescore request;
 an authorized independent reviewed-fact record and actual specialist
 rescore are still separate gates.
+
+
+## November 22, 2026 — NHL first-party identity and byte provenance
+
+**Problem:** The nightly research handoff historically carried an odds/ESPN
+provider game key under the legacy `official_event_id` alias. This is not
+official NHL identity. The existing `v17.nhl_event_identity` exact-match
+resolver had live, independently provided test evidence (November 22) for
+Maple Leafs at Islanders (`2026020381`) and Penguins at Stars
+(`2026020376`), matching both participants and kickoff at 0-minute drift,
+with a strict inclusive 30-minute tolerance. These reported tests do not
+prove execution inside the production nightly pipeline.
+
+**Implementation:** Nightly Multi-Scout now calls that *existing* NHL public
+season-schedule resolver **once per event**, before constructing the shared
+team/prop candidates. A successful future official `FUT`/`PRE` fixture
+sets the official NHL game ID and `canonical_event_id`, preserves the
+separate odds/ESPN `provider_event_id`, and records exact response-body
+`canonical_identity_source_sha256`, source URL, original response-content
+byte length and local verification timestamp. The resolver parses the
+**same `response.content` bytes it hashes**, rather than hashing
+re-serialized JSON. NHL public-source rate limit/transport, unknown team,
+wrong opponent, drift, corrupt/missing bytes, started game, or ambiguous
+fixture remain typed fail-closed blockers. Unresolved rows stay in the
+Scout source candidate inventory, with `official_event_id=null` and the
+native error code retained. NHL auto-advance rejects them under that native
+code instead of relabeling the failure as `MODEL_UNAVAILABLE`.
+
+**Separate lanes:** A first-party fixture identity does not validate NHL
+goalie, lineups, injuries, model artifacts, calibration, market value, or
+news claims. The SHA alone is a digest, not archived raw response bytes or
+proof of independent reviewer attestation. Preserve the accepted source
+receipt and perform an independent pregame readback before any model
+publication claim. Do not infer improved model accuracy from a resolved ID.
+The team event goes only to the existing LLP team specialist, and player
+props only to WOW_PROP_LANE. No automatic wagers or release override;
+`can_execute=false` and `V17_TERMINAL_REDUCER` remain unchanged.
+
+**Production acceptance:** An actual nightly run must demonstrate a verified
+NHL `canonical_event_id`, distinct provider alias, official source digest
+and verification time, with both team and prop routes conserving rows. A
+deliberate wrong participant / time must retain its native typed blocker
+and prevent a fitted scorer request. Then an independently verified
+model-receipt readback is required; green CI or a local resolver invocation
+alone does not complete this acceptance.
