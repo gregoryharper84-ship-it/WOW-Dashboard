@@ -400,6 +400,13 @@ def _load_existing_prediction(db: Any, prediction_identity_key: str) -> dict[str
     return dict(rows[0]) if rows else None
 
 
+def _model_reason(publishable: bool) -> str:
+    """Label the fitted path without claiming certification a held row lacks."""
+    if publishable is True:
+        return "CERTIFIED_NFL_P2_FITTED_MODEL"
+    return "NFL_P2_FITTED_MODEL_PUBLICATION_HELD"
+
+
 def _reused_prediction_result(
     row: dict[str, Any],
     *,
@@ -439,7 +446,7 @@ def _reused_prediction_result(
         "provenance_complete": True,
         "exact_line_supported": True,
         "failure_code": None,
-        "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
+        "model_reason": _model_reason(stored_publishable),
         "blend_publishable": False,
         "model_probability_publishable": stored_publishable,
         "probability_publishable": stored_publishable,
@@ -692,7 +699,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "provenance_complete": True,
         "exact_line_supported": True,
         "failure_code": None,
-        "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
+        "model_reason": _model_reason(model_publishable),
         "blend_publishable": False,
         "model_probability_publishable": model_publishable,
         "probability_publishable": model_publishable,
