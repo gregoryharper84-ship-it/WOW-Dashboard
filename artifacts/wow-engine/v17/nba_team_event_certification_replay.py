@@ -725,8 +725,11 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
                 and calibration_payload.get("model_version") == version
                 and calibration_payload.get("calibration_version") == calibrator_row.get("calibrator_version")
                 and calibration_payload.get("calibration_method") == calibrator_row.get("calibration_method")
-                and _matches(calibration_payload.get("platt_a"), coefficients.get("a"))
-                and _matches(calibration_payload.get("platt_b"), coefficients.get("b"))
+                # calibrator a = intercept, b = slope. Canonical artifact
+                # platt_a = slope and platt_b = intercept. Do not silently
+                # reverse these names or accept an invalid digest-bound fit.
+                and _matches(calibration_payload.get("platt_a"), coefficients.get("b"))
+                and _matches(calibration_payload.get("platt_b"), coefficients.get("a"))
                 and calibration_payload.get("probability_publishable") is False
                 and calibration_payload.get("rank_eligible") is False
                 and calibration_payload.get("can_execute") is False
