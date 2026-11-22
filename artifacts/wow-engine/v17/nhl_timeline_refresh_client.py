@@ -162,6 +162,11 @@ def main() -> None:
     if outcome["status"] != "SOURCE_TIMELINE_REFRESHED_REQUIRES_SCIENTIFIC_ACCEPTANCE":
         print("::warning::" + str(outcome.get("code") or outcome["status"]))
     print(json.dumps(outcome, sort_keys=True))
+    # The workflow uses continue-on-error so this step cannot block unrelated
+    # production deployment. Its raw outcome must still be failure on HOLD,
+    # allowing the existing downstream summary to report source-refresh failure.
+    if outcome["status"] != "SOURCE_TIMELINE_REFRESHED_REQUIRES_SCIENTIFIC_ACCEPTANCE":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

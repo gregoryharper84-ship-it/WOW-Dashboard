@@ -6,6 +6,15 @@ WF = ROOT / ".github" / "workflows" / "wow-v17-log-incident-intake.yml"
 MODULE = ROOT / "artifacts" / "wow-engine" / "v17" / "log_incident_intake.py"
 
 
+def test_retired_datadog_has_no_unattended_or_manual_source_calls():
+    """When the source is retired, only PR-local security tests may execute."""
+    wf = WF.read_text()
+    assert "\n  schedule:\n" not in wf
+    assert "\n  workflow_dispatch:\n" not in wf
+    assert "  pull_request:\n" in wf
+    assert "github.event_name != 'pull_request'" in wf
+
+
 def test_workflow_reuses_approved_intake_without_parallel_writer():
     wf = WF.read_text()
     assert "contents: read" in wf
