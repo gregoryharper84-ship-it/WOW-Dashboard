@@ -1,3 +1,8 @@
+-- Class-C deployment review record: issue #2775; project iczfhsmjrrafhvcpmqhr.
+-- This file must be reviewed as a whole and applied by an authorized database
+-- release only. Git merge / workflow PASS never executes the DDL.
+-- Existing legacy calibrators and immutable candidate forecasts must survive;
+-- independent acceptance and can_execute=false remain mandatory.
 -- Add immutable shadow calibration-artifact evidence for NBA/WNBA team-event fits.
 -- Class C evidence generation only. No certification, promotion, or probability publication.
 --
