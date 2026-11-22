@@ -172,9 +172,11 @@ GDELT DOC 2.0 endpoint from this runtime, kept so the evidence outlives the
 retry proposals it settles. It adds no code, workflow or test change: the
 merged single-request fail-fast policy above is unchanged.
 
-**Probe series, November 18, 2026.** Each row was a single `NBA injury` ArtList
-request. Every refusal returned HTTP 429 with the body "Please limit requests
-to one every 5 seconds" and **no `Retry-After` header**.
+**Probe series, November 18, 2026.** Each row was an ArtList request for
+`NBA injury`. The November 20 note above records that the initial probe issued
+paired requests, so the silence column is the observed gap before each request,
+not a verified quiet period. Every refusal returned HTTP 429 with the body
+"Please limit requests to one every 5 seconds" and **no `Retry-After` header**.
 
 | Silence before the request | Result |
 | --- | --- |
@@ -183,16 +185,16 @@ to one every 5 seconds" and **no `Retry-After` header**.
 | 90 s | 429 |
 | 135 s | 429 |
 | 735 s (12.3 min) | 429 |
-| 688 s (11.5 min), after a runtime restart that changed egress | **200, 5 articles** |
+| 688 s (11.5 min), after a runtime restart and a possible egress change | **200, 5 articles** |
 
 The refusals were sustained across minutes, not the advertised five-second
-interval. **What carries the block is not established.** The same address
+interval. **What carries the block is not established.** The probing runtime
 stayed refused through 735 s of silence, yet three scheduled source-refresh
 runs the same day (10:27Z, 18:58Z and the 02:5xZ slot) each received 429 on
-their **first** request from separate GitHub-hosted runner addresses, so a
-per-IP allowance does not account for what was observed. The single 200 cannot
-separate elapsed silence from the egress change, so it is evidence that the
-block lifts, not a recovery threshold.
+their **first** request, on separate scheduled runs from fresh GitHub-hosted
+runners, so a per-IP allowance does not account for what was observed. The
+single 200 cannot separate elapsed silence from that possible egress change, so
+it is evidence that the block lifts, not a recovery threshold.
 
 **The success that settles the policy.** Scheduled Multi-Scout [run
 #44789095413](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44789095413)
@@ -204,9 +206,10 @@ which is what the merged policy counts on.
 
 What this does and does not support: no measurement shows a 900-second sleep
 lifting the block, and nothing supports occupying a worker for 15 minutes to
-make a second request inside a penalty window. The opt-in paced retry ladder
-drafted against this evidence is deliberately not merged, because nothing
-exercises it and adopting it as a default would reverse the merged decision.
+make a second request while the source is refusing requests. The opt-in
+paced retry ladder drafted against this evidence is deliberately not merged,
+because nothing exercises it and adopting it as a default would reverse the
+merged decision.
 Recovery is still not verified: the receipt records `recovery_verified=false`
 and the next scheduled run remains an independent new attempt.
 
