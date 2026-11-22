@@ -54,7 +54,7 @@ begin
      and can_execute is false
      and prediction_created_at < event_start_time_utc;
 
-  v_certified := coalesce((v_cert->>'ok')::boolean,false)
+  v_certified := coalesce(((v_cert->>'ok')::boolean)
     and v_cert->>'certification_status' = 'CERTIFIED'
     and v_cert->>'independent_verification_status' = 'PASS'
     and v_cert->>'probability_publishable' = 'true'
@@ -111,7 +111,7 @@ $function$
     and v_health.minimum_forward_required >= 100
     and v_health.graded_n >= v_health.minimum_forward_required
     and v_exact_grades = v_distinct_games
-    and v_distinct_games >= v_health.minimum_forward_required;
+    and v_distinct_games >= v_health.minimum_forward_required), false);
 
   if r.event_start_time_utc <= now() then v_blockers:=array_append(v_blockers,'EVENT_NOT_PREGAME'); end if;
   if not r.model_package_valid then v_blockers:=array_append(v_blockers,'MODEL_PACKAGE_INVALID'); end if;
