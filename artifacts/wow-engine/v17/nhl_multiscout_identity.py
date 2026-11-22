@@ -100,13 +100,20 @@ def resolve_multiscout_nhl_identity(
     )
     out["canonical_identity_resolution"] = "OFFICIAL_NHL_SCHEDULE_EXACT_MATCH"
     out["canonical_identity_verified_at"] = resolution.get("identity_verified_at")
-    out["canonical_identity_event_start_utc"] = resolution.get("event_start_time")
+    official_start = resolution.get("event_start_time")
+    out["canonical_identity_event_start_utc"] = official_start
+    # Authoritative pregame cutoff is the official schedule start, not the
+    # odds-provider commence_time (which may differ within the match window).
+    if isinstance(official_start, str) and official_start.strip():
+        out["provider_commence_time"] = out.get("commence_time")
+        out["commence_time"] = official_start
+        out["event_start_utc"] = official_start
     out["canonical_identity_receipt"] = {
         "identity_provider": resolution.get("identity_provider"),
         "identity_source": resolution.get("identity_source"),
         "identity_verified_at": resolution.get("identity_verified_at"),
         "event_id": canonical_event_id,
-        "event_start_time": resolution.get("event_start_time"),
+        "event_start_time": official_start,
         "home_team": resolution.get("home_team"),
         "away_team": resolution.get("away_team"),
         "market_features_used": False,

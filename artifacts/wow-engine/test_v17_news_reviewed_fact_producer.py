@@ -108,22 +108,26 @@ def test_bundle_attaches_only_to_verified_matching_events(tmp_path: Path):
     (tmp_path / "news-reviewed-facts.json").write_text(json.dumps(bundle), encoding="utf-8")
     payload = {
         "can_execute": False,
+        "public_news_discovery_bridge": {"source_sha256": DIGEST},
         "model_handoff": {
             "team_event_candidates": [
                 {
                     "sport_key": "icehockey_nhl",
                     "official_event_id": "2026020381",
                     "official_event_identity_verified": True,
+                    "public_news_discovery_sha256": DIGEST,
                 },
                 {
                     "sport_key": "icehockey_nhl",
                     "official_event_id": "2026020381",
                     "official_event_identity_verified": False,
+                    "public_news_discovery_sha256": DIGEST,
                 },
                 {
                     "sport_key": "icehockey_nhl",
                     "official_event_id": "9999999999",
                     "official_event_identity_verified": True,
+                    "public_news_discovery_sha256": DIGEST,
                 },
             ],
             "prop_candidates": [],
@@ -136,3 +140,31 @@ def test_bundle_attaches_only_to_verified_matching_events(tmp_path: Path):
     assert len(rows[0]["news_reviewed_facts"]) == 1
     assert "news_reviewed_facts" not in rows[1]
     assert "news_reviewed_facts" not in rows[2]
+
+
+def test_multi_event_claims_are_not_collapsed_across_games():
+    second = {**CLAIM, "official_event_id": "2026020999", "subject_id": "TOR-G", "fact_value": "WOLL"}
+    out = produce_reviewed_facts(DISCOVERY, [CLAIM, second], observed_at=NOW, source_receipt_sha256=DIGEST)
+    assert out["producer_status"] == "NEWS_REVIEW_FACTS_ACCEPTED"
+    assert {f["official_event_id"] for f in out["accepted_facts"]} == {"2026020381", "2026020999"}
+
+
+def test_bundle_rejects_foreign_discovery_digest(tmp_path: Path):
+    bundle = produce_reviewed_facts(DISCOVERY, [CLAIM], observed_at=NOW, source_receipt_sha256=DIGEST)
+    (tmp_path / "news-reviewed-facts.json").write_text(json.dumps(bundle), encoding="utf-8")
+    payload = {
+        "can_execute": False,
+        "public_news_discovery_bridge": {"source_sha256": "b" * 64},
+        "model_handoff": {
+            "team_event_candidates": [{
+                "sport_key": "icehockey_nhl",
+                "official_event_id": "2026020381",
+                "official_event_identity_verified": True,
+                "public_news_discovery_sha256": "b" * 64,
+            }],
+            "prop_candidates": [],
+        },
+    }
+    out = attach_reviewed_facts_bundle(payload, tmp_path / "model-handoff.json")
+    assert out["news_reviewed_facts_bridge"]["status"] == "NEWS_REVIEW_SOURCE_DIGEST_MISMATCH"
+    assert "news_reviewed_facts" not in out["model_handoff"]["team_event_candidates"][0]

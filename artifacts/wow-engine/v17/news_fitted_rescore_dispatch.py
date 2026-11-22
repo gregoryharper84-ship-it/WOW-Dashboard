@@ -41,6 +41,30 @@ def _hash(value: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _prop_target(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Extract the exact prop target when this candidate is a proposition row."""
+    evidence = candidate.get("market_evidence")
+    if isinstance(evidence, list):
+        evidence = next((row for row in evidence if isinstance(row, Mapping)), None)
+    if not isinstance(evidence, Mapping):
+        return None
+    participant = str(evidence.get("description") or evidence.get("participant") or "").strip()
+    market_key = str(evidence.get("market_key") or evidence.get("stat_type") or "").strip()
+    direction = str(evidence.get("outcome_name") or evidence.get("direction") or "").strip().upper()
+    line = evidence.get("point", evidence.get("line"))
+    if not participant and not market_key and line is None and not direction:
+        return None
+    target = {
+        "participant": participant or None,
+        "market_key": market_key or None,
+        "direction": direction or None,
+        "line": float(line) if isinstance(line, (int, float)) and not isinstance(line, bool) else None,
+    }
+    if all(value is None for value in target.values()):
+        return None
+    return target
+
+
 def build_news_feature_snapshot(
     baseline_features: Mapping[str, Any] | None,
     news_context: list[Mapping[str, Any]] | None,
@@ -119,7 +143,8 @@ def dispatch_news_rescore(
     handoff = candidate.get("news_research_handoff")
     handoff = handoff if isinstance(handoff, Mapping) else {}
     event_start = _utc(
-        candidate.get("event_start_utc")
+        candidate.get("canonical_identity_event_start_utc")
+        or candidate.get("event_start_utc")
         or candidate.get("commence_time")
         or handoff.get("event_start_utc")
     )
@@ -222,6 +247,7 @@ def dispatch_news_rescore(
     if not receipt["feature_snapshot_changed"]:
         return finish("NEWS_RESCORE_FEATURE_UNCHANGED", blockers=["FEATURE_SNAPSHOT_UNCHANGED"])
 
+    prop_target = _prop_target(candidate)
     request = {
         "sport_key": sport_key,
         "official_event_id": official_event_id,
@@ -230,6 +256,7 @@ def dispatch_news_rescore(
         "home_team": candidate.get("home_team"),
         "away_team": candidate.get("away_team"),
         "controlling_specialist_route": route or None,
+        "prop_target": prop_target,
         "feature_snapshot": after,
         "feature_snapshot_hash": after["feature_snapshot_hash"],
         "prior_feature_snapshot_hash": prior.get("feature_snapshot_hash"),
@@ -239,6 +266,8 @@ def dispatch_news_rescore(
         "prediction_authority": False,
         "can_execute": False,
     }
+    if prop_target is not None:
+        receipt["prop_target"] = prop_target
     scorer = score_fn or _missing_fitted_scorer
     receipt["scoring_attempted"] = True
     try:
@@ -303,10 +332,14 @@ def dispatch_news_rescore(
 
     response_feature_hash = response.get("feature_snapshot_hash")
     if (
-        isinstance(response_feature_hash, str)
-        and re.fullmatch(r"[0-9a-f]{64}", response_feature_hash)
-        and response_feature_hash != after["feature_snapshot_hash"]
+        not isinstance(response_feature_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", response_feature_hash)
     ):
+        return finish(
+            "NEWS_RESCORE_FEATURE_HASH_MISSING",
+            blockers=["SCORER_FEATURE_HASH_MISSING"],
+        )
+    if response_feature_hash != after["feature_snapshot_hash"]:
         return finish(
             "NEWS_RESCORE_FEATURE_HASH_MISMATCH",
             blockers=["SCORER_FEATURE_HASH_MISMATCH"],
@@ -316,7 +349,8 @@ def dispatch_news_rescore(
     receipt["scoring_response_digest"] = _hash({
         "code": code,
         "model_version": receipt["fitted_model_version"],
-        "feature_snapshot_hash": after["feature_snapshot_hash"],
+        "feature_snapshot_hash": response_feature_hash,
+        "prop_target": prop_target,
         "calibrated_probability": receipt["calibrated_probability"],
         "calibrated_lower_bound": receipt["calibrated_lower_bound"],
     })

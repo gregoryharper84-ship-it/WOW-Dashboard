@@ -131,6 +131,7 @@ def test_scorer_claiming_execution_authority_is_rejected():
             "ok": True,
             "code": "NEWS_FITTED_RESCORE_COMPLETE",
             "model_version": "x",
+            "feature_snapshot_hash": "c" * 64,
             "can_execute": True,
             "prediction_authority": False,
         }
@@ -142,4 +143,89 @@ def test_scorer_claiming_execution_authority_is_rejected():
         baseline_features={"goalie_status": "UNCONFIRMED"},
     )
     assert out["dispatch_status"] == "NEWS_RESCORE_AUTHORITY_REJECTED"
+    assert out["model_rescore_verified"] is False
+
+
+def test_missing_or_mismatched_feature_hash_never_verifies():
+    def missing_hash(request):
+        return {
+            "ok": True,
+            "code": "NEWS_FITTED_RESCORE_COMPLETE",
+            "model_version": "nhl-llp-fixture-v17.test",
+            "calibrated_probability": 0.61,
+            "prediction_authority": False,
+            "can_execute": False,
+        }
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=missing_hash,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_FEATURE_HASH_MISSING"
+    assert out["model_rescore_verified"] is False
+
+    def wrong_hash(request):
+        return {
+            **missing_hash(request),
+            "feature_snapshot_hash": "d" * 64,
+        }
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=wrong_hash,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_FEATURE_HASH_MISMATCH"
+    assert out["model_rescore_verified"] is False
+
+
+def test_prop_target_is_passed_to_scorer_and_receipt():
+    seen = {}
+
+    def capture(request):
+        seen["request"] = request
+        return _ok_scorer(request)
+
+    candidate = _candidate(
+        controlling_specialist_route="WOW_PROP_LANE",
+        market_evidence={
+            "description": "Ilya Sorokin",
+            "market_key": "player_shots_on_goal",
+            "outcome_name": "OVER",
+            "point": 2.5,
+        },
+    )
+    out = dispatch_news_rescore(
+        candidate,
+        score_fn=capture,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_VERIFIED"
+    assert seen["request"]["prop_target"] == {
+        "participant": "Ilya Sorokin",
+        "market_key": "player_shots_on_goal",
+        "direction": "OVER",
+        "line": 2.5,
+    }
+    assert out["prop_target"]["participant"] == "Ilya Sorokin"
+
+
+def test_official_start_cutoff_blocks_post_start_rescore():
+    # Provider commence is later, but official canonical start has passed.
+    candidate = _candidate(
+        commence_time="2026-11-22T18:00:00Z",
+        event_start_utc="2026-11-22T18:00:00Z",
+        canonical_identity_event_start_utc="2026-11-22T17:30:00Z",
+    )
+    out = dispatch_news_rescore(
+        candidate,
+        score_fn=_ok_scorer,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_EVENT_ALREADY_STARTED"
     assert out["model_rescore_verified"] is False

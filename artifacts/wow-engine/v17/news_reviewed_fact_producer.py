@@ -200,7 +200,9 @@ def produce_reviewed_facts(
         })
 
     # Collapse duplicates and quarantine conflicts / syndicated high-impact copies.
-    unique: dict[tuple[str, str, str], dict[str, Any]] = {}
+    # Dedup/conflict keys are scoped to official_event_id so multi-event bundles
+    # do not silently drop or cross-quarantine unrelated games.
+    unique: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     url_groups: dict[str, str] = {}
     for fact in accepted:
         url = fact["source_url"]
@@ -208,7 +210,12 @@ def produce_reviewed_facts(
             base["conflicts"].append("SOURCE_URL_MULTI_GROUP")
             return finish("NEWS_REVIEW_SOURCE_CONFLICT")
         url_groups[url] = fact["source_group"]
-        key = (fact["source_group"], fact["evidence_kind"], fact["subject_id"])
+        key = (
+            fact["official_event_id"],
+            fact["source_group"],
+            fact["evidence_kind"],
+            fact["subject_id"],
+        )
         prior = unique.get(key)
         if prior is not None:
             if prior["fact_value"] != fact["fact_value"] or prior["material_change"] != fact["material_change"]:
@@ -230,11 +237,20 @@ def produce_reviewed_facts(
 
     rows = sorted(
         unique.values(),
-        key=lambda r: (r["evidence_kind"], r["subject_id"], r["source_group"], r["source_url"]),
+        key=lambda r: (
+            r["official_event_id"],
+            r["evidence_kind"],
+            r["subject_id"],
+            r["source_group"],
+            r["source_url"],
+        ),
     )
-    by_subject: dict[tuple[str, str], set[str]] = {}
+    by_subject: dict[tuple[str, str, str], set[str]] = {}
     for row in rows:
-        by_subject.setdefault((row["evidence_kind"], row["subject_id"]), set()).add(row["fact_value"])
+        by_subject.setdefault(
+            (row["official_event_id"], row["evidence_kind"], row["subject_id"]),
+            set(),
+        ).add(row["fact_value"])
     if any(len(values) > 1 for values in by_subject.values()):
         base["conflicts"].append("CONTRADICTORY_SOURCE_FACTS")
         return finish("NEWS_REVIEW_SOURCE_CONFLICT")
@@ -247,7 +263,8 @@ def produce_reviewed_facts(
             continue
         confirmations = [
             r for r in rows
-            if r["evidence_kind"] == row["evidence_kind"]
+            if r["official_event_id"] == row["official_event_id"]
+            and r["evidence_kind"] == row["evidence_kind"]
             and r["subject_id"] == row["subject_id"]
             and r["fact_value"] == row["fact_value"]
         ]
@@ -317,6 +334,29 @@ def attach_reviewed_facts_bundle(payload: dict[str, Any], source: Path) -> dict[
     if not isinstance(handoff, dict):
         return status("NEWS_REVIEW_NO_SCOUT_HANDOFF")
 
+    # Same-run provenance: reviewed facts may only attach when their source
+    # receipt digest matches the current discovery bridge digest.
+    bridge = payload.get("public_news_discovery_bridge")
+    current_digest = (
+        bridge.get("source_sha256")
+        if isinstance(bridge, dict) and isinstance(bridge.get("source_sha256"), str)
+        else None
+    )
+    bundle_digest = bundle.get("source_receipt_sha256")
+    if (
+        not isinstance(current_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", current_digest)
+        or not isinstance(bundle_digest, str)
+        or bundle_digest != current_digest
+    ):
+        return status("NEWS_REVIEW_SOURCE_DIGEST_MISMATCH")
+    if any(
+        not isinstance(fact.get("source_receipt_sha256"), str)
+        or fact.get("source_receipt_sha256") != current_digest
+        for fact in facts
+    ):
+        return status("NEWS_REVIEW_FACT_DIGEST_MISMATCH")
+
     by_event: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for fact in facts:
         sport = fact.get("sport_key")
@@ -338,7 +378,12 @@ def attach_reviewed_facts_bundle(payload: dict[str, Any], source: Path) -> dict[
             item = dict(row)
             key = (str(item.get("sport_key") or ""), str(item.get("official_event_id") or ""))
             matched = by_event.get(key)
-            if matched and item.get("official_event_identity_verified") is True:
+            row_digest = item.get("public_news_discovery_sha256")
+            if (
+                matched
+                and item.get("official_event_identity_verified") is True
+                and row_digest == current_digest
+            ):
                 item["news_reviewed_facts"] = list(matched)
                 attached += 1
             new_rows.append(item)

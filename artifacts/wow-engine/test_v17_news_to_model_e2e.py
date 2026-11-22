@@ -135,7 +135,9 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path):
         },
     }
     attached = _attach_sibling_news(payload, source)
+    assert attached["public_news_discovery_bridge"]["source_sha256"] == digest
     attached = attach_reviewed_facts_bundle(attached, source)
+    assert attached["news_reviewed_facts_bridge"]["status"] == "NEWS_REVIEWED_FACTS_ATTACHED"
     assert attached["news_reviewed_facts_bridge"]["candidates_attached"] == 1
 
     # Default enrich_handoff uses unbound scorer → MODEL_UNAVAILABLE.

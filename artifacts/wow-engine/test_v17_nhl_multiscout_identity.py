@@ -62,7 +62,11 @@ def _schedule_payload():
 
 def test_provider_alias_maps_to_distinct_official_nhl_event_id():
     session = _Session(_schedule_payload())
-    out = resolve_multiscout_nhl_identity(_nhl_row(), session=session)
+    # Provider commence differs within the match window; official start wins.
+    out = resolve_multiscout_nhl_identity(
+        _nhl_row(commence_time="2026-11-24T00:45:00Z"),
+        session=session,
+    )
     assert out["provider_event_id"] == "espn-401999999"
     assert out["provider_event_source"] == "ODDS_API"
     assert out["official_event_id"] == "2026020381"
@@ -70,6 +74,10 @@ def test_provider_alias_maps_to_distinct_official_nhl_event_id():
     assert out["official_event_identity_verified"] is True
     assert out["canonical_identity_status"] == "CANONICAL_RESOLVED"
     assert out["canonical_identity_source"] == "NHL_PUBLIC_WEB_API"
+    assert out["provider_commence_time"] == "2026-11-24T00:45:00Z"
+    assert out["commence_time"] == "2026-11-24T00:30:00+00:00"
+    assert out["event_start_utc"] == "2026-11-24T00:30:00+00:00"
+    assert out["canonical_identity_event_start_utc"] == "2026-11-24T00:30:00+00:00"
     assert out["canonical_identity_receipt"]["event_id"] == "2026020381"
     assert out["canonical_identity_receipt"]["can_execute"] is False
     assert out["can_execute"] is False
