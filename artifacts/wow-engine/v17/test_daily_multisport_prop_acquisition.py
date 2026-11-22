@@ -156,7 +156,8 @@ def test_refresh_trigger_only_for_selected_stale_captures():
     assert _prop_manifest_requires_refresh([fresh, old], selected_limit=2, now=NOW)
     assert not _prop_manifest_requires_refresh([old], selected_limit=0, now=NOW)
     assert not _prop_manifest_requires_refresh([], selected_limit=4, now=NOW)
-    assert _prop_manifest_requires_refresh([{}], selected_limit=1, now=NOW)
+    # Missing capture time remains unverified; it is not a stale *timestamp* trigger.
+    assert not _prop_manifest_requires_refresh([{}], selected_limit=1, now=NOW)
 
 
 def test_nonempty_stale_daily_manifest_requests_new_evidence_and_reports_source_error(monkeypatch):
