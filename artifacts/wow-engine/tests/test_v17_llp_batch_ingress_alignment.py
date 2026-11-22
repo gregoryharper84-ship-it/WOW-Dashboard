@@ -88,3 +88,30 @@ def test_existing_single_event_and_hold_routes_unchanged():
     assert LLP_PREFIX + "/score-team-event" in llp["paths"]
     assert "/internal/v17/spread-forward-shadow" in wow["paths"]
     assert LLP_PREFIX + "/internal/v17/spread-forward-shadow" in llp["paths"]
+
+
+def test_three_way_disposition_board_action_is_authenticated_read_only_post():
+    llp = _spec("openapi.llp-team-engine.v17.yaml")
+    path = LLP_PREFIX + "/v17/llp-team-intelligence/{run_id}/board"
+    operation = llp["paths"][path]["post"]
+    assert operation["operationId"] == "readLlpV17TeamIntelligenceBoard"
+    assert operation["x-openai-isConsequential"] is False
+    assert operation["security"] == [{"actionBearer": []}]
+    request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    assert request_schema["$ref"] == "#/components/schemas/LlpTeamIntelligenceBoardRequest"
+    board_request = llp["components"]["schemas"]["LlpTeamIntelligenceBoardRequest"]
+    assert board_request["additionalProperties"] is False
+    research = llp["components"]["schemas"]["LlpExternalResearchSupport"]
+    assert research["additionalProperties"] is False
+    assert "selected_side" in research["required"]
+    assert "sources" in research["required"]
+    source = llp["components"]["schemas"]["LlpExternalResearchSource"]
+    assert source["additionalProperties"] is False
+    assert "probability" not in source["properties"]
+
+    edge = (ROOT / "supabase/functions/wow-llp-action-gateway/index.ts").read_text(encoding="utf-8")
+    assert 'pattern: /^\\/v17\\/llp-team-intelligence\\/[^/]+\\/board$/, auth: true' in edge
+    vercel = (ROOT / "vercel/llp-action-gateway/api/gateway.js").read_text(encoding="utf-8")
+    assert '"/v17/llp-team-intelligence/__BOARD__", { method: "POST", auth: true }' in vercel
+    config = json.loads((ROOT / "vercel/llp-action-gateway/vercel.json").read_text(encoding="utf-8"))
+    assert any(item["source"].endswith("/v17/llp-team-intelligence/:run_id/board") for item in config["rewrites"])
