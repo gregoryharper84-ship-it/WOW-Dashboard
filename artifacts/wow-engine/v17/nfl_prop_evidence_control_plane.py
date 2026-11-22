@@ -242,6 +242,9 @@ def acquire_nfl_forward_evidence_batch(
         "persisted": 0,
         "held": 0,
         "snapshot_write_failed": 0,
+        "snapshot_write_succeeded": 0,
+        "explicit_prewrite_exclusions": 0,
+        "receipts": [],
         "next_offset": None,
         "blockers": [],
         "stat_types": list(STAT_TYPES),
@@ -274,15 +277,32 @@ def acquire_nfl_forward_evidence_batch(
 
     for candidate in window:
         result["attempted"] += 1
+        receipt = {
+            "event_id": candidate["canonical_event_id"],
+            "event_start_time": candidate["event_start_time"],
+            "sport": SPORT,
+            "player": candidate["player"],
+            "stat_type": candidate["stat_type"],
+            "source_type": SOURCE_TYPE,
+            "source_snapshot_id": None,
+            "write_status": "PREWRITE_PENDING",
+            "terminal_reason": None,
+            "can_execute": False,
+        }
+        result["receipts"].append(receipt)
         try:
             if _existing_snapshot(db, candidate):
                 result["already_captured"] += 1
+                result["explicit_prewrite_exclusions"] += 1
+                receipt["write_status"] = "ALREADY_CAPTURED"
+                receipt["terminal_reason"] = "NFL_EXISTING_SNAPSHOT_ALREADY_CAPTURED"
                 continue
         except Exception as exc:
             result["held"] += 1
-            result["blockers"].append(
-                f"{candidate['player']}:{candidate['stat_type']}:NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}"
-            )
+            result["explicit_prewrite_exclusions"] += 1
+            reason = f" NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}".strip()
+            receipt.update(write_status="PREWRITE_EXCLUDED", terminal_reason=reason)
+            result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{reason}")
             continue
         writing = False
         try:
@@ -323,33 +343,45 @@ def acquire_nfl_forward_evidence_batch(
             snapshot["source_snapshot_id"] = snapshot_id
             result["hydrated"] += 1
             writing = True
+            receipt.update(source_snapshot_id=snapshot_id, write_status="SNAPSHOT_WRITE_PENDING")
             db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
             result["persisted"] += 1
+            result["snapshot_write_succeeded"] += 1
+            receipt.update(
+                write_status="SNAPSHOT_WRITE_SUCCEEDED",
+                terminal_reason="PERSISTED_AWAITING_CANONICAL_READBACK",
+            )
         except PropAutoHydrationError as exc:
             result["held"] += 1
+            result["explicit_prewrite_exclusions"] += 1
+            receipt.update(write_status="PREWRITE_EXCLUDED", terminal_reason=exc.code)
             result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{exc.code}")
         except ValueError as exc:
+            reason = " ".join(str(exc).split())[:120] or type(exc).__name__
+            result["held"] += 1
             if writing:
-                # A failure after validation, while writing the snapshot, is a genuine write failure.
-                result["held"] += 1
                 result["snapshot_write_failed"] += 1
-                result["blockers"].append(
-                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
-                )
+                receipt.update(write_status="SNAPSHOT_WRITE_FAILED",
+                               terminal_reason=f"NFL_FORWARD_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}")
             else:
-                # Governed evidence validation (for example L10_GAME_LOG_INCOMPLETE) is a typed
-                # row-scoped HOLD with its reason, not a snapshot write failure. Nothing is
-                # persisted and no probability is produced for the row.
-                reason = " ".join(str(exc).split())[:120] or type(exc).__name__
-                result["held"] += 1
-                result["blockers"].append(
-                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_EVIDENCE_INVALID:{reason}"
-                )
+                result["explicit_prewrite_exclusions"] += 1
+                receipt.update(write_status="PREWRITE_EXCLUDED",
+                               terminal_reason=f"NFL_FORWARD_EVIDENCE_INVALID:{reason}")
+            result["blockers"].append(
+                f"{candidate['player']}:{candidate['stat_type']}:{receipt['terminal_reason']}"
+            )
         except Exception as exc:
             result["held"] += 1
-            result["snapshot_write_failed"] += 1
+            if writing:
+                result["snapshot_write_failed"] += 1
+                receipt.update(write_status="SNAPSHOT_WRITE_FAILED",
+                               terminal_reason=f"NFL_FORWARD_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}")
+            else:
+                result["explicit_prewrite_exclusions"] += 1
+                receipt.update(write_status="PREWRITE_EXCLUDED",
+                               terminal_reason=f"NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}")
             result["blockers"].append(
-                f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
+                f"{candidate['player']}:{candidate['stat_type']}:{receipt['terminal_reason']}"
             )
 
     result["blockers"] = list(dict.fromkeys(result["blockers"]))
