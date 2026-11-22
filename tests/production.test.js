@@ -16,16 +16,22 @@ function stagingDocsUrl() {
     throw new Error("WOW_TESTDRIVER_STAGING_URL must be a valid absolute HTTPS URL");
   }
 
-  const stagingHost = /(?:^|[.-])(staging|preview|sandbox|test)(?:[.-]|$)/i.test(url.hostname);
+  // Require both a repository-approved exact host and the known WOW non-production
+  // service boundary. A generic "staging" substring on an arbitrary domain is unsafe.
+  const approvedHost = (process.env.WOW_TESTDRIVER_APPROVED_STAGING_HOST || "").trim().toLowerCase();
+  const approvedService = /^wow-governed-probability-engine-(?:staging|preview|sandbox)\\.onrender\\.com$/.test(url.hostname);
+  const stagingHost = Boolean(approvedHost) && url.hostname === approvedHost && approvedService;
   if (
     url.protocol !== "https:" ||
     !stagingHost ||
     url.hostname === "wow-governed-probability-engine.onrender.com" ||
     url.username ||
     url.password ||
-    url.pathname !== "/docs"
+    url.pathname !== "/docs" ||
+    Boolean(url.search) ||
+    Boolean(url.hash)
   ) {
-    throw new Error("TestDriver requires an HTTPS staging/preview/sandbox /docs URL without credentials");
+    throw new Error("TestDriver requires an explicitly approved WOW staging hostname and exact HTTPS /docs URL without credentials, query or hash");
   }
 
   return url.toString();
