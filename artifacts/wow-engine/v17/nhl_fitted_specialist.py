@@ -1064,8 +1064,16 @@ def _evidence(req: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | None = None) -> dict[str, Any]:
-    """Controlling fitted scoring entrypoint for one current pregame NHL event."""
+def score_current_nhl_event(
+    req: Any, *, db: Any = None, now_utc: datetime | None = None,
+    certified_candidate: NHLFittedCandidate | None = None,
+) -> dict[str, Any]:
+    """Score one current NHL event; a receipt-bound override is backend-only.
+
+    The public request schema never supplies this argument. Certified callers
+    first verify the exact persisted candidate against the independently
+    approved receipt, then pass that immutable object without global mutation.
+    """
     evidence = _evidence(req)
     now = now_utc or datetime.now(timezone.utc)
     blockers: list[str] = []
@@ -1116,7 +1124,14 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
             "MODEL_UNAVAILABLE", ["NHL_FITTED_REGISTRY_UNAVAILABLE"]
         )
     client = provider() if callable(provider) else provider
-    candidate = load_nhl_fitted_candidate(client, as_of_utc=now)
+    if certified_candidate is not None and not isinstance(certified_candidate, NHLFittedCandidate):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT", ["NHL_CERTIFIED_CANDIDATE_TYPE_INVALID"]
+        )
+    candidate = (
+        certified_candidate if certified_candidate is not None
+        else load_nhl_fitted_candidate(client, as_of_utc=now)
+    )
     events = load_nhl_season_events(client, season=season)
     home_team = str(getattr(req, "home_team", "") or "")
     away_team = str(getattr(req, "away_team", "") or "")
