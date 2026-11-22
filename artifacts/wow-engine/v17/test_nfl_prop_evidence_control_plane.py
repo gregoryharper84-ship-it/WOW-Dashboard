@@ -22,6 +22,7 @@ class _Query:
     def select(self, *_a, **_k): return self
     def eq(self, key, value): self.filters[key] = value; return self
     def limit(self, _n): return self
+    def order(self, *_args, **_kwargs): return self
     def upsert(self, row, on_conflict=None):
         self.pending = dict(row); self.db.upserts.append((self.pending, on_conflict)); return self
     def execute(self):
@@ -30,11 +31,28 @@ class _Query:
             self.filters.get("event_id"), self.filters.get("sport"),
             self.filters.get("player"), self.filters.get("stat_type"),
         )
-        return _Result([{"source_snapshot_id":"existing"}] if identity in self.db.existing else [])
+        if identity not in self.db.existing:
+            return _Result([])
+        ready = {
+            "source_snapshot_id": "existing", "captured_at": NOW.isoformat(),
+            "hydration_status": "PASS", "blockers": [],
+            "role_status": {
+                "availability": {
+                    "designation": "AVAILABLE",
+                    "source": "OFFICIAL_ESPN_REPORT",
+                    "captured_at": NOW.isoformat(), "evidence_status": "RETRIEVED",
+                    "fresh": True, "report_complete": True,
+                    "athlete_id": "test-athlete", "event_id": "2026_04_CHI_PHI",
+                    "team": "PHI",
+                },
+            },
+        }
+        return _Result([dict(self.db.existing_row or ready)])
 
 
 class _DB:
-    def __init__(self, existing=None): self.existing=set(existing or []); self.upserts=[]
+    def __init__(self, existing=None, existing_row=None):
+        self.existing=set(existing or []); self.existing_row=existing_row; self.upserts=[]
     def table(self, name):
         assert name == "wow_prop_evidence_snapshots"; return _Query(self)
 
@@ -296,3 +314,58 @@ def test_nfl_existing_snapshot_yields_explicit_exclusion_receipt(monkeypatch):
         result["snapshot_write_succeeded"] + result["snapshot_write_failed"]
         + result["explicit_prewrite_exclusions"]
     )
+
+
+def test_stale_ready_snapshot_is_refreshed_not_permanently_skipped(monkeypatch):
+    from datetime import timedelta
+    candidate = _candidate()
+    _install(monkeypatch, [candidate])
+    existing = (candidate["canonical_event_id"], "NFL", candidate["player"], candidate["stat_type"])
+    old = {
+        "source_snapshot_id": "stale", "captured_at": (NOW - timedelta(minutes=31)).isoformat(),
+        "hydration_status": "PASS", "blockers": [],
+        "role_status": {"availability": {
+            "designation": "AVAILABLE", "source": "OFFICIAL_ESPN_REPORT",
+            "captured_at": NOW.isoformat(), "evidence_status": "RETRIEVED",
+            "fresh": True, "report_complete": True, "athlete_id": "test-athlete",
+            "event_id": candidate["canonical_event_id"], "team": "PHI",
+        }},
+    }
+    db = _DB(existing={existing}, existing_row=old)
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=db, now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["already_captured"] == 0
+    assert result["persisted"] == 1
+    assert result["receipts"][0]["write_status"] == "SNAPSHOT_WRITE_SUCCEEDED"
+
+
+def test_blocked_or_unverified_latest_snapshot_must_rehydrate(monkeypatch):
+    candidate = _candidate()
+    _install(monkeypatch, [candidate])
+    existing = (candidate["canonical_event_id"], "NFL", candidate["player"], candidate["stat_type"])
+    for override in (
+        {"hydration_status": "FAILED", "blockers": []},
+        {"hydration_status": "PASS", "blockers": ["PLAYER_AVAILABILITY_UNVERIFIED"]},
+        {"hydration_status": "PASS", "blockers": [], "role_status": {"status": "ACTIVE"}},
+    ):
+        row = {
+            "source_snapshot_id": "blocked", "captured_at": NOW.isoformat(),
+            "hydration_status": "PASS", "blockers": [],
+            "role_status": {"availability": {
+                "designation": "AVAILABLE", "source": "OFFICIAL_ESPN_REPORT",
+                "captured_at": NOW.isoformat(), "evidence_status": "RETRIEVED",
+                "fresh": True, "report_complete": True, "athlete_id": "test-athlete",
+                "event_id": candidate["canonical_event_id"], "team": "PHI",
+            }},
+            **override,
+        }
+        result = subject.acquire_nfl_forward_evidence_batch(
+            subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+            db=_DB(existing={existing}, existing_row=row), now=NOW,
+            http_get=lambda *_a, **_k: object(),
+        )
+        assert result["already_captured"] == 0, override
+        assert result["persisted"] == 1, override
+        assert result["can_execute"] is False
