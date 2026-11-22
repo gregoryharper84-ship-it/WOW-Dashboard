@@ -504,6 +504,9 @@ def test_nhl_daily_discovery_alias_rewrites_only_after_first_party_match(monkeyp
         return {
             "event_id": "2026020041",
             "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/DAL/20262027",
+            "canonical_identity_source_sha256": "a" * 64,
+            "canonical_identity_source_byte_count": 1234,
             "identity_verified_at": "2026-10-07T13:00:00+00:00",
             "market_features_used": False,
             "can_execute": False,
@@ -518,6 +521,8 @@ def test_nhl_daily_discovery_alias_rewrites_only_after_first_party_match(monkeyp
     assert out.raw["provider_event_id"] == "401900777"
     assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
     assert out.raw["canonical_identity_source"] == "NHL_PUBLIC_WEB_API"
+    assert out.raw["canonical_identity_source_sha256"] == "a" * 64
+    assert out.raw["canonical_identity_source_byte_count"] == 1234
     assert out.raw["canonical_identity_market_features_used"] is False
     assert out.raw["prediction_authority"] is False
 
@@ -660,3 +665,19 @@ def test_nba_daily_discovery_alias_stays_unresolved_without_schedule_match(monke
     assert out.official_event_id is None
     assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     assert out.raw["canonical_identity_blocker"] == "NBA_CANONICAL_EVENT_NOT_FOUND"
+
+
+
+def test_nhl_daily_alias_requires_response_sha_not_only_timestamp(monkeypatch):
+    import v17.nhl_event_identity as identity
+    monkeypatch.setattr(identity, "resolve_nhl_current_event_identity", lambda **_kwargs: {
+        "event_id": "2026020041",
+        "identity_provider": "NHL_PUBLIC_WEB_API",
+        "identity_verified_at": "2026-10-07T13:00:00+00:00",
+        "market_features_used": False,
+    })
+    out = canonicalize_nhl_discovery_identity(_nhl_alias_event())
+    assert out.official_event_id is None
+    assert out.raw["provider_event_id"] == "401900777"
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NHL_OFFICIAL_SOURCE_BYTES_UNAVAILABLE"
