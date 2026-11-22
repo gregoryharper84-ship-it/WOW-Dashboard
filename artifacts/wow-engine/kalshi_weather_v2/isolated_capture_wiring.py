@@ -14,6 +14,12 @@ from typing import Any
 OWNER_FLAG = "WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER"
 STARTUP_FLAG = "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED"
 
+# The only supported unattended collection path on the isolated runtime. The
+# in-process startup loop stays optional because the shared low-memory web
+# process must not capture; an external authorized scheduler drives this route.
+CAPTURE_TRIGGER_PATH = "/internal/kalshi-weather/v17/empirical-cohort/cron-run"
+CAPTURE_TRIGGER_AUTH = "HEADER_KEY_REQUIRED"
+
 
 def install_isolated_capture_if_owned(
     app: Any,
@@ -39,6 +45,10 @@ def install_isolated_capture_if_owned(
             "trigger_installed": False,
             "startup_requested": startup_requested,
             "startup_enabled": False,
+            "collection_path": "DISABLED_NO_OWNER",
+            "capture_trigger_installed": False,
+            "capture_trigger_path": None,
+            "capture_trigger_auth": CAPTURE_TRIGGER_AUTH,
             "probability_publishable": False,
             "can_execute": False,
         }
@@ -48,6 +58,10 @@ def install_isolated_capture_if_owned(
         "trigger_installed": True,
         "startup_requested": startup_requested,
         "startup_enabled": startup_requested,
+        "collection_path": "AUTHENTICATED_POST_TRIGGER",
+        "capture_trigger_installed": True,
+        "capture_trigger_path": CAPTURE_TRIGGER_PATH,
+        "capture_trigger_auth": CAPTURE_TRIGGER_AUTH,
         "probability_publishable": False,
         "can_execute": False,
     }

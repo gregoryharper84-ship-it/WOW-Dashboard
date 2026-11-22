@@ -23,7 +23,7 @@ class _Query:
         return self
 
     def execute(self):
-        return SimpleNamespace(data=self.rows)
+        return SimpleNamespace(data=self.rows, count=len(self.rows))
 
 
 class _Client:

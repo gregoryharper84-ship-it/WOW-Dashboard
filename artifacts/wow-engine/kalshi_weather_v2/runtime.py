@@ -36,6 +36,21 @@ class KalshiWeatherRuntimeError(RuntimeError):
         super().__init__(f"{code}: {', '.join(self.blockers)}")
 
 
+class KalshiWeatherPartialCaptureError(RuntimeError):
+    """Forecast row is durable, but a subsequent market snapshot write failed.
+
+    The caller must count the immutable prediction as collected while marking
+    the overall cycle PARTIAL. No exception internals or credentials are logged.
+    """
+
+    code = "PREDICTION_PERSISTED_MARKET_SNAPSHOT_FAILED"
+
+    def __init__(self, *, prediction_id: str, rule_snapshot_id: str):
+        self.prediction_id = prediction_id
+        self.rule_snapshot_id = rule_snapshot_id
+        super().__init__(self.code)
+
+
 def capture_hourly_shadow(
     *,
     client,
@@ -288,18 +303,26 @@ def capture_hourly_shadow(
                     "no_best_ask": market_evidence.no_best_ask,
                 },
             )
-            persistence.persist_market_snapshot(
-                market_snapshot_id=market_snapshot_id,
-                prediction_id=prediction_id,
-                ticker=contract.ticker,
-                retrieved_at=market_evidence.retrieved_at,
-                market_status=market_evidence.market_status,
-                yes_best_bid=market_evidence.yes_best_bid,
-                no_best_bid=market_evidence.no_best_bid,
-                market=market,
-                raw_market=market_evidence.source_market,
-                raw_orderbook=market_evidence.source_orderbook,
-            )
+            try:
+                persistence.persist_market_snapshot(
+                    market_snapshot_id=market_snapshot_id,
+                    prediction_id=prediction_id,
+                    ticker=contract.ticker,
+                    retrieved_at=market_evidence.retrieved_at,
+                    market_status=market_evidence.market_status,
+                    yes_best_bid=market_evidence.yes_best_bid,
+                    no_best_bid=market_evidence.no_best_bid,
+                    market=market,
+                    raw_market=market_evidence.source_market,
+                    raw_orderbook=market_evidence.source_orderbook,
+                )
+            except Exception as exc:
+                # The forecast was already persisted. Report partial acquisition
+                # without suggesting that the market snapshot also succeeded.
+                raise KalshiWeatherPartialCaptureError(
+                    prediction_id=prediction_id,
+                    rule_snapshot_id=contract.rule_snapshot_id,
+                ) from exc
 
         return {
             "status": "SHADOW_CAPTURED" if not publishable else terminal.status,
