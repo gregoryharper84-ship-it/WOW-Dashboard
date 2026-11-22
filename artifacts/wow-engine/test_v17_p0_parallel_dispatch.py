@@ -263,3 +263,95 @@ def test_three_busy_slots_invalid_lease_and_invalid_run_number_fail_closed():
     )
     assert conflict["selected"] == []
     assert conflict["skipped"][0]["reason"] == "CONFLICT_KEYS_OVERLAP"
+
+
+def test_soccer_restore_manifest_and_dispatcher_use_identical_rapid_stream():
+    from v17.p0_parallel_dispatch import STREAM_ORDER
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    soccer = [
+        record for record in manifest["restoration"]
+        if record.get("issue_number") == 2178
+    ]
+    assert len(soccer) == 1
+    record = soccer[0]
+    assert record["severity"] == "P0"
+    assert record["execution_lane"] == "RAPID"
+    assert record["rapid_stream"] == "SOCCER_RESTORE"
+    assert record["rapid_stream"] in STREAM_ORDER
+    assert record["lease_group"] == "P0_SOCCER_RESTORE"
+    assert record["conflict_keys"] == [
+        "SOCCER_CANONICAL_EVENTS", "SOCCER_1X2_MODEL",
+        "SOCCER_PREGAME_FEATURES", "SOCCER_MODEL_CALIBRATION",
+    ]
+    assert record["can_execute"] is False
+
+
+def test_soccer_manifest_queue_selects_one_writer_without_extra_controller():
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    queue = build_queue(manifest, [{"number": 2178, "title": "P0 soccer",
+                                    "state": "OPEN"}])
+    matching = [item for item in queue["records"] if item["incident_id"] == "2178"]
+    assert len(matching) == 1
+    record = matching[0]
+    result = select_parallel([record])
+    assert len(result["selected"]) == 1
+    assert result["selected"][0]["incident_id"] == "2178"
+    assert result["selected"][0]["lease_group"] == "P0_SOCCER_RESTORE"
+    assert result["selected_count"] == 1
+    assert result["max_parallel_writers"] == 3
+    assert result["can_execute"] is False
+    assert result["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_soccer_active_lease_blocks_duplicate_and_invalid_identity():
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    active = active_leases_from_runs([
+        {"status": "in_progress",
+         "displayTitle": "worker lease=P0_SOCCER_RESTORE incident=2178"},
+    ], manifest)
+    assert active == [{
+        "incident_id": "2178",
+        "lease_group": "P0_SOCCER_RESTORE",
+        "conflict_keys": [
+            "SOCCER_1X2_MODEL", "SOCCER_CANONICAL_EVENTS",
+            "SOCCER_MODEL_CALIBRATION", "SOCCER_PREGAME_FEATURES",
+        ],
+    }]
+    queue = build_queue(manifest, [{"number": 2178, "state": "OPEN"}])
+    result = select_parallel(queue["records"], active_leases=active)
+    assert result["selected"] == []
+    assert any(item["reason"] == "DUPLICATE_INCIDENT"
+               for item in result["skipped"])
+    with pytest.raises(ValueError, match="ACTIVE_P0_LEASE_METADATA_INVALID"):
+        active_leases_from_runs([{
+            "status": "in_progress",
+            "displayTitle": "worker lease=P0_OTHER incident=2178",
+        }], manifest)
+
+
+def test_soccer_remains_bounded_with_other_rapid_writer_leases():
+    soccer = row(2178, "SOCCER_RESTORE", "P0_SOCCER_RESTORE", 8,
+                 ["SOCCER_1X2_MODEL", "SOCCER_MODEL_CALIBRATION"])
+    others = [
+        row(1388, "LLP_RESTORE", "P0_LLP_RESTORE", 1, ["LLP_USER_PATH"]),
+        row(1688, "AUTONOMY_RESTORE", "P0_AUTONOMY_RESTORE", 2,
+            ["ENGINEERING_AUTONOMY"]),
+        row(1247, "GOVERNANCE", "P0_GOVERNANCE", 3,
+            ["ENGINEERING_GOVERNANCE"]),
+    ]
+    full = select_parallel(others + [soccer], run_number=1)
+    assert len(full["selected"]) == 3
+    assert all(item["incident_id"] != "2178" for item in full["selected"])
+    active = [{
+        "incident_id": item["incident_id"], "lease_group": item["lease_group"],
+        "conflict_keys": item["conflict_keys"],
+    } for item in full["selected"][:2]]
+    partial = select_parallel([soccer], active_leases=active)
+    assert [item["incident_id"] for item in partial["selected"]] == ["2178"]
+    assert partial["selected_count"] + partial["active_writer_count"] == 3
+    conflict = select_parallel([soccer], active_leases=[{
+        "incident_id": "1950", "lease_group": "P0_NBA_RESTORE",
+        "conflict_keys": ["SOCCER_MODEL_CALIBRATION"],
+    }])
+    assert conflict["selected"] == []
+    assert conflict["skipped"][0]["reason"] == "CONFLICT_KEYS_OVERLAP"
