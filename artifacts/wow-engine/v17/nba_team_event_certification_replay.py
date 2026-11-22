@@ -452,6 +452,7 @@ def _corpus_replay(
                 game_id,
                 str(raw.get("season") or ""),
                 str(raw.get("game_date") or ""),
+                str(raw.get("scheduled_start_utc") or ""),
                 str(raw.get("home_team_id") or ""),
                 str(raw.get("away_team_id") or ""),
                 str(raw.get("home_score") or ""),
