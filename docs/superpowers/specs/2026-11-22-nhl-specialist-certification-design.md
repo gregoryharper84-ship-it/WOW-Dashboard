@@ -1,9 +1,20 @@
 # NHL Team-Event Specialist Certification (Design A)
 
-**Status:** REVIEWED — CHANGES REQUESTED (resolving WOW Betting Intelligence design review on HEAD `78f9053`; not Independent QA/SIRT acceptance or certification).  
+**Status:** SPEC READY FOR IMPLEMENTATION — Design A retained; repair plan accepted with corrected contracts. Not Independent QA/SIRT acceptance or certification. Disposition: `WORKING_NOT_COMPLETE`.  
 **Scope:** NHL regular-season moneyline / game-win probability specialist only.  
 **Safety:** `can_execute=false` at every layer. No live wagering. No fabricated probabilities. No governance bypass.  
 **Incident:** `#1952`
+
+## Repair-plan crosswalk (Fix A–D)
+
+| Fix | Gates | Owner | Required outcome |
+|---|---|---|---|
+| **A** Source corpus integrity | G1–G2 | Data Engineering | New immutable corpus: **3676** train / **1226** calib / **1226** test (**6128** distinct); FULL_SEASON + rights + provenance + leases; separate current-season `20262027` hydration |
+| **B** Bound-producing calibrator | G3 | NHL Model Specialist | Non-identity calibrated probability + lower/upper bounds; distinct calibrator SHA-256; chronological metrics (Brier, log loss, bias, lower-bound reliability); no manual haircut |
+| **C** NHL-specific verification | G4–G5 | Engineering / AMRT + Independent reviewer / SIRT | Narrow NHL replay adapter for `NHL_PUBLIC_WEB_API` / `NHL_REGULAR_SEASON_LOGISTIC_V1`; immutable evidence receipt; independent source + replay PASS (engineering cannot mint independent PASS) |
+| **D** Certified scoring contract | G6–G7 (+ G6b) | Engineering | Registry-backed certified-runtime adapter emitting full V17 envelope; home/away bounds; OT/SO settlement; goalie HOLDs; never flip candidate `probability_publishable` |
+
+**QA workflow:** PR #2798 body includes `Incident: #1952`. Next Independent QA cycle must re-evaluate that body. Source-review PASS ≠ Independent QA PASS ≠ Release Authority PASS.
 
 ## Problem
 
