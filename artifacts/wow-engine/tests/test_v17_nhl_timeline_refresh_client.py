@@ -132,3 +132,51 @@ def test_source_refresh_total_retry_deadline_never_exceeds_ten_minutes(monkeypat
     assert all(0 < timeout <= 600 for timeout in request_timeouts)
     assert clock["seconds"] <= 900
     assert request_timeouts
+
+
+def test_blocked_refresh_sets_failed_step_outcome_and_preserves_reason(monkeypatch, capsys):
+    """Optional job stays nonblocking; the *step outcome* must be a failure."""
+    import pytest
+
+    m = _client()
+    monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
+    monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(m, "call_protected_reingest",
+                        lambda: m.blocked("NHL_SOURCE_RIGHTS_HOLD"))
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "::warning::NHL_SOURCE_RIGHTS_HOLD" in output
+    assert '"code": "NHL_SOURCE_RIGHTS_HOLD"' in output
+    assert '"can_execute": false' in output
+
+
+def test_verified_source_refresh_keeps_successful_step_outcome(monkeypatch, capsys):
+    """A real source receipt is not a model/pick certification."""
+    m = _client()
+    monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
+    monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(m, "call_protected_reingest", lambda: {
+        "status": "SOURCE_TIMELINE_REFRESHED_REQUIRES_SCIENTIFIC_ACCEPTANCE",
+        "season": "20262027",
+        "can_execute": False,
+        "probability_publishable": False,
+    })
+    m.main()
+    output = capsys.readouterr().out
+    assert '"status": "SOURCE_TIMELINE_REFRESHED_REQUIRES_SCIENTIFIC_ACCEPTANCE"' in output
+    assert '"probability_publishable": false' in output
+    assert "::warning::" not in output
+
+
+def test_workflow_optional_failure_detects_raw_step_outcome():
+    """A blocked refresh must not pretend success, and cannot gate deploy."""
+    text = WF.read_text()
+    assert "continue-on-error: true" in text
+    assert "steps.source_refresh.outcome" in text
+    assert "NHL_SOURCE_REFRESH_RUNNER_FAILED" in text
