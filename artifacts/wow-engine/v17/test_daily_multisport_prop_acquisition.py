@@ -284,3 +284,64 @@ def test_priority_stale_manifest_identity_routes_to_nfl_source(monkeypatch):
     )
     assert seen == [(("2026_11_DAL_PHI", "Exact Stale Player", "RECEIVING_YARDS"),)]
     assert result["can_execute"] is False
+
+
+def test_nfl_empty_manifest_rotation_advances_between_hourly_runs(monkeypatch):
+    """Repeated scheduled research scans must not starve later NFL candidates."""
+    seen = []
+
+    def acquire(req, **_kwargs):
+        seen.append((req.candidate_offset, req.candidate_rotation))
+        return _batch(attempted=2, next_offset=None)
+
+    monkeypatch.setattr(nfl, "acquire_nfl_forward_evidence_batch", acquire)
+    monkeypatch.setattr(daily, "_acquire_mlb_daily_prop_snapshots", lambda **_: _batch())
+    from datetime import timedelta
+    for offset in range(3):
+        result = daily.acquire_daily_prop_snapshots(
+            db=object(), requested_date="2026-11-22",
+            requested_timezone="America/Chicago",
+            max_candidates=4, include_nfl=True, now=NOW + timedelta(hours=offset),
+        )
+        assert result["attempted"] == 2
+        assert result["can_execute"] is False
+    assert [rotation for _, rotation in seen] == [
+        int(NOW.timestamp() // 3600) + i for i in range(3)
+    ]
+    assert all(offset == 0 for offset, _ in seen)
+
+
+def test_priority_stale_identity_disables_rotation_regardless_of_hour(monkeypatch):
+    seen = []
+
+    def acquire(req, **kwargs):
+        seen.append((req.candidate_rotation, kwargs["priority_targets"]))
+        return _batch()
+
+    monkeypatch.setattr(nfl, "acquire_nfl_forward_evidence_batch", acquire)
+    monkeypatch.setattr(daily, "_acquire_mlb_daily_prop_snapshots", lambda **_: _batch())
+    target = {"sport": "NFL", "event_id": "2026_11_DAL_PHI",
+              "player": "Official Stale Player", "stat_type": "RECEIVING_YARDS"}
+    for rotation in (0, 1000):
+        result = daily.acquire_daily_prop_snapshots(
+            db=object(), requested_date="2026-11-22",
+            requested_timezone="America/Chicago", max_candidates=4,
+            include_nfl=True, now=NOW, nfl_rotation=rotation,
+            refresh_targets=[target],
+        )
+        assert result["can_execute"] is False
+    assert seen == [(None, (("2026_11_DAL_PHI", "Official Stale Player", "RECEIVING_YARDS"),))] * 2
+
+
+def test_negative_rotation_is_rejected_without_source_calls(monkeypatch):
+    monkeypatch.setattr(nfl, "acquire_nfl_forward_evidence_batch",
+                        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("SOURCE_CALLED")))
+    monkeypatch.setattr(daily, "_acquire_mlb_daily_prop_snapshots",
+                        lambda **_k: (_ for _ in ()).throw(AssertionError("SOURCE_CALLED")))
+    import pytest
+    with pytest.raises(ValueError, match="NFL_PROP_ROTATION_INVALID"):
+        daily.acquire_daily_prop_snapshots(
+            db=object(), requested_date="2026-11-22",
+            requested_timezone="America/Chicago", max_candidates=4,
+            include_nfl=True, now=NOW, nfl_rotation=-1,
+        )
