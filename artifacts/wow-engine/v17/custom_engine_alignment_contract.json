@@ -35,7 +35,7 @@
         "can_execute": false
       }
     },
-    "auto_deploy": true, "auto_deploy_trigger": "checksPass",
+    "auto_deploy": false, "auto_deploy_trigger": "off",
     "v17_activation_flag": "WOW_V17_ACTIVE=1", "kalshi_weather_activation_flag": "WOW_KALSHI_WEATHER_V2_ACTIVE=1", "wolfram_arithmetic_audit_flag": "WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED=1", "wolfram_app_id_server_side_only": true, "backward_compatible_v16_routes_preserved": true,
     "openapi_introspection_status": "VERIFIED_COMPLETE_V17_ROUTE_SURFACE", "openapi_introspection_blocker": null, "openapi_introspection_verified_by": "tests/test_v17_production_activation.py::test_v17_active_production_openapi_generates_and_exposes_mounted_action_routes", "openapi_introspection_verified_main_sha": "bc5b87e1153dbb6f0cabdb3afe1d0180c7f39dda", "openapi_introspection_blocks_live_editor_sync": false
   },
