@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Callable, Mapping
 
@@ -761,6 +762,47 @@ def _register_nba_bridge_if_available() -> bool:
     return True
 
 
+def _validated_ncaab_server_hydration(req: Any, event_api: Any) -> tuple[dict[str, Any], str] | None:
+    """Accept pregame features only from an authenticated server-owned producer.
+
+    This is input evidence, not fitted-model certification or publication.
+    Caller-supplied sport_specific_evidence is deliberately never consulted.
+    """
+    hydrate = getattr(event_api, "hydrate_ncaab_features", None)
+    if not callable(hydrate):
+        return None
+    try:
+        package = hydrate(req)
+    except Exception:
+        return None
+    if not isinstance(package, Mapping):
+        return None
+    features, audit = package.get("features"), package.get("feature_audit")
+    if not isinstance(features, Mapping) or not features or not isinstance(audit, Mapping):
+        return None
+    source_id = package.get("source_snapshot_id")
+    if not isinstance(source_id, str) or not source_id.strip():
+        return None
+    if (audit.get("server_owned") is not True
+            or audit.get("timestamp_attestation") != "VERIFIED"
+            or audit.get("source_replay_status") != "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS"):
+        return None
+    for name in ("official_event_id", "home_team", "away_team"):
+        if str(package.get(name) or "").strip() != str(getattr(req, name, "") or "").strip():
+            return None
+    try:
+        start = datetime.fromisoformat(str(getattr(req, "event_start_time_utc", "")).replace("Z", "+00:00"))
+        observed = datetime.fromisoformat(str(audit.get("as_of") or "").replace("Z", "+00:00"))
+        if start.tzinfo is None or observed.tzinfo is None:
+            return None
+        now = datetime.now(timezone.utc)
+        if observed > now or observed >= start or start <= now:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return dict(features), source_id.strip()
+
+
 def score_ncaab_team_event_request(
     req: Any,
     *,
@@ -769,15 +811,11 @@ def score_ncaab_team_event_request(
 ) -> dict[str, Any]:
     """Governed scoring entrypoint for NCAA men's basketball team events."""
     scout_research_barrier = _base_runtime._run_mandatory_scout_research(req)
-    evidence = getattr(req, "sport_specific_evidence", None)
-    evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
-
-    # The available hydrate_pregame(event, settled_games) is research-only;
-    # it is not a server query adapter and cannot be called as (req, client).
-    # Until a trusted event/history producer is bound, never swallow an import
-    # failure or treat caller evidence as a canonical hydrated feature source.
-    features = evidence_map.get("features") or evidence_map.get("feature_package")
-    if not features:
+    # Existing hydrate_pregame(event, settled_games) is research-only, and
+    # caller-provided features have no canonical acquisition authority.
+    # Only the backend's server-owned hydrate_ncaab_features(req) may pass.
+    hydrated = _validated_ncaab_server_hydration(req, event_api)
+    if hydrated is None:
         raise _model_failure_detail(
             req,
             code=MODEL_INPUTS_INSUFFICIENT,
@@ -790,6 +828,8 @@ def score_ncaab_team_event_request(
             },
         )
 
+    features, source_snapshot_id = hydrated
+
     return {
         "candidate_id": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
         "sport": "NCAAB",
@@ -801,6 +841,8 @@ def score_ncaab_team_event_request(
         "away_team": str(getattr(req, "away_team", "")),
         "controlling_specialist": "NCAAB_GAME_WIN_PROBABILITY_EXPERT_V1",
         "model_family": "NCAAB_RESULT_FORM_LOGIT_V1",
+        "canonical_hydration_verified": True,
+        "source_snapshot_id": source_snapshot_id,
         "code": "MODEL_RESEARCH_ONLY_HOLD",
         "model_status": "MODEL_RESEARCH_ONLY_HOLD",
         "blockers": ["NCAAB_MODEL_CANDIDATE_UNCERTIFIED", "OFFICIAL_PUBLICATION_NOT_CERTIFIED"],
