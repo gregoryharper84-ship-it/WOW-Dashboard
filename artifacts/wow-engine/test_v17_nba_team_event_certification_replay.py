@@ -561,3 +561,76 @@ def test_replay_evidence_sha_binds_tampered_signed_payload_even_when_digest_inva
     assert first["replay_evidence_sha256"] != second["replay_evidence_sha256"]
     assert first["exact_bundle_match"] is second["exact_bundle_match"] is False
     assert first["can_execute"] is second["can_execute"] is False
+
+
+def test_forward_shadow_audit_distinguishes_twelve_games_from_repeated_captures():
+    tables = _fixture()
+    captures = []
+    for index in range(28):
+        captures.append({
+            "capture_id": f"capture-{index}",
+            "official_event_id": f"nba-event-{index % 12}",
+            "event_start_time_utc": "2026-11-22T22:00:00+00:00",
+            "source_observed_at": "2026-11-22T20:00:00+00:00",
+            "knowledge_cutoff": "2026-11-22T20:00:00+00:00",
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        })
+    tables["wow_nba_candidate_forward_shadow"] = captures
+    tables["wow_nba_candidate_forward_verified_grades"] = []
+    result = run_nba_team_event_certification_replay(_DB(tables))
+    audit = result["forward_shadow_audit"]
+    assert audit["status"] == "FORWARD_UNGRADED"
+    assert audit["shadow_capture_rows"] == 28
+    assert audit["distinct_shadow_events"] == 12
+    assert audit["official_verified_grade_rows"] == 0
+    assert audit["capture_rows_with_ordered_timestamps"] == 28
+    assert audit["official_start_attestation_verified"] is False
+    assert audit["probability_publishable"] is False
+    assert result["exact_bundle_match"] is False
+    assert result["can_execute"] is False
+
+
+def test_forward_shadow_audit_rejects_post_start_observation_and_does_not_promote_grades():
+    tables = _fixture()
+    tables["wow_nba_candidate_forward_shadow"] = [{
+        "capture_id": "one",
+        "official_event_id": "game-one",
+        "event_start_time_utc": "2026-11-22T20:00:00+00:00",
+        "source_observed_at": "2026-11-22T20:01:00+00:00",
+        "knowledge_cutoff": "2026-11-22T20:01:00+00:00",
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }]
+    tables["wow_nba_candidate_forward_verified_grades"] = [{
+        "capture_id": "one",
+        "official_event_id": "game-one",
+        "outcome": 1,
+        "created_at": "2026-11-23T00:00:00+00:00",
+        "can_execute": False,
+    }]
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    audit = report["forward_shadow_audit"]
+    assert audit["status"] == "FORWARD_GRADES_PRESENT_REVIEW_REQUIRED"
+    assert audit["official_verified_grade_rows"] == 1
+    assert audit["official_verified_grade_capture_matches"] == 1
+    assert audit["capture_rows_with_ordered_timestamps"] == 0
+    assert audit["independent_grading_acceptance"] is False
+    assert audit["probability_publishable"] is False
+    assert report["probability_publishable"] is False
+
+
+def test_historical_training_tipoff_coverage_is_observed_not_inferred():
+    tables = _fixture()
+    training = tables["wow_nba_training_games"]
+    training[0]["scheduled_start_utc"] = "2025-03-01T20:00:00+00:00"
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    corpus = report["pregame_corpus"]
+    assert corpus["event_start_timestamp_rows"] == 1
+    assert corpus["event_start_timestamp_missing_rows"] == len(training) - 1
+    assert corpus["event_start_timestamp_persisted"] is False
+    assert corpus["event_start_independently_attested"] is False
+    assert corpus["pregame_corpus_ready"] is False
+    assert report["can_execute"] is False
