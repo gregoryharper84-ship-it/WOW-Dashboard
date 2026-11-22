@@ -19,10 +19,14 @@ import threading
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
 
 import httpx
 
+from v17.matchup_discovery import (
+    discover_matchup,
+    matchup_consumption_audit,
+)
 from v17.player_availability_gate import (
     PLAYABLE_DESIGNATIONS,
     UNAVAILABLE_DESIGNATIONS,
@@ -53,6 +57,12 @@ NFLVERSE_URL = "https://github.com/nflverse/nflverse-data/releases/download/stat
 HTTP_TIMEOUT_SECONDS = 12.0
 HTTP_ATTEMPTS = 2
 MIN_PRIOR_GAMES = 10
+MIN_OPPONENT_CONTEXT_GAMES = 4
+MIN_LEAGUE_DEFENSES = 8
+# Research-only display bound. A raw opponent ratio far outside this band is
+# reported as clipped so it cannot be misread as a model-side adjustment.
+OPPONENT_FACTOR_CLIP = (0.5, 1.5)
+OPPONENT_CONTEXT_SOURCE = "NFLVERSE_WEEKLY_PLAYER_STATS_DERIVED_TEAM_DEFENSE_V1"
 MAX_EVENT_START_DELTA_SECONDS = 90 * 60
 CACHE_TTL_SECONDS = 15 * 60
 
@@ -419,6 +429,133 @@ def _num(row: Mapping[str, Any], key: str) -> float:
     return value if math.isfinite(value) else 0.0
 
 
+def _opponent_stat_value(row: Mapping[str, Any], canonical_stat: str) -> float:
+    if canonical_stat == "ANYTIME_TD":
+        touchdowns = _num(row, "rushing_tds") + _num(row, "receiving_tds") + _num(row, "special_teams_tds")
+        return 1.0 if touchdowns > 0 else 0.0
+    return _num(row, STAT_CONFIG[canonical_stat][0])
+
+
+def _row_has_field(row: Mapping[str, Any], key: str) -> bool:
+    """Season rows are either CSV dicts or the compact attribute rows that
+    v17.nfl_prop_memory_safety installs in production, so column presence is
+    structural rather than a dict membership test."""
+    if isinstance(row, Mapping):
+        return key in row
+    return hasattr(row, key)
+
+
+def _opponent_defense_context(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    digest: str,
+    opponent: Any,
+    canonical_stat: str,
+    captured: datetime,
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Derive opponent-defense evidence for this exact stat from official rows.
+
+    A defense's allowed total for one game is the sum of the stat over the
+    opposing team's players in that game. Only the already-downloaded nflverse
+    rows are reused: nothing is imputed, and an insufficient sample or an
+    unavailable column stays neutral instead of becoming evidence. This is
+    research input only; the fitted NFL prop vector does not declare an
+    opponent feature, so consumption remains explicitly unproven.
+    """
+    defense = _nflverse_team_code(opponent)
+    stat_column = STAT_CONFIG[canonical_stat][0]
+    if canonical_stat != "ANYTIME_TD" and rows and not _row_has_field(rows[0], stat_column):
+        return None, "NEUTRAL_STAT_ABSENT_FROM_DEFENSIVE_SOURCE"
+    allowed: dict[tuple[str, str], float] = {}
+    for row in rows:
+        team_defense = _nflverse_team_code(row.get("opponent_team"))
+        game_id = str(row.get("game_id") or "").strip()
+        if not team_defense or not game_id:
+            continue
+        key = (team_defense, game_id)
+        allowed[key] = allowed.get(key, 0.0) + _opponent_stat_value(row, canonical_stat)
+    opponent_games = [value for (team_defense, _game), value in allowed.items() if team_defense == defense]
+    if len(opponent_games) < MIN_OPPONENT_CONTEXT_GAMES:
+        return None, "NEUTRAL_OPPONENT_SAMPLE_INSUFFICIENT"
+    # A league baseline built from a handful of defenses is not a league.
+    if len({team_defense for (team_defense, _game) in allowed}) < MIN_LEAGUE_DEFENSES:
+        return None, "NEUTRAL_LEAGUE_BASELINE_INSUFFICIENT"
+    opponent_mean = sum(opponent_games) / len(opponent_games)
+    league_mean = sum(allowed.values()) / len(allowed)
+    if not math.isfinite(opponent_mean) or not math.isfinite(league_mean) or league_mean <= 0:
+        return None, "NEUTRAL_LEAGUE_BASELINE_UNAVAILABLE"
+    raw_factor = opponent_mean / league_mean
+    clipped_factor = min(max(raw_factor, OPPONENT_FACTOR_CLIP[0]), OPPONENT_FACTOR_CLIP[1])
+    return {
+        "stat_type": canonical_stat,
+        "opponent_team": defense,
+        "opponent_allowed_per_game": opponent_mean,
+        "league_allowed_per_game": league_mean,
+        "opponent_factor": clipped_factor,
+        "opponent_factor_raw": raw_factor,
+        "opponent_factor_clipped": clipped_factor != raw_factor,
+        "opponent_factor_clip": list(OPPONENT_FACTOR_CLIP),
+        "opponent_games": len(opponent_games),
+        "league_team_games": len(allowed),
+        "source": OPPONENT_CONTEXT_SOURCE,
+        "source_sha256": digest,
+        "captured_at": captured.isoformat(),
+        "model_consumption_status": "NOT_DECLARED_BY_FITTED_VECTOR",
+        "prediction_authority": False,
+        "can_execute": False,
+    }, "CONFIRMED_OPPONENT_DEFENSE_RATE"
+
+
+def _matchup_discovery_audit(
+    *,
+    target: Mapping[str, Any],
+    canonical_stat: str,
+    opponent_context: Optional[dict[str, Any]],
+    captured: datetime,
+) -> dict[str, Any]:
+    """Audit default matchup review for this prop's exact event.
+
+    Only the sourced opponent-defense observation is offered as a metric; every
+    other requested feature stays visibly missing so the coverage report cannot
+    read a requested check as collected evidence.
+    """
+    event_id = str(target.get("verified_canonical_event_id") or target.get("event_id") or "")
+    metric_rows: list[dict[str, Any]] = []
+    if opponent_context is not None:
+        metric_rows.append({
+            "official_event_id": event_id,
+            "home_team": target.get("provider_home_team"),
+            "away_team": target.get("provider_away_team"),
+            "source_id": "NFLVERSE_WEEKLY_PLAYER_STATS",
+            "source_class": "ESTABLISHED_STATS_PROVIDER",
+            "captured_at": opponent_context["captured_at"],
+            "confirmed": True,
+            "evidence_type": "OPPONENT_ALLOWED_RATE",
+            "value": {
+                "stat_type": canonical_stat,
+                "opponent_team": opponent_context["opponent_team"],
+                "opponent_allowed_per_game": opponent_context["opponent_allowed_per_game"],
+                "league_allowed_per_game": opponent_context["league_allowed_per_game"],
+                "opponent_factor": opponent_context["opponent_factor"],
+                "opponent_factor_raw": opponent_context["opponent_factor_raw"],
+                "opponent_factor_clipped": opponent_context["opponent_factor_clipped"],
+            },
+        })
+    return discover_matchup(
+        {
+            "sport_key": "americanfootball_nfl",
+            "official_event_id": event_id,
+            "commence_time": target.get("provider_event_start_time"),
+            "home_team": target.get("provider_home_team"),
+            "away_team": target.get("provider_away_team"),
+            "matchup_metric_evidence": (
+                {"opponent_adjusted_strength": metric_rows} if metric_rows else {}
+            ),
+        },
+        now=captured,
+    )
+
+
 def _history_unverified(message: str, **detail: Any) -> NFLPropHydrationError:
     return NFLPropHydrationError("NFL_PROP_HISTORY_CHRONOLOGY_UNVERIFIED", message, detail=detail)
 
@@ -606,6 +743,22 @@ def _historical_game(
     return next(iter(candidates.values()))
 
 
+class _SeasonStatsSource(NamedTuple):
+    """Provider-season stats rows and their digest, downloaded exactly once."""
+
+    rows: list[dict[str, str]]
+    digest: str
+
+
+class _HistoryResult(NamedTuple):
+    game_log: list[float]
+    box_score_log: list[dict[str, Any]]
+    source_hashes: dict[str, str]
+    player_id: str
+    # Present only when the verified provider season itself was downloadable.
+    provider_season_source: Optional[_SeasonStatsSource]
+
+
 def _history(
     *,
     player: str,
@@ -614,13 +767,16 @@ def _history(
     http_get: Callable[..., Any],
     now_ts: float,
     provider_season: Optional[int] = None,
-) -> tuple[list[float], list[dict[str, Any]], dict[str, str], str]:
+) -> _HistoryResult:
     if not isinstance(provider_season, int) or isinstance(provider_season, bool) or provider_season < 2020:
         raise _history_unverified("verified target provider season is required for NFL history")
     target_col, opp_col = STAT_CONFIG[canonical_stat]
     collected: list[dict[str, Any]] = []
     seen_games: set[str] = set()
     hashes: dict[str, str] = {}
+    # The provider-season rows/digest already downloaded here are reused by the
+    # opponent-context derivation; they are never fetched or parsed twice.
+    provider_source: Optional[_SeasonStatsSource] = None
     # NFL's January/February calendar dates still belong to the official season
     # obtained from the target event. Never try a guessed calendar-year file.
     for season in range(provider_season, max(provider_season - 4, 2019), -1):
@@ -641,6 +797,8 @@ def _history(
                 continue
             raise
         hashes[str(season)] = digest
+        if season == provider_season:
+            provider_source = _SeasonStatsSource(rows, digest)
         schedules: dict[tuple[str, str], tuple[list[dict[str, Any]], str]] = {}
         for row in rows:
             if _name_key(row.get("player_display_name") or row.get("player_name")) != _name_key(player):
@@ -706,7 +864,7 @@ def _history(
         for r in recent
     ]
     player_id = "NFLVERSE_NAME:" + _name_key(player).replace(" ", "_")
-    return game_log, box, hashes, player_id
+    return _HistoryResult(game_log, box, hashes, player_id, provider_source)
 
 
 def _injury_entries(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -1137,13 +1295,31 @@ def hydrate_nfl_prop_evidence(
             and roster_availability.get("report_complete") is True
         ):
             availability = roster_availability
-    game_log, box_score_log, source_hashes, nflverse_player_id = _history(
+    game_log, box_score_log, source_hashes, nflverse_player_id, provider_season_source = _history(
         player=official_name,
         canonical_stat=canonical,
         event_start=official_start,
         provider_season=target["provider_season"],
         http_get=http_get,
         now_ts=captured.timestamp(),
+    )
+    # Opponent-defense evidence reuses the provider-season rows _history already
+    # downloaded and parsed. A source or sample shortfall stays a neutral,
+    # visible status and never blocks hydration.
+    opponent_context, opponent_context_status = None, "NEUTRAL_OPPONENT_CONTEXT_UNAVAILABLE"
+    if provider_season_source is not None:
+        opponent_context, opponent_context_status = _opponent_defense_context(
+            rows=provider_season_source.rows,
+            digest=provider_season_source.digest,
+            opponent=target["opponent"],
+            canonical_stat=canonical,
+            captured=captured,
+        )
+    matchup_audit = _matchup_discovery_audit(
+        target=target,
+        canonical_stat=canonical,
+        opponent_context=opponent_context,
+        captured=captured,
     )
     # Latest historical row must agree with current ESPN team unless the player
     # changed teams after his most recent game; ESPN identity is authoritative
@@ -1158,6 +1334,8 @@ def hydrate_nfl_prop_evidence(
     }
     if availability.get("source") == TEAM_ROSTER_INJURY_SOURCE and availability.get("captured_at"):
         source_timestamps[TEAM_ROSTER_INJURY_SOURCE] = str(availability["captured_at"])
+    if opponent_context is not None:
+        source_timestamps[OPPONENT_CONTEXT_SOURCE] = captured.isoformat()
     return {
         "captured_at": captured.isoformat(),
         "game_log": game_log,
@@ -1187,6 +1365,11 @@ def hydrate_nfl_prop_evidence(
             "prior_game_n": len(game_log),
             "l10_opportunity_mean": recent_opp_mean,
             "source": "NFLVERSE_WEEKLY_PLAYER_STATS",
+            # Persisted research context: the snapshot records both the sourced
+            # opponent observation and the honest matchup coverage audit.
+            "model_opponent_context": opponent_context_status,
+            "matchup_discovery": matchup_audit,
+            "matchup_feature_consumption": matchup_consumption_audit(matchup_audit, []),
         },
         "source_timestamps": source_timestamps,
         "evidence_version": EVIDENCE_VERSION,
@@ -1197,7 +1380,7 @@ def hydrate_nfl_prop_evidence(
             + ",".join(f"{key.removeprefix('ESPN_NFL_TEAM_SCHEDULE:')}:{digest}"
                        for key, digest in sorted(source_hashes.items()) if key.startswith("ESPN_NFL_TEAM_SCHEDULE:"))
         ),
-        "opponent_context": None,
+        "opponent_context": opponent_context,
         "hydration_provider": PROVIDER_ID,
     }
 

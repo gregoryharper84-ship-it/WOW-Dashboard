@@ -106,6 +106,33 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     handoff["team_event_candidates"] = [enrich(row, "TEAM_EVENT") for row in handoff.get("team_event_candidates", []) or [] if isinstance(row, dict)]
     handoff["prop_candidates"] = [enrich(row, "PROP") for row in handoff.get("prop_candidates", []) or [] if isinstance(row, dict)]
     out["model_handoff"] = handoff
+    # Count source-screened evidence only; a requested feature is not proof
+    # that current evidence exists or any fitted specialist consumed it.
+    statuses: dict[str, int] = {}
+    reviewed_rows = missing_critical_rows = quote_screened_rows = 0
+    for lane_key in ("team_event_candidates", "prop_candidates"):
+        for candidate in handoff.get(lane_key, []) or []:
+            audit = candidate.get("matchup_discovery")
+            if not isinstance(audit, dict) or audit.get("review_requested") is not True:
+                status = "MATCHUP_REVIEW_NOT_REQUESTED"
+            else:
+                status = str(audit.get("review_status") or "MATCHUP_REVIEW_STATUS_MISSING")
+                reviewed_rows += 1
+                missing_critical_rows += bool(audit.get("missing_critical_features"))
+                quote_screened_rows += "exact_current_quote" in (audit.get("screened_features") or [])
+            statuses[status] = statuses.get(status, 0) + 1
+    out["matchup_discovery_summary"] = {
+        "schema_version": "wow.v17.matchup_discovery_coverage.v1",
+        "team_event_candidates": len(handoff.get("team_event_candidates", []) or []),
+        "prop_candidates": len(handoff.get("prop_candidates", []) or []),
+        "review_requested_rows": reviewed_rows,
+        "review_status_counts": statuses,
+        "rows_with_missing_critical_evidence": missing_critical_rows,
+        "rows_with_screened_exact_quote": quote_screened_rows,
+        "model_rescore_verified": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
     out["sport_scout_registry"] = registry_payload()
     out["research_worker_registry"] = {
         "worker_ids": list(SUPPORTED_RESEARCH_WORKERS),
@@ -237,6 +264,9 @@ def main() -> int:
         "snapshot_identity_policy": bridge.get("identity_policy", "NOT_PRESENT"),
         "snapshot_evidence_rows_attached": bridge.get("evidence_rows_attached", 0),
         "snapshot_candidates_touched": bridge.get("candidates_touched", 0),
+        "matchup_review_status_counts": enriched.get("matchup_discovery_summary", {}).get("review_status_counts", {}),
+        "matchup_rows_with_missing_critical_evidence": enriched.get("matchup_discovery_summary", {}).get("rows_with_missing_critical_evidence", 0),
+        "matchup_rows_with_screened_exact_quote": enriched.get("matchup_discovery_summary", {}).get("rows_with_screened_exact_quote", 0),
         "news_bridge_status": enriched.get("public_news_discovery_bridge", {}).get("status", "NOT_PRESENT"),
         "news_source_code": enriched.get("public_news_discovery_bridge", {}).get("source_code", "NOT_PRESENT"),
         "news_article_count": enriched.get("public_news_discovery_bridge", {}).get("article_count", 0),
