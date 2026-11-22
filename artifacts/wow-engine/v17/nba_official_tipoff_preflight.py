@@ -90,11 +90,13 @@ def _verify_event(
     ):
         return "NBA_ESPN_SETTLEMENT_NOT_FINAL", None
 
-    comps = event.get("competitions") or []
-    if len(comps) != 1 or not isinstance(comps[0], Mapping):
+    # Untrusted remote JSON must never abort an entire research batch.
+    # Fail closed on wrong collection types before indexing nested values.
+    comps = event.get("competitions")
+    if not isinstance(comps, list) or len(comps) != 1 or not isinstance(comps[0], Mapping):
         return "NBA_ESPN_COMPETITION_AMBIGUOUS", None
-    participants = comps[0].get("competitors") or []
-    if len(participants) != 2:
+    participants = comps[0].get("competitors")
+    if not isinstance(participants, list) or len(participants) != 2:
         return "NBA_ESPN_PARTICIPANTS_INVALID", None
     found: dict[str, tuple[str, int]] = {}
     for entry in participants:
