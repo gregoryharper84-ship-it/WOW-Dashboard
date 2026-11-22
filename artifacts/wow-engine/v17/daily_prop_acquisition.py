@@ -131,7 +131,7 @@ def _base_receipt(candidate: dict[str, Any], stat_type: str = STAT_TYPE) -> dict
     }
 
 
-def acquire_daily_prop_snapshots(
+def _acquire_mlb_daily_prop_snapshots(
     *,
     db: Any,
     requested_date: str,
@@ -257,3 +257,118 @@ def acquire_daily_prop_snapshots(
     elif result["held"] > 0:
         result["status"] = "COMPLETED_WITH_ROW_BLOCKERS"
     return result
+
+
+def acquire_daily_prop_snapshots(
+    *,
+    db: Any,
+    requested_date: str,
+    requested_timezone: str,
+    max_candidates: int,
+    now: datetime | None = None,
+    http_get: Any = httpx.get,
+    include_nfl: bool = False,
+) -> dict[str, Any]:
+    """Acquire official future NFL and MLB evidence with one bounded candidate budget.
+
+    Legacy direct callers retain MLB-only behavior unless `include_nfl` is
+    explicit. Daily and its autonomous scheduler opt in. NFL's existing forward
+    producer is reused unchanged as the source of sporting identity and governed
+    hydration; only exact-source receipts are converted to the Daily accounting
+    contract. Discovery-only half-point lines are *not* sportsbook offers.
+    """
+    if not include_nfl or max_candidates <= 0:
+        return _acquire_mlb_daily_prop_snapshots(
+            db=db, requested_date=requested_date,
+            requested_timezone=requested_timezone,
+            max_candidates=max_candidates, now=now, http_get=http_get,
+        )
+
+    from v17.nfl_prop_evidence_control_plane import (
+        NFLForwardEvidenceRequest, acquire_nfl_forward_evidence_batch,
+    )
+
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    budget = max(1, int(max_candidates))
+    nfl_pages: list[dict[str, Any]] = []
+
+    def nfl_page(offset: int, limit: int) -> dict[str, Any]:
+        return acquire_nfl_forward_evidence_batch(
+            NFLForwardEvidenceRequest(
+                requested_date=requested_date, candidate_offset=offset,
+                max_candidates=max(1, min(limit, 64)),
+            ),
+            db=db, now=now, http_get=http_get,
+        )
+
+    first = nfl_page(0, min(budget, max(1, (budget + 1) // 2)))
+    nfl_pages.append(first)
+    nfl_attempted = int(first.get("attempted") or 0)
+    mlb = _acquire_mlb_daily_prop_snapshots(
+        db=db, requested_date=requested_date,
+        requested_timezone=requested_timezone,
+        max_candidates=max(0, budget - nfl_attempted),
+        now=now, http_get=http_get,
+    )
+    remaining = max(0, budget - nfl_attempted - int(mlb.get("attempted") or 0))
+    next_offset = first.get("next_offset")
+    while remaining and next_offset is not None and first.get("status") != "DATA_UNOBTAINABLE":
+        page = nfl_page(int(next_offset), remaining)
+        nfl_pages.append(page)
+        attempted = int(page.get("attempted") or 0)
+        remaining -= attempted
+        if not attempted or page.get("status") == "DATA_UNOBTAINABLE":
+            break
+        new_offset = page.get("next_offset")
+        if new_offset is not None and int(new_offset) <= int(next_offset):
+            break
+        next_offset = new_offset
+
+    sources = [*nfl_pages, mlb]
+    fields = (
+        "attempted", "hydrated", "persisted", "held",
+        "snapshot_write_succeeded", "snapshot_write_failed",
+        "explicit_prewrite_exclusions",
+    )
+    combined: dict[str, Any] = {
+        key: sum(int(source.get(key) or 0) for source in sources)
+        for key in fields
+    }
+    combined.update({
+        "status": "COMPLETED",
+        "candidate_source": "OFFICIAL_NFL_AND_MLB_DISCOVERY",
+        "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
+        "stat_types": sorted(set(STAT_TYPES) | {
+            "PASSING_YARDS", "RUSHING_YARDS", "RECEIVING_YARDS", "ANYTIME_TD",
+        }),
+        "source_results": {
+            "NFL": [{
+                "status": page.get("status"), "candidate_offset": page.get("candidate_offset"),
+                "total_candidates": page.get("total_candidates"),
+                "attempted": page.get("attempted"), "persisted": page.get("persisted"),
+                "held": page.get("held"),
+            } for page in nfl_pages],
+            "MLB": [{
+                "status": mlb.get("status"), "attempted": mlb.get("attempted"),
+                "persisted": mlb.get("persisted"), "held": mlb.get("held"),
+            }],
+        },
+        "receipts": [
+            receipt for source in sources for receipt in (source.get("receipts") or [])
+        ],
+        "blockers": list(dict.fromkeys(
+            blocker for source in sources for blocker in (source.get("blockers") or [])
+        )),
+        "can_execute": False,
+    })
+    statuses = {str(source.get("status") or "") for source in sources}
+    if combined["snapshot_write_failed"] and not combined["persisted"]:
+        combined["status"] = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    elif "DATA_UNOBTAINABLE" in statuses and not combined["attempted"]:
+        combined["status"] = "DATA_UNOBTAINABLE"
+    elif combined["held"] or "DATA_UNOBTAINABLE" in statuses or (
+        "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in statuses
+    ):
+        combined["status"] = "COMPLETED_WITH_SOURCE_BLOCKERS"
+    # No receipt can certify a market, model, calibration, or publication.
+    return combined
