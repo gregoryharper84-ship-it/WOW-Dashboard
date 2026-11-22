@@ -234,6 +234,11 @@ def _existing_snapshot(db: Any, candidate: dict[str, Any], *, now: datetime) -> 
     availability = evaluate_player_availability(latest.get("role_status"))
     if availability.blocker or availability.requires_revalidation:
         return False
+    # A stored "fresh" flag is only true at capture time: recheck the source
+    # injury report's own time against the original official age contract.
+    report_at = _aware(availability.captured_at)
+    if report_at is None or report_at > now or now - report_at > nfl.MAX_INJURY_REPORT_AGE:
+        return False
     captured_at = _aware(latest.get("captured_at"))
     if captured_at is None or captured_at > now:
         return False
@@ -246,6 +251,8 @@ def acquire_nfl_forward_evidence_batch(
     db: Any,
     now: datetime | None = None,
     http_get: Callable[..., Any] = httpx.get,
+    priority_targets: tuple[tuple[str, str, str], ...] = (),
+    _discovery_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cached_get = _cached_http_get(http_get)
@@ -277,7 +284,36 @@ def acquire_nfl_forward_evidence_batch(
         "can_execute": False,
     }
     try:
-        candidates = _discover_candidates(req.requested_date, now=now, http_get=cached_get)
+        # The shared cache is strictly internal to one server-side Daily run;
+        # the authenticated HTTP request never exposes it. This pins all pages
+        # to one authoritative discovery/order, preventing moving-offset
+        # duplicates or silent count drift while sources update mid-run.
+        cache_valid = (
+            _discovery_cache is not None
+            and _discovery_cache.get("requested_date") == req.requested_date
+            and _discovery_cache.get("now") == now.isoformat()
+            and isinstance(_discovery_cache.get("candidates"), tuple)
+        )
+        if cache_valid:
+            candidates = list(_discovery_cache["candidates"])
+        else:
+            candidates = _discover_candidates(req.requested_date, now=now, http_get=cached_get)
+            if priority_targets:
+                wanted = set(priority_targets)
+                candidates.sort(key=lambda candidate: (
+                    0 if (
+                        str(candidate["canonical_event_id"]),
+                        str(candidate["player"]),
+                        str(candidate["stat_type"]),
+                    ) in wanted else 1,
+                ))
+            if _discovery_cache is not None:
+                _discovery_cache.clear()
+                _discovery_cache.update(
+                    requested_date=req.requested_date,
+                    now=now.isoformat(),
+                    candidates=tuple(candidates),
+                )
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
         result["blockers"] = [getattr(exc, "code", f"NFL_PROP_DISCOVERY_FAILED:{type(exc).__name__}")]
