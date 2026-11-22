@@ -325,3 +325,80 @@ def test_large_slate_uses_bounded_parallel_batches_and_deterministic_receipt_ord
     assert receipt["reconciliation"]["response_reconciliation_pass"] is True
     assert receipt["status"] == "AUTO_ADVANCE_COMPLETE"
     assert receipt["can_execute"] is False
+
+
+
+def test_nhl_native_identity_hold_reconciles_both_lanes_without_model_call():
+    payload = _handoff()
+    base = {
+        "sport_key": "icehockey_nhl",
+        "official_event_id": None,
+        "provider_event_id": "espn-401900001",
+        "official_event_identity_verified": False,
+        "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+        "canonical_identity_blocker": "NHL_CANONICAL_EVENT_NOT_FOUND",
+        "commence_time": "2026-11-24T00:30:00Z",
+        "home_team": "New York Islanders",
+        "away_team": "Buffalo Sabres",
+    }
+    payload["model_handoff"]["team_event_candidates"] = [{
+        **base, "market_evidence": [],
+    }]
+    payload["model_handoff"]["prop_candidates"] = [{
+        **base, "market_evidence": {
+            "market_key": "player_shots_on_goal",
+            "description": "Skater A",
+            "outcome_name": "Over",
+            "point": 2.5,
+        },
+    }]
+    dispatch = build_dispatch(payload)
+    assert dispatch["team_event_batches"] == []
+    assert dispatch["prop_batches"] == []
+    mapping = dispatch["mapping"]
+    assert mapping["rejected_team_event_rows"] == [
+        {"source_index": 1, "code": "NHL_CANONICAL_EVENT_NOT_FOUND"}
+    ]
+    assert mapping["rejected_prop_rows"] == [
+        {"source_index": 1, "code": "NHL_CANONICAL_EVENT_NOT_FOUND"}
+    ]
+    assert mapping["source_team_reconciliation_pass"] is True
+    assert mapping["source_prop_reconciliation_pass"] is True
+    assert dispatch["governance"]["can_execute"] is False
+
+
+def test_nhl_independent_official_hash_and_id_are_required_for_dispatch():
+    payload = _handoff()
+    template = {
+        "sport_key": "icehockey_nhl",
+        "provider_event_id": "espn-401900002",
+        "official_event_id": "2026020381",
+        "canonical_event_id": "2026020381",
+        "official_event_identity_verified": True,
+        "canonical_identity_status": "VERIFIED_OFFICIAL_EVENT",
+        "canonical_identity_source_sha256": "a" * 64,
+        "commence_time": "2026-11-24T00:30:00Z",
+        "home_team": "New York Islanders",
+        "away_team": "Toronto Maple Leafs",
+    }
+    payload["model_handoff"]["team_event_candidates"] = [template]
+    payload["model_handoff"]["prop_candidates"] = []
+    valid = build_dispatch(payload)
+    assert valid["mapping"]["mapped_team_events"] == 1
+    assert len(valid["team_event_batches"][0]["rows"]) == 2
+    assert all(row["event_key"] == "NHL:2026020381"
+               for row in valid["team_event_batches"][0]["rows"])
+    assert valid["governance"]["can_execute"] is False
+    for mutation in [
+        {"canonical_identity_source_sha256": None},
+        {"canonical_event_id": "2026020376"},
+        {"official_event_identity_verified": False},
+        {"canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED"},
+    ]:
+        payload["model_handoff"]["team_event_candidates"] = [{**template, **mutation}]
+        blocked = build_dispatch(payload)
+        assert blocked["team_event_batches"] == []
+        assert blocked["mapping"]["rejected_team_event_rows"] == [
+            {"source_index": 1, "code": "NHL_EVENT_IDENTITY_UNVERIFIED"}
+        ]
+        assert blocked["mapping"]["source_team_reconciliation_pass"] is True
