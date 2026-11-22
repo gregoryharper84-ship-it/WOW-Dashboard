@@ -171,17 +171,32 @@ def _roster(team_id: str, *, http_get: Callable[..., Any]) -> list[dict[str, Any
 
 def _discover_candidates(requested_date: str, *, now: datetime, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    # The snapshot identity is event + display name + stat, not ESPN athlete ID.
+    # A roster can repeat a display name with conflicting IDs; silently
+    # processing both would upsert one source_snapshot_id twice and inflate
+    # persisted/receipt counts. Fail closed on that ambiguity.
+    seen: dict[tuple[str, str, str], tuple[str, str, str]] = {}
     for event in _pregame_events(requested_date, now=now, http_get=http_get):
         teams = event["teams"]
         for team in teams:
             opponent = next(item["abbr"] for item in teams if item["abbr"] != team["abbr"])
             for player in _roster(team["team_id"], http_get=http_get):
                 for stat_type in POSITION_STATS[player["position"]]:
-                    identity = (event["canonical_event_id"], str(player["player_id"] or player["player"]), stat_type)
-                    if identity in seen:
+                    identity = (
+                        event["canonical_event_id"], nfl._name_key(player["player"]), stat_type,
+                    )
+                    source_identity = (
+                        team["abbr"], str(player["player_id"] or ""), player["position"],
+                    )
+                    previous = seen.get(identity)
+                    if previous is not None:
+                        if not source_identity[1] or previous != source_identity:
+                            raise nfl.NFLPropHydrationError(
+                                "NFL_PROP_ROSTER_IDENTITY_CONFLICT",
+                                "official roster has ambiguous event/player/stat identity",
+                            )
                         continue
-                    seen.add(identity)
+                    seen[identity] = source_identity
                     candidates.append({
                         **event,
                         **player,
