@@ -24,6 +24,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.nba_points_snapshot_capture import acquire_daily_nba_points_snapshots
 
 CAN_EXECUTE = False
 
@@ -54,12 +55,68 @@ def _acquire_once(
     timezone_name: str,
     max_candidates: int,
 ) -> dict[str, Any]:
-    return acquire_daily_prop_snapshots(
-        db=db_client_fn(),
-        requested_date=requested_date,
-        requested_timezone=timezone_name,
-        max_candidates=max_candidates,
+    db = db_client_fn()
+    # Keep sport lanes independent: a failure in the MLB producer must not
+    # suppress NBA POINTS evidence capture (and vice versa).
+    try:
+        mlb = acquire_daily_prop_snapshots(
+            db=db,
+            requested_date=requested_date,
+            requested_timezone=timezone_name,
+            max_candidates=max_candidates,
+        )
+    except Exception as exc:
+        mlb = {
+            "status": "FAILED",
+            "attempted": 0,
+            "hydrated": 0,
+            "persisted": 0,
+            "held": 0,
+            "snapshot_write_failed": 0,
+            "blockers": [],
+            "error_type": type(exc).__name__,
+        }
+    try:
+        nba = acquire_daily_nba_points_snapshots(
+            db=db,
+            requested_date=requested_date,
+            timezone_name=timezone_name,
+            max_candidates=min(max_candidates, 8),
+        )
+    except Exception as exc:
+        nba = {
+            "status": "FAILED",
+            "attempted": 0,
+            "persisted": 0,
+            "held": 0,
+            "blockers": [],
+            "error_type": type(exc).__name__,
+        }
+
+    mlb_blockers = list(mlb.get("blockers") or [])
+    nba_blockers = list(nba.get("blockers") or [])
+    attempted = int(mlb.get("attempted") or 0) + int(nba.get("attempted") or 0)
+    hydrated = int(mlb.get("hydrated") or 0) + int(nba.get("persisted") or 0)
+    persisted = int(mlb.get("persisted") or 0) + int(nba.get("persisted") or 0)
+    held = int(mlb.get("held") or 0) + int(nba.get("held") or 0)
+    write_failed = int(mlb.get("snapshot_write_failed") or 0) + sum(
+        1 for item in nba_blockers
+        if str(item.get("code") or "").startswith("NBA_POINTS_SNAPSHOT_")
+        and str(item.get("code") or "").endswith(("_FAILED", "_UNAVAILABLE"))
     )
+    statuses = {str(mlb.get("status") or ""), str(nba.get("status") or "")}
+    status = "FAILED" if statuses == {"FAILED"} else ("PARTIAL" if "FAILED" in statuses else "OK")
+    return {
+        "status": status,
+        "attempted": attempted,
+        "hydrated": hydrated,
+        "persisted": persisted,
+        "held": held,
+        "snapshot_write_failed": write_failed,
+        "blockers": mlb_blockers + nba_blockers,
+        "by_sport": {"MLB": mlb, "NBA_POINTS": nba},
+        "can_execute": False,
+    }
 
 
 async def run_prop_evidence_acquisition_loop(
