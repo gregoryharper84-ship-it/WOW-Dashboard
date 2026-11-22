@@ -251,3 +251,161 @@ def test_compact_news_slate_preserves_every_candidate_without_market_payload():
     )
     assert selected == "americanfootball_nfl"
     assert counts == {"americanfootball_nfl": 2}
+
+
+
+def test_nhl_official_identity_bridge_conserves_team_and_prop_rows(monkeypatch):
+    from v17 import nhl_event_identity as nhl
+    observed = []
+    official = {
+        "event_id": "2026020381",
+        "event_start_time": "2026-11-24T00:30:00+00:00",
+        "home_team": "NYI",
+        "away_team": "TOR",
+        "game_type": 2,
+        "game_state": "FUT",
+        "identity_provider": "NHL_PUBLIC_WEB_API",
+        "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/NYI/20262027",
+        "canonical_identity_source_sha256": "a" * 64,
+        "canonical_identity_source_byte_count": 3215,
+        "identity_verified_at": "2026-11-22T22:29:57+00:00",
+        "market_features_used": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+    def official_resolve(**kwargs):
+        observed.append(kwargs)
+        return official
+
+    def source(path, params=None):
+        if path == "/odds-api/v4/sports":
+            return scout.FetchResult(True, [
+                {"key": "icehockey_nhl", "title": "NHL", "active": True}
+            ], 200)
+        if path.endswith("/events"):
+            return scout.FetchResult(True, [{
+                "id": "espn-401999002",
+                "_wow_secondary_event_id": "401999002",
+                "commence_time": "2026-11-24T00:30:00Z",
+                "home_team": "New York Islanders",
+                "away_team": "Toronto Maple Leafs",
+            }], 200)
+        if path.endswith("/markets"):
+            return scout.FetchResult(True, {
+                "bookmakers": [{"markets": [
+                    {"key": "h2h"}, {"key": "player_shots_on_goal"},
+                ]}]
+            }, 200)
+        if path.endswith("/odds"):
+            return scout.FetchResult(True, {"bookmakers": [{
+                "key": "example-book",
+                "markets": [
+                    {"key": "h2h", "outcomes": [
+                        {"name": "New York Islanders", "price": -110}
+                    ]},
+                    {"key": "player_shots_on_goal", "outcomes": [
+                        {"name": "Over", "description": "Skater A", "price": -115, "point": 2.5}
+                    ]},
+                ],
+            }]}, 200)
+        raise AssertionError(path)
+
+    monkeypatch.setattr(scout, "proxy_get", source)
+    monkeypatch.setattr(nhl, "resolve_nhl_current_event_identity", official_resolve)
+    handoff = scout.run()
+    team = handoff["model_handoff"]["team_event_candidates"][0]
+    prop = handoff["model_handoff"]["prop_candidates"][0]
+    assert len(observed) == 1  # one lookup for team and prop on same game
+    assert observed[0]["home_team"] == "New York Islanders"
+    assert observed[0]["away_team"] == "Toronto Maple Leafs"
+    assert team["official_event_id"] == prop["official_event_id"] == "2026020381"
+    assert team["canonical_event_id"] == prop["canonical_event_id"] == "2026020381"
+    assert team["provider_event_id"] == prop["provider_event_id"] == "espn-401999002"
+    assert team["provider_event_source"] == "ESPN_SCOREBOARD"
+    assert team["canonical_identity_source_sha256"] == "a" * 64
+    assert team["official_event_identity_verified"] is True
+    assert team["canonicalization_required"] is False
+    assert prop["canonicalization_required"] is False
+    assert team["route"] == "LLP_TEAM_BETTING_ENGINE"
+    assert prop["route"] == "WOW_PROP_LANE"
+    assert team["market_evidence_status"] == "AVAILABLE"
+    assert handoff["can_execute"] is False
+
+
+def test_nhl_wrong_team_or_time_is_typed_identity_hold_not_a_dropped_row(monkeypatch):
+    from v17 import nhl_event_identity as nhl
+
+    def source(path, params=None):
+        if path == "/odds-api/v4/sports":
+            return scout.FetchResult(True, [
+                {"key": "icehockey_nhl", "title": "NHL", "active": True}
+            ], 200)
+        if path.endswith("/events"):
+            return scout.FetchResult(True, [{
+                "id": "espn-401999002",
+                "commence_time": "2026-11-24T00:30:00Z",
+                "home_team": "New York Islanders",
+                "away_team": "Buffalo Sabres",
+            }], 200)
+        if path.endswith("/markets"):
+            return scout.FetchResult(True, {"bookmakers": [{"markets": [{"key": "h2h"}]}]}, 200)
+        if path.endswith("/odds"):
+            return scout.FetchResult(True, {"bookmakers": [{
+                "key": "example", "markets": [{"key": "h2h", "outcomes": [
+                    {"name": "New York Islanders", "price": -110}
+                ]}]
+            }]}, 200)
+        raise AssertionError(path)
+
+    def refuse(**kwargs):
+        raise nhl.NHLEventIdentityError("NHL_CANONICAL_EVENT_NOT_FOUND")
+
+    monkeypatch.setattr(scout, "proxy_get", source)
+    monkeypatch.setattr(nhl, "resolve_nhl_current_event_identity", refuse)
+    handoff = scout.run()
+    team = handoff["model_handoff"]["team_event_candidates"][0]
+    assert team["official_event_id"] is None
+    assert team["provider_event_id"] == "espn-401999002"
+    assert team["canonical_event_id"] is None
+    assert team["official_event_identity_verified"] is False
+    assert team["canonical_identity_blocker"] == "NHL_CANONICAL_EVENT_NOT_FOUND"
+    assert team["canonicalization_required"] is True
+    assert team["market_evidence_status"] == "AVAILABLE"  # market independent
+    assert any(row.get("reason_code") == "NHL_CANONICAL_EVENT_NOT_FOUND"
+               for row in handoff["coverage"])
+    assert len(handoff["model_handoff"]["team_event_candidates"]) == 1
+    assert handoff["can_execute"] is False
+
+
+def test_nhl_resolver_requires_original_source_hash_before_identity_promotion():
+    row = {
+        "sport_key": "icehockey_nhl",
+        "official_event_id": "espn-1",
+        "provider_event_id": "espn-1",
+        "commence_time": "2026-11-24T00:30:00Z",
+        "home_team": "New York Islanders",
+        "away_team": "Toronto Maple Leafs",
+    }
+    from v17 import nhl_event_identity as nhl
+    original = nhl.resolve_nhl_current_event_identity
+
+    try:
+        nhl.resolve_nhl_current_event_identity = lambda **kwargs: {
+            "event_id": "2026020381",
+            "game_state": "FUT",
+            "identity_provider": nhl.SOURCE_PROVIDER,
+            "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/NYI/20262027",
+            "canonical_identity_source_sha256": None,
+            "canonical_identity_source_byte_count": 100,
+            "identity_verified_at": "2026-11-22T22:29:57+00:00",
+            "market_features_used": False,
+            "can_execute": False,
+        }
+        out, blocker = scout.resolve_nhl_nightly_identity(row)
+    finally:
+        nhl.resolve_nhl_current_event_identity = original
+    assert out["official_event_id"] is None
+    assert out["provider_event_id"] == "espn-1"
+    assert out["canonical_identity_blocker"] == "NHL_OFFICIAL_RESOLVER_PROVENANCE_INVALID"
+    assert blocker["reason_code"] == "NHL_OFFICIAL_RESOLVER_PROVENANCE_INVALID"
