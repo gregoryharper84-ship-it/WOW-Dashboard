@@ -1,6 +1,6 @@
 # WOW V17 Custom GPT editor synchronization
 
-Updated: 2026-10-01
+Updated: 2026-11-08
 
 Status: **RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED**
 
@@ -14,9 +14,9 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 - Custom GPT Instructions field hard limit: **8,000 characters**; repository safety ceiling: **7,500 UTF-8 bytes**.
 - The canonical host-instructions file must satisfy both limits and is pasted into the Instructions field verbatim.
 - The PrizePicks addendum is installed as a **Knowledge file**, not appended to the Instructions field.
-- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **24**, or if a required Action operation is missing.
+- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **29**, or if a required Action operation is missing.
 - ChatGPT Custom GPT editor constraint observed 2026-09-24: **Action sets cannot have duplicate domains**. Therefore the production WOW Render domain may appear in only one Action group.
-- The canonical live Action schema exposes all **24** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
+- The canonical live Action schema exposes all **29** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
   - `getWowV17PickRequestRunState`
   - `runWowV17ResumablePickRequest`
   - `closeWowV17PickRequestRun`
@@ -38,6 +38,9 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
   - `/score-pick-request` -> `scoreWowPickRequest`
 - Authentication remains API Key -> Bearer using the existing `WOW_ACTION_API_KEY`.
 - `can_execute=false`, dry-run-only behavior, and `V17_TERMINAL_REDUCER` authority remain binding.
+- The LLP Supabase Edge and Vercel gateways are separate team-event ingress surfaces. Their explicit allowlists intentionally exclude WOW prop routes `/score-pick-request` and `/score-prop`; do not add those routes to either gateway.
+- WOW prop scoring uses the direct Render Action origin above. A Supabase LLP gateway path rejection returns HTTP 404 `LLP_GATEWAY_PATH_NOT_ALLOWED` with `x-wow-gateway: supabase-edge` and `x-wow-request-id`; it rejects before upstream dispatch, so no Render invocation receipt is created. The Vercel challenger has no `vercel.json` rewrite for either prop path, so those requests receive a Vercel platform 404 before `api/gateway.js`; do not attribute the handler's `LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED` code or `x-wow-gateway: vercel-action-ingress` header to those prop-path requests.
+- `artifacts/wow-engine/openapi.pick-request-action.yaml` is a four-operation subset, not the production editor's complete Action set. Do not replace the single 29-operation canonical schema with that subset.
 
 ## PR #766 host-contract behavior
 
@@ -50,7 +53,7 @@ The PrizePicks Knowledge contract requires the live host to:
 - treat unreadable source pages as source-ingestion blockers, not `MODEL_UNAVAILABLE`; and
 - render distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
 
-Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 24-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
+Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 29-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
 
 ## Acceptance required to re-attest VERIFIED
 
@@ -58,7 +61,7 @@ The production WOW editor must be saved/reloaded with:
 
 1. `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` in the Instructions field;
 2. the PrizePicks addendum attached as Knowledge (`WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt` from the sync artifact, or the byte-identical canonical addendum source);
-3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 24 operations with existing Bearer authentication preserved.
+3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 29 operations with existing Bearer authentication preserved.
 
 Then a fresh production WOW chat must prove:
 
