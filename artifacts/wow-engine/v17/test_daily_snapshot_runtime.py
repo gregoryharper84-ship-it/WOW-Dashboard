@@ -894,6 +894,9 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
             "home_team": home_team,
             "away_team": away_team,
             "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/DAL/20262027",
+            "canonical_identity_source_sha256": "a" * 64,
+            "canonical_identity_source_byte_count": 512,
             "identity_verified_at": FUTURE,
             "market_features_used": False,
         }
