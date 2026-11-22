@@ -27,3 +27,17 @@ def test_viktor_does_not_create_issue_comment_trigger_or_grant_new_authority(pat
     assert "wow-v17-engineering-implementation-single-writer" in content
     assert "V17_TERMINAL_REDUCER" in content
     assert "VIKTOR_ADVISORY_NOT_OBSERVED" in content
+
+
+@pytest.mark.parametrize("path", FILES)
+def test_advisory_helper_pinned_from_trusted_workflow_head_before_older_repair_checkout(path):
+    content = path.read_text()
+    marker = "Pin Viktor advisory helper from trusted dispatch checkout"
+    assert content.count(marker) == 1
+    assert content.index("Reject stale queued worker before credential mint") < content.index(marker)
+    assert content.index(marker) < content.index("Initialize persistent-worker safety state")
+    if "Checkout exact existing repair head under fence" in content:
+        assert content.index(marker) < content.index("Checkout exact existing repair head under fence")
+    assert 'install -m 0600 artifacts/wow-engine/v17/viktor_audit_evidence.py "$RUNNER_TEMP/wow-viktor-audit-evidence.py"' in content
+    assert 'python "$RUNNER_TEMP/wow-viktor-audit-evidence.py"' in content
+    assert 'python \\\n            artifacts/wow-engine/v17/viktor_audit_evidence.py' not in content
