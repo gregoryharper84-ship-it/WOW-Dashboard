@@ -37,7 +37,7 @@ from v17.team_event_capability_manifest import (
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
-from v17.matchup_discovery import discover_matchup
+from v17.matchup_discovery import discover_matchup, matchup_consumption_audit
 from v17.team_event_producer_adoption import inspect_team_event_producer_adoption
 from v17.cross_sport_evidence_integrity import (
     CRITICAL_STATUS_CONTRACT,
@@ -487,6 +487,13 @@ def score_registered_team_event_request(
             "away_team": getattr(req, "away_team", None),
             "sport_specific_evidence": getattr(req, "sport_specific_evidence", None),
         })
+    # Screened matchup evidence is research input until the fitted specialist
+    # proves numerical use. Report the gap instead of assuming consumption.
+    scored["matchup_feature_consumption"] = matchup_consumption_audit(
+        scored.get("matchup_discovery"),
+        scored.get("consumed_feature_ids"),
+        controlling_specialist=registration.controlling_specialist,
+    )
     return scored
 
 

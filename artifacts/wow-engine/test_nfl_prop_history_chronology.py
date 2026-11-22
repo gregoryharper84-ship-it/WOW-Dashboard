@@ -491,3 +491,122 @@ def test_completion_disagreement_in_an_additional_competition_is_a_typed_block()
         _hydrate(source, "2026-11-15T17:00:00Z")
 
     assert caught.value.code == "NFL_PROP_HISTORY_CHRONOLOGY_UNVERIFIED"
+
+
+def _league_rows(weeks, *, depth_yards="2"):
+    """KC player rows plus one opposing-team row for each extra defense."""
+    rows, events = _regular(2026, weeks)
+    for week in weeks:
+        for defense in ("DEN", "LV", "LAC", "NE", "NYJ", "MIA", "NYG", "DAL"):
+            extra = _row(2026, week)
+            extra.update({
+                "player_display_name": "Depth Player",
+                "team": "SEA",
+                "opponent_team": defense,
+                "receiving_yards": depth_yards,
+                "targets": "3",
+                "game_id": f"2026_{week:02d}_SEA_{defense}",
+            })
+            rows.append(extra)
+    return rows, events
+
+
+def test_opponent_context_is_source_backed_and_screened_without_claiming_consumption():
+    rows, events = _league_rows(range(1, 19))
+    source = _Sources(_event(2026, 19, "2026-11-15T17:00:00Z", completed=False),
+                      {2026: rows}, {(2026, 2): events})
+
+    result = _hydrate(source, "2026-11-15T17:00:00Z")
+
+    context = result["opponent_context"]
+    assert context["source"] == nfl.OPPONENT_CONTEXT_SOURCE
+    assert context["source_sha256"] == hashlib.sha256(source.csv_bytes[2026]).hexdigest()
+    assert context["opponent_team"] == "BUF"
+    assert context["opponent_games"] == 18
+    assert context["league_team_games"] == 18 * 9
+    assert context["opponent_allowed_per_game"] > context["league_allowed_per_game"]
+    assert context["opponent_factor_raw"] == pytest.approx(
+        context["opponent_allowed_per_game"] / context["league_allowed_per_game"]
+    )
+    # An extreme ratio is bounded and the clip is recorded rather than hidden.
+    assert context["opponent_factor_raw"] > nfl.OPPONENT_FACTOR_CLIP[1]
+    assert context["opponent_factor"] == pytest.approx(nfl.OPPONENT_FACTOR_CLIP[1])
+    assert context["opponent_factor_clipped"] is True
+    assert context["opponent_factor_clip"] == list(nfl.OPPONENT_FACTOR_CLIP)
+    assert context["model_consumption_status"] == "NOT_DECLARED_BY_FITTED_VECTOR"
+    assert context["prediction_authority"] is False
+    assert context["can_execute"] is False
+    assert result["source_timestamps"][nfl.OPPONENT_CONTEXT_SOURCE] == result["captured_at"]
+
+    ledger = result["opportunity_ledger"]
+    assert ledger["model_opponent_context"] == "CONFIRMED_OPPONENT_DEFENSE_RATE"
+    audit = ledger["matchup_discovery"]
+    assert audit["review_status"] == "PARTIAL_MATCHUP_REVIEW"
+    assert audit["screened_features"] == ["opponent_adjusted_strength"]
+    assert "exact_current_quote" in audit["missing_critical_features"]
+    assert audit["specialist_rescore_verified"] is False
+    consumption = ledger["matchup_feature_consumption"]
+    assert consumption["specialist_consumption_state"] == "NOT_DECLARED_BY_FITTED_VECTOR"
+    assert consumption["screened_features"] == ["opponent_adjusted_strength"]
+    assert audit["can_execute"] is False
+
+
+def test_in_bounds_opponent_factor_is_not_reported_as_clipped():
+    rows, events = _league_rows(range(1, 19), depth_yards="8")
+    source = _Sources(_event(2026, 19, "2026-11-15T17:00:00Z", completed=False),
+                      {2026: rows}, {(2026, 2): events})
+
+    result = _hydrate(source, "2026-11-15T17:00:00Z")
+
+    context = result["opponent_context"]
+    assert nfl.OPPONENT_FACTOR_CLIP[0] <= context["opponent_factor"] <= nfl.OPPONENT_FACTOR_CLIP[1]
+    assert context["opponent_factor"] == pytest.approx(context["opponent_factor_raw"])
+    assert context["opponent_factor_clipped"] is False
+    audit = result["opportunity_ledger"]["matchup_discovery"]
+    assert audit["screened_features"] == ["opponent_adjusted_strength"]
+
+
+def test_provider_season_stats_file_is_downloaded_once_per_hydration():
+    rows, events = _league_rows(range(1, 19))
+    source = _Sources(_event(2026, 19, "2026-11-15T17:00:00Z", completed=False),
+                      {2026: rows}, {(2026, 2): events})
+
+    result = _hydrate(source, "2026-11-15T17:00:00Z")
+
+    csv_fetches = [
+        url for url, _params in source.requests
+        if "stats_player_week_2026.csv" in url
+    ]
+    assert len(csv_fetches) == 1
+    assert result["opponent_context"] is not None
+
+
+def test_opponent_context_stays_neutral_when_the_defensive_sample_is_too_small():
+    context, status = nfl._opponent_defense_context(
+        rows=[_row(2026, week) for week in (1, 2, 3)],
+        digest="a" * 64,
+        opponent="BUF",
+        canonical_stat="RECEIVING_YARDS",
+        captured=datetime(2026, 9, 15, tzinfo=timezone.utc),
+    )
+
+    assert context is None
+    assert status == "NEUTRAL_OPPONENT_SAMPLE_INSUFFICIENT"
+
+
+def test_opponent_context_requires_a_real_league_baseline():
+    rows = [_row(2026, week) for week in range(1, 8)] + [
+        dict(_row(2026, week), player_display_name="Depth Player", team="KC",
+             opponent_team="BUF", game_id=f"2026_{week:02d}_BUF_KC")
+        for week in range(1, 8)
+    ]
+    context, status = nfl._opponent_defense_context(
+        rows=rows,
+        digest="b" * 64,
+        opponent="BUF",
+        canonical_stat="RECEIVING_YARDS",
+        captured=datetime(2026, 10, 15, tzinfo=timezone.utc),
+    )
+
+    assert context is None
+    assert status == "NEUTRAL_LEAGUE_BASELINE_INSUFFICIENT"
