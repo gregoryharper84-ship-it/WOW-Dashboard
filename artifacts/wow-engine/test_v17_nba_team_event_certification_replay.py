@@ -762,3 +762,30 @@ def test_nonfinite_nba_candidate_remains_json_serializable_and_unpublished():
     json.dumps(report, allow_nan=False)
 
 
+
+
+def test_manifest_zero_and_false_values_are_distinct_from_missing_fields():
+    """Corpus identities must never collapse zero score/count into NULL."""
+    assert nba_replay_module._manifest_token({"home_score": 0}, "home_score") == "0"
+    assert nba_replay_module._manifest_token({"away_score": 0}, "away_score") == "0"
+    assert nba_replay_module._manifest_token({"season": 0}, "season") == "0"
+    assert nba_replay_module._manifest_token({"home_games_prior": 0}, "home_games_prior") == "0"
+    assert nba_replay_module._manifest_token({"home_win": False}, "home_win") == "False"
+    assert nba_replay_module._manifest_token({"home_score": None}, "home_score") == ""
+    assert nba_replay_module._manifest_token({}, "home_score") == ""
+
+
+def test_holdout_boundary_drift_blocks_numerical_replay():
+    tables = _fixture()
+    evidence = tables["wow_basketball_team_event_certification"][0][
+        "certification_notes"
+    ]["untouched_holdout_evidence"]
+    evidence["holdout_end_date"] = "2025-03-09"
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["numerical_replay_status"] != "PASS"
+    assert report["exact_bundle_match"] is False
+    assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in report["blockers"]
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+
