@@ -132,15 +132,15 @@ Consequent policy in \`v17/public_gdelt_discovery.py\`:
 - The ladder is configurable: \`--retry-wait-seconds SECONDS[,SECONDS]\` or
   the \`WOW_V17_NEWS_RETRY_WAIT_SECONDS\` env var (CLI wins over env, env wins
   over the 900s default). \`0\` makes exactly one request and returns the
-  BLOCKED receipt immediately; values must be
-  positive and total at most \`MAX_TOTAL_WAIT_SECONDS\`, and anything else
-  fails loudly at startup rather than silently falling back.
+  BLOCKED receipt immediately; values must be positive and total at most
+  \`MAX_TOTAL_WAIT_SECONDS\`, and anything else fails loudly at startup
+  rather than silently falling back.
 - Only a \`workflow_dispatch\` run keeps 900s. Every automated trigger
   (cron, post-deploy \`workflow_run\`, \`push\`) sets the env var to \`0\` and
   records the BLOCKED receipt at once, because all three 2026-11-18 cron runs
-  were refused on their first request from fresh runner addresses: paying 15
-  minutes per slot cannot help them. The receipt always states which ladder was in force via
-  \`retry_policy.ladder_seconds\`, \`retries_disabled\` and
+  were refused on their first request from fresh runner addresses: paying   15
+  minutes per slot cannot help them. The receipt always states which ladder
+  was in force via \`retry_policy.ladder_seconds\`, \`retries_disabled\` and
   \`retry_policy.configured_by\`.
 - Any \`Retry-After\` the source does send is parsed (delta-seconds or
   HTTP-date) and lengthens the step rather than being ignored; the value is

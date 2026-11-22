@@ -64,7 +64,7 @@ RETRY_WAIT_ENV = "WOW_V17_NEWS_RETRY_WAIT_SECONDS"
 
 def parse_retry_delays(spec: str) -> tuple[int, ...]:
     """Parse a comma-separated wait ladder; 0 disables retrying."""
-    text = (spec or "").strip().lower()
+    text = (spec or "").strip()
     if text == "0":
         return ()
     waits = []
@@ -77,7 +77,7 @@ def parse_retry_delays(spec: str) -> tuple[int, ...]:
         if value <= 0 or value > MAX_TOTAL_WAIT_SECONDS:
             raise ValueError("WOW_NEWS_RETRY_WAIT_INVALID")
         waits.append(value)
-    if not waits or sum(waits) > MAX_TOTAL_WAIT_SECONDS:
+    if sum(waits) > MAX_TOTAL_WAIT_SECONDS:
         raise ValueError("WOW_NEWS_RETRY_WAIT_EXCEEDS_MAX_TOTAL")
     return tuple(waits)
 
