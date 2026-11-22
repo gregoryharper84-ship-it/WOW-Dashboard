@@ -245,3 +245,54 @@ def test_explicit_offset_and_rotation_cannot_silently_override_each_other():
             candidate_offset=32,
             candidate_rotation=1,
         )
+
+
+def test_nfl_forward_receipts_reconcile_every_candidate(monkeypatch):
+    candidates = [
+        _candidate("Alpha QB", "PASSING_YARDS"),
+        _candidate("Beta WR", "RECEIVING_YARDS", "WR"),
+    ]
+    _install(monkeypatch, candidates)
+    monkeypatch.setattr(
+        subject, "auto_hydrate_prop_evidence",
+        lambda **kwargs: (
+            _raw(kwargs["stat_type"]) if kwargs["player"] == "Alpha QB"
+            else (_ for _ in ()).throw(
+                subject.PropAutoHydrationError("PLAYER_AVAILABILITY_UNVERIFIED", "held")
+            )
+        ),
+    )
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=2),
+        db=_DB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert len(result["receipts"]) == result["attempted"] == 2
+    assert result["snapshot_write_succeeded"] == 1
+    assert result["explicit_prewrite_exclusions"] == 1
+    assert result["snapshot_write_failed"] == 0
+    assert sorted(receipt["write_status"] for receipt in result["receipts"]) == [
+        "PREWRITE_EXCLUDED", "SNAPSHOT_WRITE_SUCCEEDED",
+    ]
+    assert all(receipt["can_execute"] is False for receipt in result["receipts"])
+    assert sum(
+        receipt["write_status"] == "SNAPSHOT_WRITE_SUCCEEDED"
+        for receipt in result["receipts"]
+    ) == result["persisted"]
+    assert result["can_execute"] is False
+
+
+def test_nfl_existing_snapshot_yields_explicit_exclusion_receipt(monkeypatch):
+    candidate = _candidate()
+    _install(monkeypatch, [candidate])
+    db = _DB(existing={(candidate["canonical_event_id"], "NFL", candidate["player"], candidate["stat_type"])})
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=db, now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["already_captured"] == 1
+    assert result["explicit_prewrite_exclusions"] == 1
+    assert result["receipts"][0]["write_status"] == "ALREADY_CAPTURED"
+    assert result["attempted"] == (
+        result["snapshot_write_succeeded"] + result["snapshot_write_failed"]
+        + result["explicit_prewrite_exclusions"]
+    )
