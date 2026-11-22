@@ -364,14 +364,14 @@ def prizepicks_prop(row, event, *, player="NBA-34", line=10.5, tier="STANDARD"):
     p["market_quote"]["side"] = "MORE"
     p["platform_offer"] = dict(
         platform="PRIZEPICKS", source_receipt_id="synthetic-board-" + row,
-        official_event_id=event, official_player_id=player,
+        sport="NBA", official_event_id=event, official_player_id=player,
         stat_type="POINTS", direction="MORE", exact_line=line,
         projection_type=tier, status="ACTIVE",
         captured_at_utc="2026-11-19T23:57:00Z",
     )
     p["sporting_receipt_binding"] = dict(
         immutable_prediction_id="synthetic-prediction-" + row,
-        official_event_id=event, official_player_id=player,
+        sport="NBA", official_event_id=event, official_player_id=player,
         stat_type="POINTS", direction="MORE", exact_line=line,
         frozen_at_utc="2026-11-19T23:56:00Z",
     )
@@ -387,6 +387,19 @@ def prizepicks_card(*props):
             source_receipt_id="synthetic-payout-board",
             structure="FLEX", leg_count=len(props),
             projection_types=[p["platform_offer"]["projection_type"] for p in props],
+            ordered_offer_bindings=[
+                {
+                    "source_receipt_id": p["platform_offer"]["source_receipt_id"],
+                    "sport": p["sport"],
+                    "official_event_id": p["official_event_id"],
+                    "official_player_id": p["official_player_id"],
+                    "stat_type": p["stat_type"],
+                    "direction": p["side"],
+                    "exact_line": p["exact_line"],
+                    "projection_type": p["platform_offer"]["projection_type"],
+                }
+                for p in props
+            ],
             gross_payout_multiple=2.5,
             captured_at_utc="2026-11-19T23:58:00Z",
         ),
@@ -511,3 +524,90 @@ def test_automatic_prizepicks_hold_does_not_demote_other_platform_cards():
     assert result.cards_held == 1
     assert original == [pp, non_pp]
     assert result.probability_fields_mutated is False
+
+
+def test_payout_binding_rejects_equal_tiers_but_different_lineup_and_order():
+    original = prizepicks_card(
+        prizepicks_prop("castle", "sas-lac"),
+        prizepicks_prop("towns", "nyk-min", tier="GOBLIN"),
+    )
+    substituted = prizepicks_card(
+        prizepicks_prop("different-a", "por-mil"),
+        prizepicks_prop("different-b", "hou-ind", tier="GOBLIN"),
+    )
+    substituted["platform_lineup_payout"] = deepcopy(original["platform_lineup_payout"])
+    r = audit_research_slips([substituted], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in r["cards"][0]["blockers"]
+    reordered = prizepicks_card(
+        prizepicks_prop("towns", "nyk-min", tier="GOBLIN"),
+        prizepicks_prop("castle", "sas-lac"),
+    )
+    reordered["platform_lineup_payout"] = deepcopy(original["platform_lineup_payout"])
+    r = audit_research_slips([reordered], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in r["cards"][0]["blockers"]
+
+
+def test_prizepicks_malformed_leg_produces_typed_hold_not_exception():
+    card = prizepicks_card(prizepicks_prop("dunn", "lac-sas"),
+                           prizepicks_prop("towns", "nyk-min"))
+    card["legs"][0] = None
+    r = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "RESEARCH_LEG_INVALID" in r["cards"][0]["blockers"]
+    assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in r["cards"][0]["blockers"]
+    assert r["can_execute"] is False
+
+
+def test_material_news_requires_matching_post_change_prediction_receipt():
+    castle = prizepicks_prop("castle", "sas-lac")
+    castle["news_evidence"].update(
+        material_change=True,
+        last_reviewed_at_utc="2026-11-19T23:58:00Z",
+        new_model_receipt_id="synthetic-revision",
+    )
+    castle["opportunity_evidence"]["observed_at_utc"] = "2026-11-19T23:59:00Z"
+    card = prizepicks_card(castle, prizepicks_prop("towns", "nyk-min"))
+    r = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "PROP_OPPORTUNITY_RESCENARIO_REQUIRED" not in r["cards"][0]["blockers"]
+    assert "PRIZEPICKS_MATERIAL_NEWS_PREDICTION_STALE" in r["cards"][0]["blockers"]
+    castle["sporting_receipt_binding"]["frozen_at_utc"] = "2026-11-19T23:59:30Z"
+    # Newer timestamp alone cannot bind a different prediction ID.
+    r = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_MATERIAL_NEWS_PREDICTION_STALE" in r["cards"][0]["blockers"]
+    castle["sporting_receipt_binding"]["immutable_prediction_id"] = "synthetic-revision"
+    r = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_MATERIAL_NEWS_PREDICTION_STALE" not in r["cards"][0]["blockers"]
+    assert r["cards"][0]["can_publish_as_certified"] is False
+
+
+def test_prizepicks_platform_conflict_cannot_bypass_exact_offer_check():
+    castle = prizepicks_prop("castle", "sas-lac")
+    castle["platform"] = "DRAFTKINGS"
+    castle["platform_offer"]["exact_line"] = 999.0
+    castle.pop("sporting_receipt_binding")
+    card = prizepicks_card(castle, prizepicks_prop("towns", "nyk-min"))
+    r = audit_research_slips([card], as_of_utc=AS_OF)
+    reasons = r["cards"][0]["blockers"]
+    assert "SLIP_CARD_LEG_PLATFORM_CONFLICT" in reasons
+    assert "PRIZEPICKS_EXACT_OFFER_IDENTITY_MISMATCH" in reasons
+    assert "PRIZEPICKS_EXACT_MODEL_RECEIPT_MISSING" in reasons
+
+
+def test_optimizer_generic_cards_with_prizepicks_leg_metadata_remain_unchanged():
+    row1 = leg("generic-a", "g-a")
+    row2 = leg("generic-b", "g-b")
+    row1["platform"] = row2["platform"] = "PrizePicks"
+    data = cards([row1, row2])
+    r = optimize_portfolio(data)
+    assert r.research_preflight is None
+    assert r.cards[0]["portfolio_governance"]["portfolio_qualified"] is True
+    assert "research_only" not in r.cards[0]["portfolio_governance"]
+    assert r.can_execute is False
+
+
+def test_lineup_refresh_invalidates_old_payout_quote_after_optimizer_replacement():
+    a = prizepicks_prop("original-a", "nba-old")
+    b = prizepicks_prop("original-b", "nba-second")
+    card = prizepicks_card(a, b)
+    card["legs"][0] = prizepicks_prop("replacement-a", "nba-new")
+    r = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in r["cards"][0]["blockers"]
