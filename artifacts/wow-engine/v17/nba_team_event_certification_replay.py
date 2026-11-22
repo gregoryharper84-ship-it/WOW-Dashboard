@@ -533,11 +533,11 @@ def _forward_shadow_audit(db: Any) -> dict[str, Any]:
     try:
         shadow = _read_all(
             db, FORWARD_SHADOW_TABLE, shadow_fields,
-            order_by="official_event_id",
+            order_by="capture_id",
         )
         grades = _read_all(
             db, FORWARD_VERIFIED_GRADE_TABLE, grade_fields,
-            order_by="official_event_id",
+            order_by="capture_id",
         )
     except Exception as exc:  # noqa: BLE001 - reads never alter certification result
         return {
@@ -812,7 +812,8 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         except (CalibrationArtifactDigestError, ValueError, TypeError, OverflowError):
             observed_calibration_payload_sha256 = None
     calibrator_checksum_persisted = False
-    if observed_calibration_payload_sha256 and _is_sha256(declared_calibration_digest):
+    if (observed_calibration_payload_sha256 and _is_sha256(declared_calibration_digest)
+            and isinstance(coefficients, Mapping)):
         try:
             calibrator_checksum_persisted = bool(
                 observed_calibration_payload_sha256 == declared_calibration_digest
@@ -908,18 +909,37 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
     calibrated_metrics: dict[str, Any] | None = None
     numerical_replay_status = "NOT_RUN"
     replay_metrics_match = False
+    post_original_holdout_feature_rows = 0
     if replay_rows:
         cutoff = date.fromisoformat(artifact.train_end_date)
+        # An artifact's original untouched holdout must not grow each time
+        # new settled games are ingested. The persisted cohort end date is
+        # required; absent/malformed provenance remains a typed HOLD.
+        try:
+            holdout_end = date.fromisoformat(
+                str(stored_holdout_evidence.get("holdout_end_date") or "")
+            )
+        except (TypeError, ValueError):
+            holdout_end = None
         training_rows = [row for row in replay_rows if row.game_date <= cutoff]
-        holdout_rows = [row for row in replay_rows if row.game_date > cutoff]
+        holdout_rows = [
+            row for row in replay_rows
+            if holdout_end is not None and cutoff < row.game_date <= holdout_end
+        ]
+        post_original_holdout_feature_rows = sum(
+            row.game_date > holdout_end for row in replay_rows
+        ) if holdout_end is not None else 0
         split_valid = (
-            len(training_rows) == artifact.training_row_count
+            holdout_end is not None
+            and holdout_end > cutoff
+            and len(training_rows) == artifact.training_row_count
             and len(holdout_rows) == artifact.holdout_row_count
             and bool(training_rows)
             and bool(holdout_rows)
             and min(row.game_date for row in training_rows).isoformat() == artifact.train_start_date
             and max(row.game_date for row in training_rows).isoformat() == artifact.train_end_date
             and min(row.game_date for row in holdout_rows) > cutoff
+            and max(row.game_date for row in holdout_rows) == holdout_end
             and len({row.game_id for row in replay_rows}) == len(replay_rows)
         )
         if not split_valid:
@@ -1028,6 +1048,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
     evidence_identity = {
         "sport": SPORT,
         "forward_shadow_audit": forward_shadow_audit,
+        "post_original_holdout_feature_rows": post_original_holdout_feature_rows,
         "artifact_id": artifact_row.get("artifact_id"),
         "model_artifact_version": version,
         "artifact_checksum": artifact_row.get("artifact_checksum"),
@@ -1084,6 +1105,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         },
         "pregame_corpus": corpus_summary,
         "forward_shadow_audit": forward_shadow_audit,
+        "post_original_holdout_feature_rows": post_original_holdout_feature_rows,
         "pregame_corpus_ready": pregame_corpus_ready,
         "exact_bundle_match": exact_bundle_match,
         "certification_summary_status": certification_row.get("capability_status") if certification_row else None,
