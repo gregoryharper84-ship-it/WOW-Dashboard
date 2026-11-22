@@ -246,6 +246,7 @@ def compose_active_runtime() -> bool:
     from v17.numerical_engine_production_bridge import install_production_bridges
     from v17.llp_rundown_market_bridge import install_llp_rundown_market_bridge
     from v17.llp_rundown_value_shadow import install_llp_rundown_value_shadow
+    from v17.llp_daft_research_shadow import install_llp_daft_research_shadow
     from v17.rundown_credential_diagnostic import log_rundown_credential_status
     from v17.rundown_market_startup_bootstrap import install_rundown_market_startup_bootstrap
     from v17.runtime_acceptance_probe import install_runtime_acceptance_probe
@@ -267,6 +268,7 @@ def compose_active_runtime() -> bool:
     rehydration_ok = install_projected_lineup_score_rehydration(team_runtime)
     rundown_llp_ok = install_llp_rundown_market_bridge(team_runtime)
     rundown_value_shadow_ok = install_llp_rundown_value_shadow(team_runtime)
+    daft_shadow_ok = install_llp_daft_research_shadow(team_runtime)
     full_board_overlay_ok = install_cross_sport_full_board_overlay()
 
     market_api = sys.modules.get("api_prod_market")
@@ -340,7 +342,7 @@ def compose_active_runtime() -> bool:
 
     return bool(
         rundown_auth_ok or market_prior_ok
-        or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or rundown_value_shadow_ok or numerical_ok
+        or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or rundown_value_shadow_ok or daft_shadow_ok or numerical_ok
         or full_board_overlay_ok
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
         or daily_async_ok or nfl_pickem_ok or nfl_pickem_async_ok or rundown_market_bootstrap_ok
@@ -349,6 +351,7 @@ def compose_active_runtime() -> bool:
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
         or getattr(team_runtime, "_v17_llp_rundown_market_bridge_installed", False)
         or getattr(team_runtime, "_v17_llp_rundown_value_shadow_installed", False)
+        or getattr(team_runtime, "_v17_llp_daft_research_shadow_installed", False)
         or getattr(team_runtime, "_v17_sep15_market_prior_ingress_repair_installed", False)
     )
 
