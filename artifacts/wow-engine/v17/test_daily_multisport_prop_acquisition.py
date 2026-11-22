@@ -345,3 +345,57 @@ def test_negative_rotation_is_rejected_without_source_calls(monkeypatch):
             requested_timezone="America/Chicago", max_candidates=4,
             include_nfl=True, now=NOW, nfl_rotation=-1,
         )
+
+
+def test_discovery_line_fitted_probability_never_becomes_verified_market_card():
+    """A successful sporting model is not a quote, edge or card permission."""
+    from v17 import test_active_season_phase_a_daily_chain as fixtures
+    from v17 import daily_snapshot_runtime as runtime
+
+    snapshot = fixtures._snapshot("Synthetic Research NFL", index=601)
+    snapshot["source_timestamps"] = {
+        "WOW_AUTONOMOUS_DISCOVERY_LINE": NOW.isoformat(),
+    }
+    db = fixtures._DB([snapshot])
+    result = runtime._run_daily_snapshot_impl(
+        runtime.DailySnapshotRequest(
+            requested_slate_date=fixtures.SLATE,
+            requested_timezone="America/Chicago", lanes=["PROPS"],
+        ),
+        db=db, market_api=fixtures._Market(publishable={"Synthetic Research NFL"}),
+        event_api=object(),
+    )
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["row_status"] == "COMPLETED"  # sporting model remains evaluated
+    assert row["result"]["probability_publishable"] is True
+    assert row["market_offer_verification"]["status"] == "MARKET_OFFER_NOT_ATTESTED"
+    assert row["market_offer_verification"]["exact_offer_verified"] is False
+    assert row["market_offer_verification"]["line_provenance"] == (
+        "AUTONOMOUS_DISCOVERY_PRIOR10_HALF_POINT"
+    )
+    assert row["market_card_eligible"] is False
+    assert row["result"]["market_value_edge_eligible"] is False
+    assert result["can_execute"] is False
+
+
+def test_legacy_unproven_offer_also_cannot_authorize_a_card():
+    from v17 import test_active_season_phase_a_daily_chain as fixtures
+    from v17 import daily_snapshot_runtime as runtime
+
+    row = fixtures._snapshot("Unproven Offer Player", index=602)
+    result = runtime._run_daily_snapshot_impl(
+        runtime.DailySnapshotRequest(
+            requested_slate_date=fixtures.SLATE,
+            requested_timezone="America/Chicago", lanes=["PROPS"],
+        ),
+        db=fixtures._DB([row]),
+        market_api=fixtures._Market(publishable={"Unproven Offer Player"}),
+        event_api=object(),
+    )
+    assert result["rows"][0]["market_offer_verification"]["line_provenance"] == (
+        "UNVERIFIED_SOURCE_LINE"
+    )
+    assert result["rows"][0]["market_card_eligible"] is False
+    assert result["rows"][0]["result"]["probability_publishable"] is True
+    assert result["can_execute"] is False
