@@ -39,6 +39,7 @@ class _Query:
     def __init__(self, rows):
         self.rows = list(rows)
         self.filters = []
+        self.orderings = []
         self.ordering = None
         self.start = None
         self.end = None
@@ -52,6 +53,7 @@ class _Query:
         return self
 
     def order(self, field, desc=False):
+        self.orderings.append(field)
         self.ordering = (field, desc)
         return self
 
@@ -81,9 +83,12 @@ class _Query:
 class _DB:
     def __init__(self, tables):
         self.tables = tables
+        self.queries = []
 
     def table(self, name):
-        return _Query(self.tables.get(name, []))
+        query = _Query(self.tables.get(name, []))
+        self.queries.append((name, query))
+        return query
 
 
 def _fixture():
@@ -718,10 +723,142 @@ def test_forward_shadow_and_grades_use_unique_capture_pagination_key(monkeypatch
     monkeypatch.setattr(nba_replay_module, "_read_all", read_rows)
     audit = nba_replay_module._forward_shadow_audit(_DB(_fixture()))
     assert calls == [
-        ("wow_nba_candidate_forward_shadow", "capture_id"),
-        ("wow_nba_candidate_forward_verified_grades", "capture_id"),
+        ("wow_nba_candidate_forward_shadow", ("official_event_id", "capture_id")),
+        ("wow_nba_candidate_forward_verified_grades", ("official_event_id", "capture_id")),
     ]
     assert audit["shadow_capture_rows"] == 0
     assert audit["official_verified_grade_rows"] == 0
     assert audit["probability_publishable"] is False
     assert audit["can_execute"] is False
+
+def test_forward_shadow_read_orders_by_event_then_capture_and_holds_duplicate_capture_ids():
+    """A repeated capture id means the paged read repeated a row: hold, never count."""
+    tables = _fixture()
+    # The hold returns before any other column is read, so identity is enough.
+    duplicate = {"capture_id": "capture-dup", "official_event_id": "game-one"}
+    tables["wow_nba_candidate_forward_shadow"] = [dict(duplicate), dict(duplicate)]
+    tables["wow_nba_candidate_forward_verified_grades"] = []
+    db = _DB(tables)
+
+    audit = run_nba_team_event_certification_replay(db)["forward_shadow_audit"]
+
+    assert audit["status"] == "FORWARD_AUDIT_PAGINATION_HOLD"
+    assert audit["error_type"] == "NBA_REPLAY_FORWARD_PAGINATION_DUPLICATE_CAPTURE_IDS"
+    assert audit["official_verified_grades_available"] is False
+    assert audit["certification_authority"] is False
+    assert audit["can_execute"] is False
+
+    # capture_id is the only unique key; official_event_id alone is not a stable
+    # page cursor, so both are ordered, in this sequence, in one read.
+    shadow_orders = [
+        query.orderings for name, query in db.queries
+        if name == nba_replay_module.FORWARD_SHADOW_TABLE
+    ]
+    assert shadow_orders == [["official_event_id", "capture_id"]]
+    grade_orders = [
+        query.orderings for name, query in db.queries
+        if name == nba_replay_module.FORWARD_VERIFIED_GRADE_TABLE
+    ]
+    assert grade_orders == [["official_event_id", "capture_id"]]
+
+
+def test_shared_endpoint_survives_an_uncaught_nba_replay_failure(monkeypatch):
+    """An unexpected NBA failure becomes a typed block, never a D1 outage."""
+    import v17.team_event_certification_replay as integration
+
+    def explode(_db):
+        raise RuntimeError("unexpected nba replay failure")
+
+    monkeypatch.setattr(integration, "run_nba_team_event_certification_replay", explode)
+    report = run_certification_replay(_DB(_fixture()))
+
+    assert report["status"] == "CERTIFICATION_REPLAY_COMPLETE"
+    assert report["sports"]
+    nba_block = report["nba_team_event_replay"]
+    assert nba_block["status"] == "REPLAY_UNCAUGHT_FAILURE"
+    assert nba_block["error_type"] == "RuntimeError"
+    assert nba_block["blockers"] == ["NBA_REPLAY_UNCAUGHT_FAILURE"]
+    assert report["summary"]["nba_team_event_replay_status"] == "REPLAY_UNCAUGHT_FAILURE"
+    assert report["summary"]["nba_team_event_exact_bundle_match"] is False
+    assert nba_block["artifact_ready"] is False
+    assert nba_block["calibrator_ready"] is False
+    assert nba_block["pregame_corpus_ready"] is False
+    assert nba_block["exact_bundle_match"] is False
+    assert nba_block["probability_publishable"] is False
+    assert nba_block["rank_eligible"] is False
+    assert nba_block["can_execute"] is False
+    assert report["automatic_certification"] is False
+    assert report["automatic_promotion"] is False
+    assert report["can_execute"] is False
+
+
+def test_immutable_certification_lookup_binds_exact_model_and_artifact():
+    """A prior NBA certificate cannot masquerade as the current candidate."""
+    tables = _fixture()
+    artifact = tables["wow_basketball_team_event_model_artifacts"][0]
+    version, checksum = artifact["model_artifact_version"], artifact["artifact_checksum"]
+    certificates = [
+        {"certification_id": "other-version", "model_version": "NBA_OLDER",
+         "artifact_sha256": checksum, "sport": "NBA", "certified_at": "2026-01-01T00:00:00Z"},
+        {"certification_id": "other-artifact", "model_version": version,
+         "artifact_sha256": "f" * 64, "sport": "NBA", "certified_at": "2026-01-02T00:00:00Z"},
+    ]
+    tables["wow_team_event_specialist_certifications"] = certificates
+    db = _DB(tables)
+    report = run_nba_team_event_certification_replay(db)
+    assert report["immutable_certification_record_present"] is False
+    query = [q for name, q in db.queries
+             if name == "wow_team_event_specialist_certifications"][0]
+    assert ("model_version", version) in query.filters
+    assert ("artifact_sha256", checksum) in query.filters
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+    certificates.append({
+        "certification_id": "exact-candidate", "model_version": version,
+        "artifact_sha256": checksum, "sport": "NBA",
+        "certified_at": "2026-01-03T00:00:00Z",
+    })
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["immutable_certification_record_present"] is True
+    assert report["probability_publishable"] is False
+    assert report["automatic_certification"] is False
+
+
+def test_nonfinite_nba_candidate_remains_json_serializable_and_unpublished():
+    """A corrupt numeric artifact must not cause a D1 replay API JSON 500."""
+    tables = _fixture()
+    artifact = tables["wow_basketball_team_event_model_artifacts"][0]
+    artifact["artifact_payload"]["intercept"] = "NaN"
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+    assert report.get("numerical_replay_status") != "PASS"
+    # This fails if NaN/Infinity escapes through any partial replay metric.
+    json.dumps(report, allow_nan=False)
+
+
+def test_manifest_zero_and_false_values_are_distinct_from_missing_fields():
+    """Corpus identities must never collapse zero score/count into NULL."""
+    assert nba_replay_module._manifest_token({"home_score": 0}, "home_score") == "0"
+    assert nba_replay_module._manifest_token({"away_score": 0}, "away_score") == "0"
+    assert nba_replay_module._manifest_token({"season": 0}, "season") == "0"
+    assert nba_replay_module._manifest_token({"home_games_prior": 0}, "home_games_prior") == "0"
+    assert nba_replay_module._manifest_token({"home_win": False}, "home_win") == "False"
+    assert nba_replay_module._manifest_token({"home_score": None}, "home_score") == ""
+    assert nba_replay_module._manifest_token({}, "home_score") == ""
+
+
+def test_holdout_boundary_drift_blocks_numerical_replay():
+    tables = _fixture()
+    evidence = tables["wow_basketball_team_event_certification"][0][
+        "certification_notes"
+    ]["untouched_holdout_evidence"]
+    evidence["holdout_end_date"] = "2025-03-09"
+    report = run_nba_team_event_certification_replay(_DB(tables))
+    assert report["numerical_replay_status"] != "PASS"
+    assert report["exact_bundle_match"] is False
+    assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in report["blockers"]
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
