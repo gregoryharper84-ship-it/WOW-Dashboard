@@ -127,22 +127,3 @@ revoke all on function public.wow_basketball_certified_calibrator_artifact(text,
 revoke all on function public.wow_basketball_certified_calibrator_artifact(text, uuid) from anon;
 revoke all on function public.wow_basketball_certified_calibrator_artifact(text, uuid) from authenticated;
 grant execute on function public.wow_basketball_certified_calibrator_artifact(text, uuid) to service_role;
-
--- Applied to production project iczfhsmjrrafhvcpmqhr through the governed
--- tracked-migration lane on 2026-11-23 UTC, as three tracked entries:
---   basketball_certified_calibrator_artifact_rpc_20261102
---       first deployed body, superseded by the entry below
---   basketball_certified_calibrator_artifact_rpc_grants_20261102
---   basketball_certified_calibrator_artifact_rpc_v17_authority_20261102
---       this body: V17 specialist-certification authority row, certification
---       receipt, separate bounds receipt, content-derived digest
--- Dependency basketball_calibration_artifact_evidence_20261007 was already
--- applied (version 20261122012644), including wow_canonical_json_text and the
--- wow_basketball_calibrator_artifact_digest_guard trigger.
---
--- Post-apply readback matches this file: returned column list and body equal
--- pg_get_functiondef, prosecdef = true, proconfig = search_path="", and the
--- ACL grants EXECUTE to service_role only (false for anon/authenticated).
--- wow_team_event_specialist_certifications held 0 rows, so the function
--- returns nothing in production today: no certification, promotion or
--- publication was created by applying it.
