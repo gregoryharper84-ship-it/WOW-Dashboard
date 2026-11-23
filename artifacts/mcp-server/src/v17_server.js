@@ -13,18 +13,20 @@ function resultEnvelope(payload, isError = false) {
 }
 
 export function createV17McpServer(options = {}) {
+  const visibleTools = options.healthOnly ? V17_TOOLS.filter((entry) => entry.name === "getWowV17BackendHealth") : V17_TOOLS;
+  const visibleNames = new Set(visibleTools.map((entry) => entry.name));
   const server = new Server(
     { name: "wow-v17-mcp", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: V17_TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: visibleTools }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const operationName = request.params.name;
     const args = request.params.arguments || {};
 
-    if (!V17_OPERATIONS[operationName]) {
+    if (!visibleNames.has(operationName) || !V17_OPERATIONS[operationName]) {
       return resultEnvelope(
         {
           ok: false,
