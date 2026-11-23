@@ -120,6 +120,20 @@ def _price_edge_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetim
             or _text(value.get("side")).upper() != _text(leg.get("side")).upper()
             or _line_key(value.get("exact_line")) != _line_key(leg.get("exact_line"))):
         return ["RESEARCH_VALUE_EVIDENCE_UNVERIFIED"]
+    # Research forecasts must bind to the *same* market selection, not just
+    # the same game/line. Otherwise another player's stat or the other team's
+    # total can be laundered into an apparently favorable quoted edge.
+    market = _market(leg.get("market_family"))
+    if market in _PROPS and (
+            not _text(leg.get("official_player_id"))
+            or not _text(leg.get("stat_type"))
+            or _text(value.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(value.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+        return ["RESEARCH_VALUE_PLAYER_STAT_MISMATCH"]
+    if market == "TEAM_TOTAL" and (
+            not _text(leg.get("selected_team_id"))
+            or _text(value.get("selected_team_id")) != _text(leg.get("selected_team_id"))):
+        return ["RESEARCH_VALUE_TEAM_MISMATCH"]
     quote = leg.get("market_quote")
     if not isinstance(quote, Mapping):
         return ["RESEARCH_VALUE_PRICE_UNVERIFIED"]
