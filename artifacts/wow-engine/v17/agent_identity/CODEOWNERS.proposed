@@ -268,3 +268,5 @@
 /artifacts/wow-engine/wnba_prop_calibration_adapter.py @gregoryharper84-ship-it
 /artifacts/wow-engine/wnba_prop_model_adapter.py @gregoryharper84-ship-it
 /artifacts/wow-engine/wolfram_arithmetic_auditor.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/nhl_certification_evidence.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/nhl_corpus_certification_readiness.py @gregoryharper84-ship-it
