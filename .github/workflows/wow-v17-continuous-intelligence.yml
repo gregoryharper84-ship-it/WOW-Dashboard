@@ -55,11 +55,31 @@ jobs:
           import json, os, urllib.request, urllib.error
           from pathlib import Path
 
+          def blocked(code):
+              # Optional observer check must stay green on protected main,
+              # but every failed research cycle MUST leave a typed artifact.
+              safe = {
+                  "schema_version": "WOW17_LEARNING_OBSERVER_RECEIPT_V1",
+                  "status": "BLOCKED",
+                  "blocker": code,
+                  "stages": [],
+                  "can_execute": False,
+                  "automatic_promotion_allowed": False,
+              }
+              (Path(os.environ["RUNNER_TEMP"]) / "wow-v17-learning-receipt.json").write_text(
+                  json.dumps(safe, indent=2, sort_keys=True) + "\n"
+              )
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+                  out.write("## V17 Advisory Learning\n\n")
+                  out.write(f"BLOCKED: {code}\n\n")
+                  out.write("No learning evidence, model mutation or execution claimed.\n")
+              raise SystemExit(code)
+
           token = os.environ.get("WOW_ACTION_API_KEY", "")
           if not token:
-              raise SystemExit("LEARNING_CREDENTIAL_NOT_CONFIGURED")
+              blocked("LEARNING_CREDENTIAL_NOT_CONFIGURED")
           if os.environ["WOW_CAN_EXECUTE"] != "false" or os.environ["WOW_DRY_RUN_ONLY"] != "true":
-              raise SystemExit("LEARNING_SAFETY_ENV_INVALID")
+              blocked("LEARNING_SAFETY_ENV_INVALID")
           url = (os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
                  + "/v17/intelligence/continuous-cycle"
                  + "?max_outcomes=1000&min_samples=30&max_observations=5000")
@@ -71,10 +91,12 @@ jobs:
               with urllib.request.urlopen(request, timeout=90) as response:
                   result = json.load(response)
           except urllib.error.HTTPError as err:
-              raise SystemExit(f"LEARNING_BACKEND_HTTP_{err.code}") from None
+              blocked(f"LEARNING_BACKEND_HTTP_{err.code}")
           except Exception as err:
-              raise SystemExit(f"LEARNING_BACKEND_{type(err).__name__}") from None
+              blocked(f"LEARNING_BACKEND_{type(err).__name__}")
 
+          if not isinstance(result, dict):
+              blocked("LEARNING_BACKEND_RESPONSE_INVALID")
           stages = result.get("stages") or []
           stage_names = ["PROP_CAPTURE", "EVENT_CAPTURE", "COHORT_SUMMARY", "COMPOUNDING_MEMORY"]
           valid = (
@@ -108,7 +130,13 @@ jobs:
               out.write(f"Completed: {result.get('completed_stages')}/4\n\n")
               out.write("No model-parameter changes, automatic promotion or wager execution.\n")
           if not valid:
-              raise SystemExit("LEARNING_STAGE_RECEIPT_FAILED")
+              blocked("LEARNING_STAGE_RECEIPT_FAILED")
+          capture_n = sum(
+              int(stage.get("observation_n") or 0)
+              for stage in stages[:2]
+          )
+          if capture_n == 0:
+              blocked("LEARNING_ZERO_CAPTURE_NOT_VERIFIED")
           print("LEARNING_CYCLE_VERIFIED")
       - name: Upload aggregate research receipt
         continue-on-error: true
