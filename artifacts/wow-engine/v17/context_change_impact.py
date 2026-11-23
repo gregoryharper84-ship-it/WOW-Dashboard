@@ -151,4 +151,45 @@ def assess_context_change_impact(
     }
 
 
-__all__ = ["assess_context_change_impact", "ALL_MARKET_FAMILIES", "ALL_POSITION_SCOPE"]
+def hold_scored_after_material_change(
+    scored: Mapping[str, Any],
+    *,
+    latest_material_update_timestamp: Any,
+) -> dict[str, Any]:
+    """Downgrade a score if its fitted timestamp predates known material context.
+
+    This narrow publication guard does NOT authenticate the source timestamp,
+    prove the specialist consumed new lineup features, or issue a new terminal
+    disposition. Missing update data remains explicitly unverified. It cannot
+    make any held or provisional score publishable.
+    """
+    out = dict(scored)
+    source_raw = latest_material_update_timestamp
+    if source_raw in (None, ""):
+        out["material_context_chronology_status"] = "LATEST_MATERIAL_UPDATE_NOT_AVAILABLE"
+        out["can_execute"] = False
+        return out
+    source_at = _utc(source_raw)
+    model_at = _utc(out.get("immutable_model_timestamp") or out.get("model_timestamp"))
+    if source_at is not None and model_at is not None and model_at >= source_at:
+        out["material_context_chronology_status"] = "CHRONOLOGY_OK_CONSUMPTION_NOT_PROVEN"
+        out["can_execute"] = False
+        return out
+    out["material_context_chronology_status"] = "CONTEXT_STALE_RECALC_REQUIRED"
+    if "prepublication_claim" not in out:
+        out["prepublication_claim"] = {
+            "probability_publishable": out.get("probability_publishable"),
+            "rank_eligible": out.get("rank_eligible"),
+        }
+    out["probability_publishable"] = False
+    out["rank_eligible"] = False
+    existing = out.get("publication_blockers")
+    prior = existing if isinstance(existing, list) else []
+    out["publication_blockers"] = list(dict.fromkeys([
+        *prior, "CONTEXT_STALE_RECALC_REQUIRED",
+    ]))
+    out["can_execute"] = False
+    return out
+
+
+__all__ = ["assess_context_change_impact", "hold_scored_after_material_change", "ALL_MARKET_FAMILIES", "ALL_POSITION_SCOPE"]
