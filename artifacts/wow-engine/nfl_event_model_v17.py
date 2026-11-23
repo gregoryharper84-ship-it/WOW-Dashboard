@@ -84,6 +84,39 @@ def _sha256_json(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _calibration_artifact_evidence(fitted: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Content-address a future fitted calibrator; never certify or backfill it.
+
+    This digest binds actual fitted Platt coefficients and bounds to the frozen
+    model bundle, training data, split and code. Independent attestation of
+    those source bytes is still required before any certificate can be issued.
+    """
+    for key in ("artifact_checksum", "dataset_hash", "split_hash"):
+        value = fitted[key]
+        if not isinstance(value, str) or len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+            raise NFLModelOutputInvalid("NFL_CALIBRATION_ARTIFACT_SOURCE_HASH_INVALID")
+    model = fitted["artifact_payload"]
+    artifact = {
+        "schema_version": "NFL_PLATT_CALIBRATION_ARTIFACT_V1",
+        "model_artifact_sha256": fitted["artifact_checksum"],
+        "model_artifact_version": fitted["model_artifact_version"],
+        "training_dataset_sha256": fitted["dataset_hash"],
+        "temporal_split_sha256": fitted["split_hash"],
+        "training_code_sha": fitted["training_code_sha"],
+        "calibration_version": fitted["calibration_version"],
+        "calibration_method": model["calibration_method"],
+        "platt_a": model["platt_a"],
+        "platt_b": model["platt_b"],
+        "bounds_method_version": model["bounds_method_version"],
+        "uncertainty_margin": model["uncertainty_margin"],
+        "calibration_rows": fitted["calibration_rows"],
+        "fit_start": fitted["fit_start"],
+        "fit_end": fitted["fit_end"],
+        "validation_metrics_sha256": _sha256_json(fitted["metrics"]),
+    }
+    return artifact, _sha256_json(artifact)
+
+
 def feature_order_hash() -> str:
     return _sha256_json(list(FEATURE_ORDER))
 
@@ -368,6 +401,7 @@ def ensure_champion_model(db: Any) -> dict[str, Any]:
             }).execute()
         return {"status": "CERTIFICATION_BLOCKED", "model_artifact_version": version, "validation_metrics": fitted["metrics"], "probability_publishable": False, "can_execute": False}
 
+    calibration_artifact, calibration_artifact_sha256 = _calibration_artifact_evidence(fitted)
     calibrator = {
         "phase": "PHASE_B",
         "calibration_method": CALIBRATION_METHOD,
@@ -376,7 +410,11 @@ def ensure_champion_model(db: Any) -> dict[str, Any]:
         "training_n": fitted["calibration_rows"],
         "fit_start": f"{CALIBRATION_SEASON}-01-01T00:00:00+00:00",
         "fit_end": f"{CALIBRATION_SEASON}-12-31T23:59:59+00:00",
-        "fit_metrics_json": fitted["metrics"],
+        "fit_metrics_json": {
+            **fitted["metrics"],
+            "calibration_artifact_payload": calibration_artifact,
+            "calibration_artifact_sha256": calibration_artifact_sha256,
+        },
         "platt_a": fitted["artifact_payload"]["platt_a"],
         "platt_b": fitted["artifact_payload"]["platt_b"],
         "fold_train_audit_json": {"train_seasons": list(TRAIN_SEASONS), "calibration_season": CALIBRATION_SEASON, "validation_season": VALIDATION_SEASON, "validation_untouched_until_final_assessment": True},
