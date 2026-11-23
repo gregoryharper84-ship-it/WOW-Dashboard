@@ -29,11 +29,13 @@ def _utc(value: Any) -> datetime | None:
     return date.astimezone(timezone.utc) if date.tzinfo else None
 
 
-def _valid_probability(value: Any) -> float | None:
+def _valid_probability(value: Any, *, allow_zero: bool = False) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         return None
     p = float(value)
-    return p if isfinite(p) and 0 < p < 1 else None
+    if not isfinite(p) or p >= 1:
+        return None
+    return p if (0 <= p if allow_zero else 0 < p) else None
 
 
 def capture_eligibility(
@@ -101,7 +103,7 @@ def capture_eligibility(
     lower_field = ("calibrated_probability_lower_bound" if kind == "PROP"
                    else "calibrated_home_lower_bound")
     point = _valid_probability(prediction.get(point_field))
-    lower = _valid_probability(prediction.get(lower_field))
+    lower = _valid_probability(prediction.get(lower_field), allow_zero=True)
     if point is None or lower is None or lower > point:
         return "GOVERNED_CALIBRATION_PACKAGE_INVALID"
 
