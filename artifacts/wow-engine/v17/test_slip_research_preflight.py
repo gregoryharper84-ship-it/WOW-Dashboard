@@ -401,6 +401,7 @@ def test_robertson_style_common_game_hinge_across_three_cards_is_held():
         row["player_roster_evidence"]["sport"] = "NHL"
         row["prop_matchup_evidence"]["sport"] = "NHL"
         row["official_fixture_evidence"]["sport"] = "NHL"
+        row["news_evidence"]["sport"] = "NHL"
     proposed = cards(
         [one, leg("other-a", "nba-a")],
         [two, leg("other-b", "nba-b")],
