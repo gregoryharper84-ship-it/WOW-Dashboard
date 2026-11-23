@@ -317,7 +317,24 @@ def evaluate_candidate(candidate: dict[str, Any], *, now: datetime | None = None
     source_family_count = len(source_families)
     independent_source_count = len(independent_sources)
 
-    if contradictions or red_flags:
+    impact = candidate.get("context_change_impact")
+    context_invalid = (
+        isinstance(impact, dict)
+        and impact.get("research_invalidation_requested") is True
+    ) or candidate.get("research_recommendation_status") in {
+        "CONTEXT_STALE_RECALC_REQUIRED",
+        "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
+        "CONTEXT_MATERIAL_EVIDENCE_INVALID",
+        "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH",
+        "CONTEXT_RECEIPT_DIGEST_INVALID",
+    }
+    if context_invalid:
+        status = "QUARANTINED"
+        reason = "CONTEXT_STALE_RECALC_REQUIRED"
+        if "CONTEXT_STALE_RECALC_REQUIRED" not in red_flags:
+            red_flags.append("CONTEXT_STALE_RECALC_REQUIRED")
+    elif contradictions or red_flags:
         status = "QUARANTINED"
         reason = "MATERIAL_CONFLICT_OR_RED_TEAM_FLAG"
     elif not identity_complete:
