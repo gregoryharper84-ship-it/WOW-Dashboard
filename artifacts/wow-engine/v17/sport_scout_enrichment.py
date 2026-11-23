@@ -32,6 +32,73 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
 
 
 
+def _native_swarm_receipt_valid(
+    receipt: dict[str, Any], candidate: dict[str, Any],
+    worker_ids: tuple[str, ...], validate_submission: Any,
+) -> bool:
+    """Bound a local receipt before promoting *any* field to public metadata."""
+    try:
+        digest = receipt.get("receipt_sha256")
+        run_id = receipt.get("run_id")
+        event = receipt.get("event")
+        workers = receipt.get("worker_reports")
+        reviews = receipt.get("wave_reviews")
+        handoff = receipt.get("handoff")
+        hexdigits = "0123456789abcdef"
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(c not in hexdigits for c in digest)
+                or not isinstance(run_id, str) or len(run_id) != 20
+                or any(c not in hexdigits for c in run_id)
+                or not isinstance(event, dict)
+                or event.get("official_event_id") != candidate.get("official_event_id")
+                or event.get("sport_key") != candidate.get("sport_key")
+                or event.get("can_execute") is not False
+                or receipt.get("max_parallel") != 2
+                or receipt.get("waves_completed") != 3
+                or not isinstance(workers, list) or len(workers) != len(worker_ids)
+                or not isinstance(reviews, list) or len(reviews) != 3
+                or not isinstance(handoff, dict)
+                or not isinstance(handoff.get("source_screened_research_facts"), list)):
+            return False
+        manifest = {
+            "event": event, "run_id": run_id,
+            "workers": [{"worker_id": worker_id} for worker_id in worker_ids],
+        }
+        for i, report in enumerate(workers):
+            if (not isinstance(report, dict)
+                    or report.get("worker_id") != worker_ids[i]
+                    or report.get("run_id") != run_id
+                    or report.get("official_event_id") != event["official_event_id"]
+                    or report.get("sport_key") != event["sport_key"]
+                    or report.get("research_ceiling") != "RESEARCH_INTEREST"
+                    or report.get("can_execute") is not False
+                    or validate_submission(manifest, report).get("valid_report") is not True):
+                return False
+        for i, wave in enumerate(reviews):
+            expected = list(worker_ids[i * 2:i * 2 + 2])
+            if (not isinstance(wave, dict)
+                    or wave.get("wave") != i + 1
+                    or wave.get("workers_checked") != expected
+                    or wave.get("all_structurally_valid") is not True):
+                return False
+            verdicts = wave.get("verdicts")
+            if not isinstance(verdicts, list) or len(verdicts) != len(expected):
+                return False
+            for verdict, worker in zip(verdicts, workers[i * 2:i * 2 + 2]):
+                if (not isinstance(verdict, dict)
+                        or verdict.get("valid_report") is not True
+                        or verdict.get("research_only") is not True
+                        or verdict.get("may_publish") is not False
+                        or verdict.get("can_execute") is not False
+                        or verdict.get("facts_screened_structurally") != len(worker["facts"])):
+                    return False
+        domain_facts = [fact for worker in workers[1:] for fact in worker["facts"]]
+        return handoff["source_screened_research_facts"] == domain_facts
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # A malformed/untrusted receipt is a typed research hold, never metadata.
+        return False
+
+
 def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     """Optional, bounded summary-only native research; no raw source payload export.
 
@@ -64,7 +131,7 @@ def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
              or event_request.get("event_start_time_utc"))
     normalized = {**candidate, "commence_time": start}
     try:
-        from tools.wow_specialized_swarm import run_swarm
+        from tools.wow_specialized_swarm import WORKERS, run_swarm, validate_submission
         receipt = run_swarm(normalized, max_parallel=2)
     except (ValueError, TypeError, KeyError):
         return {**base, "reason_code": "NATIVE_SWARM_INPUT_INVALID"}
@@ -93,7 +160,8 @@ def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
             or not all(isinstance(v, dict) and v.get("all_structurally_valid") is True for v in reviews)
             or not isinstance(handoff.get("source_screened_research_facts"), list)
             or not isinstance(handoff.get("missing_evidence"), list)
-            or not isinstance(handoff.get("conflicts"), list)):
+            or not isinstance(handoff.get("conflicts"), list)
+            or not _native_swarm_receipt_valid(receipt, normalized, WORKERS, validate_submission)):
         return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
     return {
         **base, "status": receipt["status"],
