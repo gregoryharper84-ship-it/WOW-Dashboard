@@ -110,3 +110,47 @@ def test_classify_update_result_conflict_is_not_retried_as_update():
 def test_classify_update_result_unknown_failure():
     result = kc.classify_update_result(9, status_code=500)
     assert result == {"pr_number": 9, "outcome": "UNKNOWN_FAILURE", "comment": None}
+
+
+# --- ordinary-lane single-PR plan (#2753) ----------------------------------
+
+REPO = "gregoryharper84-ship-it/WOW-Dashboard"
+
+
+def _ordinary(**over):
+    pr = {"number": 7, "state": "open", "draft": False, "mergeable_state": "behind",
+          "body": "x\r\nWOW-Ordinary-Auto-Merge: true\r\nWOW-Change-Class: A",
+          "user": {"login": "gregoryharper84-ship-it"},
+          "head": {"sha": "f" * 40, "repo": {"full_name": REPO}}}
+    pr.update(over)
+    return pr
+
+
+def test_ordinary_behind_pr_is_selected_regardless_of_author():
+    assert kc.select_ordinary_pr(_ordinary(), repository=REPO) == [{"number": 7, "expected_head_sha": "f" * 40}]
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"mergeable_state": "clean"}, {"mergeable_state": "unknown"}, {"mergeable_state": "dirty"},
+        {"draft": True}, {"state": "closed"},
+        {"head": {"sha": "f" * 40, "repo": {"full_name": "fork/WOW-Dashboard"}}},
+        {"body": "WOW-Change-Class: A"}, {"body": "see WOW-Ordinary-Auto-Merge: true"},
+        {"body": "WOW-Ordinary-Auto-Merge: true\nMorning-Green-Autonomous: true"},
+        {"head": {"sha": "", "repo": {"full_name": REPO}}},
+    ],
+)
+def test_ordinary_plan_refuses_everything_else(over):
+    assert kc.select_ordinary_pr(_ordinary(**over), repository=REPO) == []
+
+
+def test_plan_ordinary_cli(tmp_path, capsys):
+    import json as _json
+    path = tmp_path / "pr.json"
+    path.write_text(_json.dumps(_ordinary()))
+    assert kc.main(["plan-ordinary", "--pr-json", str(path), "--repository", REPO]) == 0
+    assert _json.loads(capsys.readouterr().out)[0]["number"] == 7

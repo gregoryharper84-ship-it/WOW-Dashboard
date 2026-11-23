@@ -305,9 +305,11 @@ def test_release_verifier_jq_selectors_compile_and_match():
 
 def test_release_verifier_does_not_require_itself_as_prerequisite():
     release = RELEASE.read_text(encoding="utf-8")
-    required_block = release.split("required=(", 1)[1].split(")", 1)[0]
-    assert "wow-v17-release-production-verification-agent" not in required_block
-    for required in (
+    # Individual workflows are informational in minimum-release mode;
+    # protected exact-head App checks remain mandatory instead.
+    diagnostic_block = release.split("diagnostic_workflows=(", 1)[1].split(")", 1)[0]
+    assert "wow-v17-release-production-verification-agent" not in diagnostic_block
+    for workflow in (
         "wow-verify",
         "wow-engine-verify",
         "wow-v17-rapid-repair",
@@ -315,7 +317,16 @@ def test_release_verifier_does_not_require_itself_as_prerequisite():
         "wow-v17-engineering-auditor-code-health",
         "wow-v17-spread-forward-shadow",
     ):
-        assert required in required_block
+        assert workflow in diagnostic_block
+    assert "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN" not in release
+    mandatory = release.split("expected=(", 1)[1].split(")", 1)[0]
+    for context in (
+        "WOW required-three regression|15368",
+        "WOW governed probability backend|15368",
+        "WOW additional required regression|15368",
+    ):
+        assert context in mandatory
+    assert "WOW Independent QA exact-head" not in mandatory
 
 
 def test_v4_existing_pr_certifier_remains_historical_not_release_dependency():

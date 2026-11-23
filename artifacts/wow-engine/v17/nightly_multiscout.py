@@ -27,6 +27,12 @@ HORIZON_HOURS = int(os.environ.get("WOW_SCOUT_HORIZON_HOURS", "36"))
 REQUEST_DELAY_MS = int(os.environ.get("WOW_SCOUT_REQUEST_DELAY_MS", "75"))
 MARKET_CHUNK_SIZE = int(os.environ.get("WOW_SCOUT_MARKET_CHUNK_SIZE", "10"))
 MAX_MARKETS_PER_EVENT = int(os.environ.get("WOW_SCOUT_MAX_MARKETS_PER_EVENT", "30"))
+# Official NHL fixture resolution is optional per run so CI fixtures that do not
+# mock the NHL schedule stay on the explicit unverified provider-id path.
+RESOLVE_NHL_OFFICIAL_IDENTITY = (
+    os.environ.get("WOW_SCOUT_RESOLVE_NHL_OFFICIAL_IDENTITY", "true").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 TERMINAL_SOURCE_HTTP_STATUSES = {401, 403, 429}
 # The proxy answers 200 with core markets only when the vendor rejects the
 # event-scoped endpoints for this account. Without this the run records zero
@@ -398,7 +404,16 @@ def run() -> dict[str, Any]:
                 break
             event_id = str(event["id"])
             event_identity = {
+                # Legacy handoff key is retained for downstream compatibility.
+                # This is an odds-provider event ID, NOT an authenticated league ID.
+                # No news or specialist can treat it as verified canonical identity
+                # until NHL official schedule resolution succeeds below.
                 "official_event_id": event_id,
+                "provider_event_id": event_id,
+                "provider_event_source": "ODDS_API",
+                "official_event_identity_verified": False,
+                "canonical_event_id": None,
+                "canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED",
                 "sport_key": key,
                 "sport_title": sport.get("title"),
                 "commence_time": event.get("commence_time"),
@@ -416,6 +431,12 @@ def run() -> dict[str, Any]:
                 )
                 if event.get(field) is not None
             })
+            if key == "icehockey_nhl" and RESOLVE_NHL_OFFICIAL_IDENTITY:
+                try:
+                    from v17.nhl_multiscout_identity import resolve_multiscout_nhl_identity
+                except ModuleNotFoundError:  # pragma: no cover - script import path
+                    from nhl_multiscout_identity import resolve_multiscout_nhl_identity
+                event_identity = resolve_multiscout_nhl_identity(event_identity)
             scripts = game_scripts(key)
             event_blockers: list[dict[str, Any]] = []
             event_rows: list[dict[str, Any]] = []
@@ -551,6 +572,49 @@ def run() -> dict[str, Any]:
     }
 
 
+def compact_news_slate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
+    """One event-only sibling manifest, avoiding enormous market quote blobs.
+
+    This inventory is for choosing one sport to query for *research headlines*
+    and does NOT authenticate any official event, publisher or model feature.
+    Keep all event candidates in both lanes; only omit their market payloads.
+    """
+    handoff = payload.get("model_handoff")
+    if not isinstance(handoff, dict):
+        handoff = {}
+    lanes: dict[str, list[dict[str, Any]]] = {}
+    total = 0
+    for lane in ("team_event_candidates", "prop_candidates"):
+        rows = handoff.get(lane)
+        selected: list[dict[str, Any]] = []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                selected.append({
+                    "sport_key": row.get("sport_key"),
+                    "provider_event_id": row.get("provider_event_id") or row.get("official_event_id"),
+                    "official_event_id": (
+                        row.get("official_event_id")
+                        if row.get("official_event_identity_verified") is True else None
+                    ),
+                    "official_event_identity_verified": row.get("official_event_identity_verified") is True,
+                    "commence_time": row.get("commence_time"),
+                    "event_start_utc": row.get("event_start_utc"),
+                })
+        lanes[lane] = selected
+        total += len(selected)
+    return {
+        "schema_version": "wow.v17.news_slate_selection.v1",
+        "source_run_id": payload.get("run_id"),
+        "candidate_rows_total": total,
+        "model_handoff": lanes,
+        "prediction_authority": False,
+        "model_feature_eligible": False,
+        "can_execute": False,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="v17/nightly-multiscout-handoff.json")
@@ -558,6 +622,14 @@ def main() -> int:
     payload = run()
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    # The full Scout handoff can exceed 500 MB due to quote metadata. Emit a
+    # small same-run event inventory BEFORE that large artifact, so news
+    # selection never has to parse or truncate the source market evidence.
+    news_manifest = output.with_name("news-active-slate.json")
+    news_manifest.write_text(
+        json.dumps(compact_news_slate_manifest(payload), separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"status": payload.get("status"), "output": str(output), "can_execute": False}))
     if payload.get("status") in {"DISCOVERY_COMPLETE", "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS"} and payload.get("model_handoff_ready") is True:

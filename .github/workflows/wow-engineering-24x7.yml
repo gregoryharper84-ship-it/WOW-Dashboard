@@ -1,8 +1,11 @@
 name: wow-engineering-24x7
 
-# Replacement candidate: one GitHub-native intake, not a second live controller.
-# Continuous event intake + inexpensive five-minute safety-net scan.
-# Production dispatch stays off until the protected cutover is independently accepted.
+# One GitHub-native controller. Five-minute scheduled intake plus issues,
+# protected PR closure and explicit manual target are retained.
+# Do not trigger on every completed workflow: 2026-11-17 main receipts prove
+# workflow_run fan-out caused repeated overlapping intakes with issues-page-1
+# API failures. A regular five-minute scan already reconciles check completions.
+# Production dispatch remains subject to its separate guarded cutover.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -11,15 +14,6 @@ on:
   pull_request_target:
     branches: [main]
     types: [closed]
-  workflow_run:
-    workflows:
-      - wow-verify
-      - wow-engine-verify
-      - wow-v17-release-production-verification-agent
-      - wow-v17-chatgpt-engineering-worker
-      - wow-v17-claude-engineering-worker
-      - wow-v17-simple-security-review
-    types: [completed]
   workflow_dispatch:
     inputs:
       target_incident:
