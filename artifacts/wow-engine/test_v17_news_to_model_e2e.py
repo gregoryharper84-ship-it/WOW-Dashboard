@@ -32,6 +32,9 @@ class _Response:
 
     def __init__(self, payload):
         self.payload = payload
+        # Real requests always exposes response.content. Keep the original
+        # bytes available to the read-once resolver without using .json().
+        self.content = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
     def json(self):
         return self.payload

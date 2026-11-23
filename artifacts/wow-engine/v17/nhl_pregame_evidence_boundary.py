@@ -5,6 +5,7 @@ This module does not score probabilities or promote a fitted artifact.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Mapping, Any
 
 from v17.nhl_event_identity import team_abbreviation
@@ -146,6 +147,7 @@ def validate_nhl_pregame_evidence(
         reasons.append("NHL_CANONICAL_IDENTITY_RECEIPT_MISSING")
     else:
         source = resolved_identity.get("identity_source")
+        match_sha = resolved_identity.get("identity_match_sha256")
         verified_at = _time(resolved_identity.get("identity_verified_at"))
         resolved_start = _time(resolved_identity.get("event_start_time"))
         receipt_home = resolved_identity.get("home_team")
@@ -154,6 +156,8 @@ def validate_nhl_pregame_evidence(
         receipt_away = team_abbreviation(receipt_away) if isinstance(receipt_away, str) else None
         if (
             resolved_identity.get("identity_provider") != "NHL_PUBLIC_WEB_API"
+            or not isinstance(match_sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", match_sha, flags=re.ASCII) is None
             or not isinstance(source, str)
             or not source.startswith("https://api-web.nhle.com/v1/club-schedule-season/")
             or not isinstance(official_id, str)

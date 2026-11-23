@@ -989,6 +989,7 @@ absence of a fitted model.
 | `NHL_OFFICIAL_SOURCE_TRANSPORT_FAILED` | The club-season schedule request raised (timeout, DNS, connection, TLS). Acquisition failure only; carries the exception type, never a model verdict. | `v17/nhl_event_identity.py` | — | No |
 | `NHL_OFFICIAL_SOURCE_RATE_LIMITED` | The official schedule endpoint returned HTTP 429. Acquisition failure only. | `v17/nhl_event_identity.py` | — | No |
 | `NHL_OFFICIAL_SOURCE_HTTP_<status>` | The official schedule endpoint returned any other non-200 status. The suffix is the provider status code, or `UNKNOWN` when absent. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_BODY_UNAVAILABLE` | The schedule response exposed no readable body bytes, so one digest cannot describe the payload the games were parsed from. Raised before any participant matching; identity stays unresolved. | `v17/nhl_event_identity.py` | — | No |
 | `NHL_OFFICIAL_SOURCE_RESPONSE_INVALID` | The response body could not be decoded as JSON. The detail records the exception type only. | `v17/nhl_event_identity.py` | — | No |
 | `NHL_OFFICIAL_SOURCE_SCHEMA_DRIFT` | Decoded payload is not a mapping, or its `games` member is not a list. | `v17/nhl_event_identity.py` | — | No |
 | `NHL_CANONICAL_EVENT_NOT_FOUND` | No scheduled game matched both normalized participants and a start within the 30-minute tolerance, so no canonical official event ID exists. | `v17/nhl_event_identity.py` | — | No |
