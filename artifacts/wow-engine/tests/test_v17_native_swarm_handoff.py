@@ -427,6 +427,20 @@ def test_verified_pilot_rejects_untrusted_or_imminent_event(invalid):
     assert result["model_handoff"]["team_event_candidates"][0].get("native_swarm_requested") is not True
 
 
+def test_verified_pilot_accepts_raw_scout_row_without_execution_key():
+    # Real nightly_multiscout._team_event_candidate omits the row-level bit
+    # until sport_scout_enrichment finalizes it.
+    now = datetime(2026, 11, 23, 23, tzinfo=timezone.utc)
+    raw = _verified_nhl()
+    del raw["can_execute"]
+    result = request_one_verified_native_swarm_pilot(_pilot_payload(raw), now=now)
+    selected = result["model_handoff"]["team_event_candidates"][0]
+    assert result["native_swarm_pilot"]["status"] == "VERIFIED_EVENT_OPTED_IN"
+    assert selected["native_swarm_requested"] is True
+    assert selected["can_execute"] is False
+    assert "can_execute" not in raw
+
+
 def test_verified_pilot_does_not_duplicate_an_existing_explicit_optin():
     now = datetime(2026, 11, 23, 23, tzinfo=timezone.utc)
     first = _verified_nhl(native_swarm_requested=True)
