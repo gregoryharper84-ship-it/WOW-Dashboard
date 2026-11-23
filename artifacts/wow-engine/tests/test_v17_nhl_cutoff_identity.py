@@ -49,6 +49,7 @@ def test_read_only_current_fixture_verifies_and_never_claims_persistence():
     ({"game_state": "POSTPONED"}, "NHL_EVENT_NOT_PREGAME"),
     ({"game_type": 3}, "NHL_CUTOFF_GAME_TYPE_UNVERIFIED"),
     ({"identity_provider": "ESPN"}, "NHL_CUTOFF_OFFICIAL_PROVENANCE_INVALID"),
+    ({"identity_source": "https://example.com/pretend-league"}, "NHL_CUTOFF_OFFICIAL_PROVENANCE_INVALID"),
     ({"identity_match_sha256": None}, "NHL_CUTOFF_IDENTITY_DIGEST_MISSING"),
     ({"identity_match_sha256": "a" * 63}, "NHL_CUTOFF_IDENTITY_DIGEST_MISSING"),
     ({"identity_verified_at": (NOW - timedelta(minutes=6)).isoformat()},
