@@ -7,11 +7,13 @@ This module is advisory only and can_execute=false.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Query
 
 from v17.core_intelligence import AUTHORITY, build_learning_observation
+from v17.learning_capture_guard import capture_eligibility
 
 CAN_EXECUTE = False
 IN_FILTER_CHUNK_SIZE = 200
@@ -101,9 +103,11 @@ def capture_settled_event_observations(
     prediction_by_id: dict[str, dict[str, Any]] = {}
     select_fields = (
         "event_prediction_id,sport,league,market_family,home_team,away_team,"
-        "controlling_specialist,model_version,calibration_version,"
-        "calibrated_home_probability,calibrated_home_lower_bound,"
-        "raw_home_probability"
+        "created_at,event_start_time,model_timestamp,latest_material_update_timestamp,"
+        "source_snapshot_id,model_artifact_id,model_valid_after_latest_update,"
+        "probability_publishable,calibration_status,controlling_specialist,"
+        "model_version,calibration_version,calibrated_home_probability,"
+        "calibrated_home_lower_bound,raw_home_probability"
     )
     for chunk in _chunks(prediction_ids):
         rows = _db_call(
@@ -119,15 +123,23 @@ def capture_settled_event_observations(
 
     observations: list[dict[str, Any]] = []
     skipped_n = 0
+    skip_reasons: dict[str, int] = defaultdict(int)
     for prediction_id, outcome in outcome_by_id.items():
         source = prediction_by_id.get(prediction_id)
         if source is None:
             skipped_n += 1
+            skip_reasons["SOURCE_PREDICTION_NOT_FOUND"] += 1
+            continue
+        reason = capture_eligibility(source, outcome, kind="EVENT")
+        if reason is not None:
+            skipped_n += 1
+            skip_reasons[reason] += 1
             continue
 
         official_result = _home_result(source, outcome)
         if official_result is None:
             skipped_n += 1
+            skip_reasons["OFFICIAL_EVENT_OUTCOME_UNRESOLVED"] += 1
             continue
 
         canonical_prediction = {
@@ -141,8 +153,7 @@ def capture_settled_event_observations(
             "calibration_version": source.get("calibration_version"),
             "calibrated_probability": source.get("calibrated_home_probability"),
             "calibrated_probability_lower_bound": source.get("calibrated_home_lower_bound"),
-            "raw_model_probability": source.get("raw_home_probability"),
-        }
+}
         canonical_outcome = {
             "event_prediction_id": prediction_id,
             "official_result": official_result,
@@ -173,6 +184,8 @@ def capture_settled_event_observations(
         "candidate_n": len(prediction_ids),
         "observation_n": len(observations),
         "skipped_n": skipped_n,
+        "skip_reasons": dict(sorted(skip_reasons.items())),
+        "source_provenance_authenticated_externally": False,
         "authority": AUTHORITY,
         "can_execute": False,
     }
