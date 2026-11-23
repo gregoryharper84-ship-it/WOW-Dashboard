@@ -45,6 +45,23 @@ def _valid_stat(value: Any) -> float | None:
     number = float(value)
     return number if isfinite(number) else None
 
+def _winner_team_identity_matches(expected: str, official: str, *, sport: str) -> bool:
+    """Exact names or existing MLB canonical aliases, never fuzzy matching."""
+    left, right = str(expected or "").strip().casefold(), str(official or "").strip().casefold()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if sport.upper() != "MLB":
+        return False
+    # Reuse the same conservative MLB alias registry as V17's canonical
+    # team-event hydration. Unknown or ambiguous identifiers fail closed.
+    from v17.mlb_team_event_hydration import _MLB_TEAM_ALIASES
+    left_id = _MLB_TEAM_ALIASES.get(left)
+    right_id = _MLB_TEAM_ALIASES.get(right)
+    return bool(left_id and right_id and left_id == right_id)
+
+
 def capture_eligibility(
     prediction: Mapping[str, Any],
     settlement: Mapping[str, Any],
@@ -159,7 +176,15 @@ def capture_eligibility(
         away_name = str(prediction.get("away_team") or "").strip().casefold()
         if not winner or not home_name or not away_name:
             return "EVENT_WINNER_IDENTITY_UNVERIFIED"
-        if (home > away and winner != home_name) or (away > home and winner != away_name):
+        winner_matches_home = _winner_team_identity_matches(
+            home_name, winner, sport=str(prediction.get("sport") or "")
+        )
+        winner_matches_away = _winner_team_identity_matches(
+            away_name, winner, sport=str(prediction.get("sport") or "")
+        )
+        if (home > away and not winner_matches_home) or (
+            away > home and not winner_matches_away
+        ):
             return "OFFICIAL_EVENT_SCORE_WINNER_CONFLICT"
     return None
 
