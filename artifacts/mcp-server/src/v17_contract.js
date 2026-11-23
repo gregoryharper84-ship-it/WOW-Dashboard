@@ -9,10 +9,9 @@ const objectOutputSchema = {
 
 const directionSchema = { type: "string", enum: ["MORE", "LESS"] };
 
-// JSON Schema `minLength` counts characters, so a whitespace-only value such as
-// "   " satisfies `minLength: 1`. Governance identity fields must carry at
-// least one non-whitespace character so the malformed call fails at the host
-// edge instead of reaching the backend ledger.
+// minLength counts characters, so "   " would pass it; the pattern requires at
+// least one non-whitespace character so a blank-vs-whitespace identity fails at
+// the host edge instead of reaching the backend ledger.
 const nonBlankString = { type: "string", minLength: 1, pattern: "\\S" };
 
 export const RECOMMENDATION_ENVELOPE_IDENTITY_FIELDS = Object.freeze([

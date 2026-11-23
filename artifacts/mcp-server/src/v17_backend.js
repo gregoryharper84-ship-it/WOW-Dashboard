@@ -21,24 +21,17 @@ export class V17GatewayError extends Error {
   }
 }
 
-function isBlankIdentity(value) {
-  return typeof value !== "string" || value.trim() === "";
-}
-
-// The host schema declares the recommendation envelope, but a host is free to
-// skip schema validation. Enforce the same non-blank rule at the gateway so a
-// whitespace-only identity fails closed before any ledger write.
-export function assertRecommendationEnvelope(args) {
-  const invalid = RECOMMENDATION_ENVELOPE_IDENTITY_FIELDS.filter((name) => isBlankIdentity(args?.[name]));
+// Hosts may skip schema validation, so enforce the same non-blank rule at the
+// gateway: a whitespace-only identity fails closed before any ledger write.
+function assertRecommendationEnvelope(args) {
+  const invalid = RECOMMENDATION_ENVELOPE_IDENTITY_FIELDS.filter(
+    (name) => typeof args?.[name] !== "string" || args[name].trim() === "",
+  );
   if (invalid.length) {
     throw new V17GatewayError(
       "MCP_REQUEST_ENVELOPE_INVALID",
       `recordWowV17Recommendations requires non-blank ${invalid.join(", ")}; the record call was rejected before any ledger write.`,
-      {
-        operation_id: "recordWowV17Recommendations",
-        invalid_fields: invalid,
-        can_execute: false,
-      },
+      { invalid_fields: invalid },
     );
   }
 }
