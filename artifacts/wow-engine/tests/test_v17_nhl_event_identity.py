@@ -190,48 +190,68 @@ def test_accent_folding_never_fuzzy_promotes_a_wrong_club():
     assert exc.value.code == "NHL_CANONICAL_EVENT_NOT_FOUND"
 
 
-def test_identity_digest_is_the_sha256_of_the_exact_body():
-    body = json.dumps(_payload(), indent=2).encode()
-    kwargs = dict(
-        event_start_time="2026-10-08T00:00:00Z",
-        home_team="Dallas Stars",
-        away_team="Pittsburgh Penguins",
-    )
-    first = resolve_nhl_current_event_identity(
-        session=_Session(_payload(), body=body), **kwargs
-    )
-    second = resolve_nhl_current_event_identity(
-        session=_Session(_payload(), body=body), **kwargs
-    )
-    assert first["identity_source_sha256"] == hashlib.sha256(body).hexdigest()
-    assert first["identity_source_sha256"] == second["identity_source_sha256"]
-    assert first["identity_verified_at"] != second["identity_verified_at"]
+def _matched_digest(game):
+    fields = {
+        "id": str(game["id"]),
+        "startTimeUTC": str(game["startTimeUTC"]),
+        "homeTeam": {"abbrev": game["homeTeam"]["abbrev"]},
+        "awayTeam": {"abbrev": game["awayTeam"]["abbrev"]},
+        "gameType": game.get("gameType"),
+        "gameState": game.get("gameState"),
+    }
+    return hashlib.sha256(
+        json.dumps(fields, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
 
 
-def test_identity_digest_binds_bytes_not_the_parsed_payload():
-    """Json-equivalent bodies must not share a digest.
+def test_identity_digest_covers_matched_game_not_mutable_season_feed():
+    kwargs = dict(event_start_time="2026-10-08T00:00:00Z",
+                  home_team="Dallas Stars", away_team="Pittsburgh Penguins")
+    original = _payload()
+    altered = _payload()
+    altered["games"].append({
+        "id": 2026020100,
+        "season": 20262027,
+        "gameType": 2,
+        "gameState": "FINAL",
+        "startTimeUTC": "2026-11-09T00:00:00Z",
+        "homeTeam": {"abbrev": "DAL"},
+        "awayTeam": {"abbrev": "BOS"},
+        "homeTeamScore": 3, "awayTeamScore": 2,
+    })
+    a = resolve_nhl_current_event_identity(session=_Session(original), **kwargs)
+    b = resolve_nhl_current_event_identity(session=_Session(altered), **kwargs)
+    assert a["event_id"] == b["event_id"] == "2026020041"
+    assert a["identity_match_sha256"] == b["identity_match_sha256"]
+    assert a["identity_match_sha256"] == _matched_digest(original["games"][0])
+    assert a["identity_match"] == b["identity_match"]
+    assert "identity_source_sha256" not in a
+    assert a["can_execute"] is False
 
-    The session returns the identical parsed dict in both cases, so a digest of
-    the payload structure would collide here. Hashed response bytes do not.
-    """
+
+def test_identity_digest_changes_when_the_target_game_identity_changes():
+    original = _payload()
+    moved = _payload()
+    moved["games"][0]["startTimeUTC"] = "2026-10-08T00:10:00Z"
+    kwargs = dict(event_start_time="2026-10-08T00:00:00Z",
+                  home_team="Dallas Stars", away_team="Pittsburgh Penguins")
+    a = resolve_nhl_current_event_identity(session=_Session(original), **kwargs)
+    b = resolve_nhl_current_event_identity(session=_Session(moved), **kwargs)
+    assert a["identity_match_sha256"] != b["identity_match_sha256"]
+    state_changed = _payload()
+    state_changed["games"][0]["gameState"] = "LIVE"
+    c = resolve_nhl_current_event_identity(session=_Session(state_changed), **kwargs)
+    assert a["identity_match_sha256"] != c["identity_match_sha256"]
+
+
+def test_equivalent_json_whitespace_does_not_change_game_identity_digest():
     compact = json.dumps(_payload(), separators=(",", ":")).encode()
     pretty = json.dumps(_payload(), indent=4).encode()
-    assert compact != pretty
-
-    a = resolve_nhl_current_event_identity(
-        event_start_time="2026-10-08T00:00:00Z",
-        home_team="Dallas Stars",
-        away_team="Pittsburgh Penguins",
-        session=_Session(_payload(), body=compact),
-    )
-    b = resolve_nhl_current_event_identity(
-        event_start_time="2026-10-08T00:00:00Z",
-        home_team="Dallas Stars",
-        away_team="Pittsburgh Penguins",
-        session=_Session(_payload(), body=pretty),
-    )
-    assert a["event_id"] == b["event_id"] == "2026020041"
-    assert a["identity_source_sha256"] != b["identity_source_sha256"]
+    kwargs = dict(event_start_time="2026-10-08T00:00:00Z",
+                  home_team="Dallas Stars", away_team="Pittsburgh Penguins")
+    a = resolve_nhl_current_event_identity(session=_Session(_payload(), body=compact), **kwargs)
+    b = resolve_nhl_current_event_identity(session=_Session(_payload(), body=pretty), **kwargs)
+    assert a["identity_match_sha256"] == b["identity_match_sha256"]
 
 
 def test_identity_is_matched_from_the_hashed_bytes_not_a_separate_parse():
@@ -248,7 +268,7 @@ def test_identity_is_matched_from_the_hashed_bytes_not_a_separate_parse():
         session=_StaleParseSession(body, _payload()),  # DAL/PIT if .json() were used
     )
     assert out["event_id"] == "2026020379"
-    assert out["identity_source_sha256"] == hashlib.sha256(body).hexdigest()
+    assert out["identity_match_sha256"] == _matched_digest(_montreal_payload()["games"][0])
 
 
 def test_response_without_body_bytes_fails_closed():
