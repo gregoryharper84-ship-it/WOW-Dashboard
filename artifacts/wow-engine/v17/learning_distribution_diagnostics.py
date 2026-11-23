@@ -286,12 +286,22 @@ def multiclass_event_distribution_audit(
             or abs(sum(p.values()) - 1) > 1e-8
         ):
             reason = "FROZEN_MULTICLASS_DISTRIBUTION_INVALID"
-        if not reason and (
-            result not in p
-            or (prediction.get("market_family") == "SOCCER_1X2"
-                and set(p) != {"HOME", "DRAW", "AWAY"})
-        ):
-            reason = "EXACT_OUTCOME_SPACE_OR_SETTLEMENT_INVALID"
+        if not reason:
+            # The canonical SOCCER winner market is OUTRIGHT_WINNER, not
+            # necessarily SOCCER_1X2. Determine the required space from the
+            # existing sport governance profile rather than a market alias.
+            from v17.team_event_governance_profiles import governance_profile
+            profile = governance_profile(str(prediction.get("sport") or ""))
+            regulated_three_way = (
+                profile is not None
+                and profile.outcome_space == "HOME_DRAW_AWAY"
+                and str(prediction.get("market_family") or "").upper()
+                in {"OUTRIGHT_WINNER", "SOCCER_1X2"}
+            )
+            if result not in p or (
+                regulated_three_way and set(p) != {"HOME", "DRAW", "AWAY"}
+            ):
+                reason = "EXACT_OUTCOME_SPACE_OR_SETTLEMENT_INVALID"
         if reason:
             blocked.append({"row": str(index), "prediction_id": receipt, "reason": reason})
             continue
