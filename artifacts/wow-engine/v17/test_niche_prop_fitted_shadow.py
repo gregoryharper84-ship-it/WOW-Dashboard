@@ -125,7 +125,7 @@ def test_no_shortcut_small_training_and_label_cherry_pick():
         fit_niche_shadow(a[:10],b,c)
     for item in a:
         item["settled_result"] = "WIN"
-        item["actual_stat"] = item["exact_line"]-1
+        item["actual_stat"] = math.floor(item["exact_line"])
     with pytest.raises(NicheShadowHold, match="CLASS_DIVERSITY"):
         fit_niche_shadow(a,b,c)
 
