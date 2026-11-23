@@ -164,7 +164,7 @@ def test_unexpected_local_worker_failure_is_hold_not_model_unavailable(monkeypat
     {"worker_reports": [None] * 5},
     {"worker_reports": [{}] * 5},
     {"matchup_discovery": None},
-    {"matchup_discovery": {"missing_critical_features": []}},
+    {"matchup_discovery": {"missing_critical_features": "invalid"}},
     {"wave_reviews": [{"all_structurally_valid": True}]},
 ])
 def test_forged_or_malformed_native_receipts_cannot_claim_authority(monkeypatch, bad):
