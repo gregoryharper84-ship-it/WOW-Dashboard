@@ -5,6 +5,7 @@ This module does not score probabilities or promote a fitted artifact.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Mapping, Any
 
 from v17.nhl_event_identity import team_abbreviation
@@ -16,7 +17,14 @@ REQUIRED = (
     "home_elo", "away_elo", "home_goalie_sv_pct", "away_goalie_sv_pct",
     "home_pp_pct", "away_pk_pct", "calibration_artifact",
 )
+# Outcome-space label used by the NHL fitted model. It is not a settlement
+# contract name and must not be compared as one.
 FULL_GAME_SETTLEMENT = "HOME_AWAY_INCLUDING_OT_SO"
+# Externally settled market contract for the same full-game home/away winner
+# including overtime and shootout. Kept deliberately distinct from the outcome
+# label; both are accepted here and no other basis is.
+SETTLEMENT_CONTRACT = "FULL_GAME_MONEYLINE_INCLUDING_OVERTIME_SHOOTOUT"
+ACCEPTED_SETTLEMENT_BASES = frozenset({FULL_GAME_SETTLEMENT, SETTLEMENT_CONTRACT})
 VERIFIED_GOALIE_STATUSES = frozenset({"CONFIRMED"})
 STRUCTURED_EVIDENCE = frozenset({"injury_report", "rest_travel", "calibration_artifact"})
 
@@ -64,7 +72,10 @@ def validate_nhl_pregame_evidence(
     official_id = evidence.get("official_event_id")
     if not (isinstance(official_id, str) and len(official_id) == 10 and official_id.isascii() and official_id.isdigit()):
         reasons.append("NHL_EVENT_IDENTITY_UNVERIFIED")
-    if evidence.get("settlement_basis") != FULL_GAME_SETTLEMENT:
+    settlement_basis = evidence.get("settlement_basis")
+    # Untrusted evidence may be an unhashable list/dict/set. A malformed
+    # settlement must produce a typed hold, never crash at frozenset lookup.
+    if not isinstance(settlement_basis, str) or settlement_basis not in ACCEPTED_SETTLEMENT_BASES:
         reasons.append("NHL_SETTLEMENT_BASIS_UNVERIFIED")
     if str(evidence.get("goalie_status", "")).strip().upper() not in VERIFIED_GOALIE_STATUSES:
         reasons.append("NHL_GOALIE_STATUS_UNVERIFIED")
@@ -78,6 +89,7 @@ def validate_nhl_pregame_evidence(
         reasons.append("NHL_CANONICAL_IDENTITY_RECEIPT_MISSING")
     else:
         source = resolved_identity.get("identity_source")
+        match_sha = resolved_identity.get("identity_match_sha256")
         verified_at = _time(resolved_identity.get("identity_verified_at"))
         resolved_start = _time(resolved_identity.get("event_start_time"))
         receipt_home = resolved_identity.get("home_team")
@@ -86,6 +98,8 @@ def validate_nhl_pregame_evidence(
         receipt_away = team_abbreviation(receipt_away) if isinstance(receipt_away, str) else None
         if (
             resolved_identity.get("identity_provider") != "NHL_PUBLIC_WEB_API"
+            or not isinstance(match_sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", match_sha, flags=re.ASCII) is None
             or not isinstance(source, str)
             or not source.startswith("https://api-web.nhle.com/v1/club-schedule-season/")
             or not isinstance(official_id, str)

@@ -11,10 +11,17 @@ name: wow-v17-engineering-pr-keep-current
 # - A real conflict (`mergeable_state == "dirty"`, or the update-branch call itself
 #   returning 409/422) is never retried: the PR is preserved and a typed
 #   PR_UPDATE_CONFLICT comment is posted instead.
-# - Never merges, never enables bypass, never touches a PR from any other author.
+# - Never merges, never enables bypass, never touches a PR from any other author,
+#   except one opted-in ordinary PR named by `pr_number` (#2753 lane). The
+#   ordinary sweep delegates here because a GITHUB_TOKEN update starts no
+#   QA/Release; an App-token update runs normal PR CI.
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional opted-in ordinary PR to bring current (WOW-Ordinary-Auto-Merge)
+        required: false
 
 permissions:
   contents: read
@@ -65,8 +72,34 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          ORDINARY_PR: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
+
+          if [ -n "${ORDINARY_PR:-}" ]; then
+            [[ "$ORDINARY_PR" =~ ^[0-9]+$ ]] || { echo "ORDINARY_PR_NUMBER_INVALID" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+            # Mergeability is computed lazily: re-read a cold "unknown" state.
+            detail=""
+            for attempt in 1 2 3 4; do
+              detail=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${ORDINARY_PR}")
+              [ "$(jq -r '.mergeable_state // "unknown"' <<<"$detail")" != "unknown" ] && break
+              sleep 3
+            done
+            plan=$(python artifacts/wow-engine/v17/engineering_pr_keep_current.py plan-ordinary \
+              --pr-json <(printf '%s' "$detail") --repository "$GITHUB_REPOSITORY")
+            target=$(jq -r '.[0].number // empty' <<<"$plan")
+            head_sha=$(jq -r '.[0].expected_head_sha // empty' <<<"$plan")
+            if [ -z "$target" ]; then
+              echo "ORDINARY_PR_NOT_ELIGIBLE_OR_NOT_BEHIND:#${ORDINARY_PR}:$(jq -r '.mergeable_state // "unknown"' <<<"$detail")" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if gh api --method PUT "/repos/${GITHUB_REPOSITORY}/pulls/${target}/update-branch" -f expected_head_sha="$head_sha" >/dev/null 2>&1; then
+              echo "ORDINARY_PR_UPDATED:#${target}:${head_sha}" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "ORDINARY_PR_UPDATE_FAILED:#${target}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
 
           # The list endpoint never reports mergeable_state; only cheaply filter here
           # (author + draft), then resolve the real candidates one at a time below.
