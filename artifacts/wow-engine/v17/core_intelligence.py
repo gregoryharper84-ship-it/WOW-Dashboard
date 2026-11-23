@@ -229,9 +229,14 @@ def build_learning_observation(
     signed_distance = (
         float(distance) if isinstance(distance, (int, float)) and not isinstance(distance, bool) else None
     )
-    lower = _probability(
-        prediction.get("calibrated_probability_lower_bound", prediction.get("calibrated_lower_bound"))
+    lower_input = prediction.get(
+        "calibrated_probability_lower_bound", prediction.get("calibrated_lower_bound")
     )
+    lower = _probability(lower_input)
+    # A lower confidence bound of exactly zero is mathematically valid even
+    # though a calibrated binary point probability must remain strictly > 0.
+    if type(lower_input) in (int, float) and float(lower_input) == 0.0:
+        lower = 0.0
 
     source_kind = _norm(source_prediction_kind)
     if source_kind not in {"PROP", "EVENT"}:
