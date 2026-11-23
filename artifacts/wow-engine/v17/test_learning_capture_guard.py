@@ -267,3 +267,29 @@ def test_event_role_ambiguous_cohort_cannot_start_calibration_challenger():
     assert report.sample_n == 40
     assert report.ready_for_hypothesis is False
     assert detect_learning_hypotheses(report) == ()
+
+
+
+def test_existing_mlb_team_aliases_match_official_winner_not_fuzzy_unrelated():
+    p, o = event()
+    p["sport"] = "MLB"
+    p["home_team"] = "NYY"
+    p["away_team"] = "BOS"
+    o["official_winner"] = "New York Yankees"
+    assert capture_eligibility(p, o, kind="EVENT") is None
+    o["official_winner"] = "Boston Red Sox"
+    assert capture_eligibility(p, o, kind="EVENT") == "OFFICIAL_EVENT_SCORE_WINNER_CONFLICT"
+
+
+def test_soccer_canonical_out_right_winner_never_uses_binary_grader():
+    p, o = event()
+    p["sport"] = "SOCCER"
+    p["market_family"] = "OUTRIGHT_WINNER"
+    assert capture_eligibility(p, o, kind="EVENT") == "MULTICLASS_ROUTE_REQUIRED"
+
+
+def test_nhl_unverified_aliases_do_not_gain_mlb_resolver_privileges():
+    p, o = event()
+    p["home_team"] = "NYY"
+    o["official_winner"] = "New York Yankees"
+    assert capture_eligibility(p, o, kind="EVENT") == "OFFICIAL_EVENT_SCORE_WINNER_CONFLICT"
