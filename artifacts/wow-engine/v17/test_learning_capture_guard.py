@@ -225,3 +225,20 @@ def test_directional_cohorts_never_pool_more_and_less():
     assert cohort_key(more) != cohort_key(less)
     assert cohort_key(more).endswith("|MORE")
     assert cohort_key(less).endswith("|LESS")
+
+
+def test_core_observation_does_not_drop_valid_zero_lower_bound():
+    from v17.core_intelligence import build_learning_observation
+    p, o = prop()
+    record = {
+        "prediction_id": p["prediction_id"], "sport": "NBA",
+        "market_type": "PLAYER_PROP", "direction": "MORE",
+        "model_family": "NBA_POINTS", "model_artifact_version": "v1",
+        "calibration_version": "c1", "calibrated_probability": .72,
+        "calibrated_probability_lower_bound": 0.0,
+    }
+    row = build_learning_observation(
+        record, {"prediction_id": p["prediction_id"], "official_result": "WIN",
+                 "settlement_source": "official", "settlement_timestamp": o["settlement_timestamp"]}
+    )
+    assert row.calibrated_lower_bound == 0.0
