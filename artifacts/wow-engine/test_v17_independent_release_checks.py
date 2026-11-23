@@ -697,7 +697,11 @@ def test_qa_draft_at_exact_event_head_is_neutral_only_for_verified_workflow_run(
     # Without the automatic-callback flag the draft is still evaluated (QA_PR_DRAFT HOLD).
     strict = m.targets(REPO, workflow_run_prs=event_pr, fetch=routes)
     assert strict["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
-    # Manual dispatch never neutralizes a draft.
+    # Manual dispatch is state-gated once the caller opts in.
+    assert m.targets(REPO, pr="7", neutral_superseded=True, fetch=routes) == {
+        "targets": [], "errors": [], "disposition": "neutral", "reason": "QA_SOURCE_PR_DRAFT",
+    }
+    # The strict library default is unchanged.
     assert m.targets(REPO, pr="7", fetch=routes)["targets"] == [
         {"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
     # Multi-PR events stay strict.
@@ -706,6 +710,40 @@ def test_qa_draft_at_exact_event_head_is_neutral_only_for_verified_workflow_run(
                       fetch=Fake({f"repos/{REPO}/pulls/7": (200, live),
                                   f"repos/{REPO}/pulls/8": (404, {})}))
     assert multi.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize("merged_at", [None, "2026-11-22T22:46:39Z"])
+def test_closed_dispatch_target_is_neutral_and_never_a_dead_head_check(merged_at):
+    """#2535: a closed/merged exact head can never pass, so the dispatch path must
+    resolve it as a neutral non-target (no check published), exactly as the
+    automatic callback does. QA_PR_NOT_OPEN remains the decision-time finding for
+    a PR that closes after resolution."""
+    live = {"number": 7, "state": "closed", "draft": False, "merged_at": merged_at,
+            "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    assert m.targets(REPO, pr="7", neutral_superseded=True, fetch=routes) == {
+        "targets": [], "errors": [], "disposition": "neutral", "reason": "QA_SOURCE_PR_CLOSED",
+    }
+    # The strict default still resolves the same PR, and decision-time evidence
+    # for a close after resolution is untouched.
+    assert m.targets(REPO, pr="7", fetch=routes)["targets"] == [
+        {"pr": 7, "head": HEAD, "head_ref": "fix/issue-1830"}]
+    assert "QA_PR_NOT_OPEN" in m.qa_findings(evidence(state="closed"))
+
+
+@pytest.mark.parametrize("change", [
+    {"head": {"sha": HEAD, "repo": {"full_name": "foreign/WOW-Dashboard"}}},
+    {"base": {"ref": "release", "repo": {"full_name": REPO}}},
+])
+def test_dispatch_state_gate_never_masks_foreign_or_off_base_identity(change):
+    live = {"number": 7, "state": "closed", "draft": True, "merged_at": None,
+            "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}, **change}
+    out = m.targets(REPO, pr="7", neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out.get("disposition") != "neutral"
+    assert out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH"]
 
 
 @pytest.mark.parametrize("change", [
@@ -768,6 +806,21 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
         "always() && steps.target.outputs.pr_number != ''"
     )
 
+
+
+def test_qa_dispatch_is_state_gated_before_any_check_publish():
+    workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
+    run = steps["Resolve one exact-head QA target"]["run"]
+    # One state-gated resolution serves both events, so no event path can
+    # reach the tool without the gate.
+    calls = [line for line in run.splitlines() if "targets --repo" in line]
+    assert len(calls) == 1 and "--neutral-superseded" in calls[0]
+    assert "${selector[@]}" in calls[0]
+    # The neutral exit is event-independent and precedes the pinned-head match.
+    assert 'if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r' not in run
+    assert run.index("disposition // empty") < run.index("QA_INPUT_HEAD_SHA_STALE")
+    assert "QA_SOURCE_PR_CLOSED" in run
 
 
 @pytest.mark.parametrize(("status", "body", "suffix"), [

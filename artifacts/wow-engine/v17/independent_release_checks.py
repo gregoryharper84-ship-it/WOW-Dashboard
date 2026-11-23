@@ -368,10 +368,38 @@ def _pr_read_failure_detail(status: int, payload: object) -> str:
     return str(status)
 
 
+def _neutral(reason: str) -> dict[str, Any]:
+    """Resolution-time neutral: no target, no check, and no failed main commit."""
+    return {"targets": [], "errors": [], "disposition": "neutral", "reason": reason}
+
+
+def _same_origin_pr(repo: str, number: int, live: object) -> bool:
+    """Prove a fresh PR read is the canonical same-repository PR on a main base."""
+    if not isinstance(live, dict) or live.get("number") != number:
+        return False
+    head = live.get("head") if isinstance(live.get("head"), dict) else {}
+    base = live.get("base") if isinstance(live.get("base"), dict) else {}
+    head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+    base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+    return (
+        head_repo.get("full_name") == repo
+        and base.get("ref") == "main"
+        and base_repo.get("full_name") == repo
+        and SHA_RE.match(str(head.get("sha") or "")) is not None
+    )
+
+
 def targets(repo: str, *, pr: str | None = None,
             workflow_run_prs: list[dict] | None = None,
             neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
-    """Resolve (PR, exact head) pairs to evaluate. Bounded; never trusts untyped input."""
+    """Resolve (PR, exact head) pairs to evaluate. Bounded; never trusts untyped input.
+
+    ``neutral_superseded`` state-gates every entry point: a proved same-origin PR
+    that is closed, or an open draft at the exact head, is a neutral non-target, so
+    no dead-head check is created. State read *after* resolution stays a
+    decision-time finding (``QA_PR_NOT_OPEN`` / ``QA_PR_DRAFT``), so a PR closing
+    during evaluation still fails closed.
+    """
     errors: list[str] = []
     out: list[dict] = []
     if workflow_run_prs is not None:
@@ -385,84 +413,49 @@ def targets(repo: str, *, pr: str | None = None,
                 errors.append(f"TARGET_HEAD_INVALID:{number}")
                 continue
             status, live = fetch(f"repos/{repo}/pulls/{number}")
-            head = (live or {}).get("head") or {}
-            base = (live or {}).get("base") or {}
             if status != 200 or not isinstance(live, dict):
                 errors.append(f"TARGET_PR_UNREADABLE:{number}:{_pr_read_failure_detail(status, live)}")
                 continue
-            # A source PR can move between the workflow_run event and QA.
-            # A single proved same-origin moved/closed source is no longer a
-            # target; never publish QA for its old SHA, and do not fail a
-            # main-scoped optional run. Ambiguous/foreign/malformed remains
-            # strict. Manual dispatch never enables this classification.
+            head = live.get("head") or {}
+            # A single proved same-origin source that moved or closed since the
+            # event is no longer a target; ambiguous/foreign/malformed stays strict.
+            same_origin = _same_origin_pr(repo, number, live)
+            gated = neutral_superseded and len(workflow_run_prs) == 1 and same_origin
             current_sha = head.get("sha")
-            head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
-            base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
-            same_origin = (
-                live.get("number") == number
-                and head_repo.get("full_name") == repo
-                and base.get("ref") == "main"
-                and base_repo.get("full_name") == repo
-                and SHA_RE.match(str(current_sha or "")) is not None
-            )
-            if (
-                neutral_superseded and len(workflow_run_prs) == 1
-                and same_origin and (
-                    live.get("state") == "closed"
-                    or (live.get("state") == "open" and live.get("draft") is False
-                        and not live.get("merged_at") and current_sha != sha)
-                )
-            ):
-                return {
-                    "targets": [], "errors": [],
-                    "disposition": "neutral",
-                    "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
-                }
-            # A draft cannot be merged, so it is never a QA target. Mirrors
-            # Release's --neutral-if-draft-target: an automatic callback for a
-            # draft publishes no check and must not fail the protected-main
-            # commit Render's checksPass trigger is evaluating. Manual
-            # dispatch still evaluates drafts (QA_PR_DRAFT HOLD). Only a draft
-            # still at the exact event head qualifies; a moved draft keeps the
-            # strict identity-mismatch error below.
-            if (
-                neutral_superseded and len(workflow_run_prs) == 1
-                and same_origin and live.get("state") == "open"
-                and live.get("draft") is True and not live.get("merged_at")
-                and current_sha == sha
-            ):
-                return {
-                    "targets": [], "errors": [],
-                    "disposition": "neutral",
-                    "reason": "QA_SOURCE_PR_DRAFT",
-                }
-            if (
-                live.get("number") != number
-                or head.get("sha") != sha
-                or (head.get("repo") or {}).get("full_name") != repo
-                or base.get("ref") != "main"
-                or (base.get("repo") or {}).get("full_name") != repo
-            ):
+            if gated and live.get("state") == "closed":
+                return _neutral("QA_SOURCE_PR_HEAD_SUPERSEDED")
+            # A draft cannot merge, so only a draft still at the exact event head
+            # qualifies; a moved draft keeps the strict identity mismatch below.
+            if (gated and live.get("state") == "open" and live.get("draft") is True
+                    and not live.get("merged_at") and current_sha == sha):
+                return _neutral("QA_SOURCE_PR_DRAFT")
+            if (gated and live.get("state") == "open" and live.get("draft") is False
+                    and not live.get("merged_at") and current_sha != sha):
+                return _neutral("QA_SOURCE_PR_HEAD_SUPERSEDED")
+            if same_origin and current_sha == sha:
+                out.append({"pr": number, "head": sha, "head_ref": head.get("ref")})
+            else:
                 errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
-                continue
-            out.append({"pr": number, "head": sha, "head_ref": head.get("ref")})
     elif pr is not None:
         if not str(pr).isdigit():
             errors.append("TARGET_PR_INVALID")
         else:
             status, body = fetch(f"repos/{repo}/pulls/{int(pr)}")
-            sha = ((body or {}).get("head") or {}).get("sha") if status == 200 and isinstance(body, dict) else None
-            if not SHA_RE.match(str(sha or "")):
+            live = body if isinstance(body, dict) else {}
+            sha = (live.get("head") or {}).get("sha")
+            if status != 200 or not SHA_RE.match(str(sha or "")):
                 errors.append(f"TARGET_PR_UNREADABLE:{_pr_read_failure_detail(status, body)}")
-            elif (
-                body.get("number") != int(pr)
-                or ((body.get("head") or {}).get("repo") or {}).get("full_name") != repo
-                or (body.get("base") or {}).get("ref") != "main"
-                or ((body.get("base") or {}).get("repo") or {}).get("full_name") != repo
-            ):
+            elif not _same_origin_pr(repo, int(pr), live):
+                # Foreign, off-base, renamed or malformed identity is never gated.
                 errors.append("TARGET_PR_IDENTITY_MISMATCH")
+            elif neutral_superseded and live.get("state") == "closed":
+                # A closed (merged or not) head can never pass: a check there is a
+                # dead-head verdict, not evidence, and absence already blocks.
+                return _neutral("QA_SOURCE_PR_CLOSED")
+            elif neutral_superseded and live.get("draft") is True and not live.get("merged_at"):
+                return _neutral("QA_SOURCE_PR_DRAFT")
             else:
-                out.append({"pr": int(pr), "head": sha, "head_ref": (body.get("head") or {}).get("ref")})
+                out.append({"pr": int(pr), "head": sha, "head_ref": (live.get("head") or {}).get("ref")})
     else:
         status, body = fetch(f"repos/{repo}/pulls?state=open&base=main&per_page={PER_PAGE}")
         if status != 200 or not isinstance(body, list):
