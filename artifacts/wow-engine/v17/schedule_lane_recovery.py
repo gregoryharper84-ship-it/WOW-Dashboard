@@ -75,7 +75,7 @@ def _result(workflow: str, status: str, now: datetime, **extra: Any) -> dict[str
             "checked_at": now.isoformat(), "can_execute": False, **extra}
 
 
-def _read_lane(workflow: str, now: datetime, call: Http) -> dict[str, Any]:
+def _read_lane(workflow: str, now: datetime, call: Http, *, serving_events: frozenset[str] | None = None) -> dict[str, Any]:
     """Return {state, active, last_created} or {error} for one lane."""
     try:
         status, info = call("GET", _path(workflow))
@@ -96,6 +96,14 @@ def _read_lane(workflow: str, now: datetime, call: Http) -> dict[str, Any]:
             if run.get("status") in ACTIVE_STATUSES:
                 active = True
             created = _parse_time(run.get("created_at"))
+            # Daily basketball workflow also runs verify-only on push. A push
+            # must not masquerade as a successful schedule/dispatch maintain job.
+            if serving_events is not None:
+                event = run.get("event")
+                if not isinstance(event, str):
+                    raise ValueError("daily run event identity missing")
+                if event not in serving_events:
+                    continue
             last = created if last is None or created > last else last
     except ValueError:
         return {"error": "GITHUB_EVIDENCE_INVALID"}
@@ -114,7 +122,13 @@ def recover(token: str, *, now: datetime, http: Http) -> list[dict[str, Any]]:
 
     results: list[dict[str, Any]] = []
     for group, members in groups.items():
-        states = {workflow: _read_lane(workflow, now, http) for workflow, _ in members}
+        states = {
+            workflow: _read_lane(
+                workflow, now, http,
+                serving_events=frozenset({"schedule", "workflow_dispatch"}) if workflow in daily_slots else None,
+            )
+            for workflow, _ in members
+        }
         failed = [w for w, s in states.items() if "error" in s]
         if failed:
             results.extend(_result(w, states[w]["error"], now, group=group) for w in failed)
