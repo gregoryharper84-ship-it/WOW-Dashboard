@@ -93,6 +93,8 @@ def test_predict_research_only_and_digest_bound_to_exact_features():
     altered = deepcopy(candidate)
     altered["features"]["projected_minutes"] += 5
     assert p["pregame_receipt_hash"] != predict_niche_shadow(artifact, altered)["pregame_receipt_hash"]
+    swapped_player = dict(candidate, official_player_id="another-canonical-player")
+    assert p["pregame_receipt_hash"] != predict_niche_shadow(artifact, swapped_player)["pregame_receipt_hash"]
     with pytest.raises(NicheShadowHold, match="PREGAME_INPUT_CONTAINS_RESULT"):
         predict_niche_shadow(artifact, row(201))
 
