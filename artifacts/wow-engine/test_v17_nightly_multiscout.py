@@ -251,3 +251,38 @@ def test_compact_news_slate_preserves_every_candidate_without_market_payload():
     )
     assert selected == "americanfootball_nfl"
     assert counts == {"americanfootball_nfl": 2}
+
+
+
+def test_compact_nhl_slate_preserves_matched_game_receipt_and_excludes_price():
+    receipt = {
+        "event_id": "2026020381",
+        "identity_match_sha256": "a" * 64,
+        "identity_match": {
+            "id": "2026020381", "startTimeUTC": "2026-11-24T00:30:00Z",
+            "homeTeam": {"abbrev": "NYI"}, "awayTeam": {"abbrev": "TOR"},
+            "gameType": 2, "gameState": "FUT",
+        },
+        "identity_verified_at": "2026-11-22T22:29:57Z",
+        "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/NYI/20262027",
+        "can_execute": False,
+    }
+    row = {
+        "sport_key": "icehockey_nhl", "official_event_id": "2026020381",
+        "provider_event_id": "espn-401999999", "official_event_identity_verified": True,
+        "canonical_identity_match_sha256": "a" * 64,
+        "canonical_identity_receipt": receipt,
+        "commence_time": "2026-11-24T00:30:00Z",
+        "market_evidence": [{"price": -120, "bookmaker": "irrelevant"}],
+    }
+    source = {"model_handoff": {"team_event_candidates": [row], "prop_candidates": [row]}}
+    manifest = scout.compact_news_slate_manifest(source)
+    for lane in ("team_event_candidates", "prop_candidates"):
+        stored = manifest["model_handoff"][lane][0]
+        assert stored["provider_event_id"] == "espn-401999999"
+        assert stored["official_event_id"] == "2026020381"
+        assert stored["canonical_identity_match_sha256"] == "a" * 64
+        assert stored["canonical_identity_receipt"] == receipt
+        assert "market_evidence" not in stored
+    assert manifest["candidate_rows_total"] == 2
+    assert manifest["can_execute"] is False
