@@ -53,7 +53,8 @@ def test_each_supported_league_has_precise_market_record_and_no_authority(
     assert item["provider_match_id"] == "18594"
     assert item["over_odds_display"] == -114 and item["under_odds_display"] == -120
     assert item["l10_avg_display"] == 22.1
-    assert result["source_url"] == f"https://propsmadness.com/{sport.lower()}/props/{market}"
+    actual_slug = "made-threes" if (sport, market) == ("NBA", "threes") else market
+    assert result["source_url"] == f"https://propsmadness.com/{sport.lower()}/props/{actual_slug}"
     assert item["sportsbook"] is None and item["canonical_event_id"] is None
     assert item["canonical_player_id"] is None and item["event_start_utc"] is None
     for label in ("pregame_verified", "historical_line_evidence", "exact_line_market_authority", "can_execute"):
@@ -63,6 +64,34 @@ def test_each_supported_league_has_precise_market_record_and_no_authority(
                   "probability_publishable", "can_execute"):
         assert result[field] is False
     assert "90 percent" not in json.dumps(result)
+
+
+def test_nba_threes_current_slug_candidate_and_public_fetch_reconcile():
+    pages = []
+    body = page("NBA", "player-made-threes", "Threes", "2.5", "BOS", "NYK")
+    result = fetch_public_one_shot(
+        "NBA", "threes", personal_noncommercial_use_confirmed=True,
+        urlopen=stub(b"User-agent: *\\nAllow: /\\n", body, pages),
+    )
+    assert pages == [
+        "https://propsmadness.com/robots.txt",
+        "https://propsmadness.com/nba/props/made-threes",
+    ]
+    assert result["row_count"] == 1
+    assert result["rows"][0]["source_page"] == result["source_url"]
+    assert result["rows"][0]["stat_type"] == "THREE_POINTERS_MADE"
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_unknown_nba_threes_market_alias_remains_unparsed():
+    body = page("NBA", "player-foo", "Threes", "2.5", "BOS", "NYK")
+    result = parse_multisport_public_html(
+        body, sport="NBA", market="threes", fetched_at="2026-10-30T11:00:00Z")
+    assert result["row_count"] == 0
+    assert result["status"] == "PUBLIC_HTML_NO_VERIFIED_ROWS"
+    assert result["can_execute"] is False
 
 
 def test_16_scoped_markets_across_exactly_four_sports():
@@ -158,6 +187,84 @@ def test_no_user_consent_is_zero_request_and_http_429_stops_without_retry():
     with pytest.raises(PublicPageHold, match="PM_PUBLIC_SOURCE_ACCESS_DENIED"):
         fetch_public_one_shot("MLB", "strikeouts", personal_noncommercial_use_confirmed=True, urlopen=denied)
     assert urls == ["https://propsmadness.com/robots.txt"]
+
+
+def test_cli_user_initiated_page_can_reach_ephemeral_shared_research_handoff(monkeypatch, capsys):
+    from v17 import propsmadness_multisport_public_explore as module
+    receipt = parse_multisport_public_html(
+        page("NBA", "player-made-threes", "Threes", "2.5", "BOS", "NYK"),
+        sport="NBA", market="threes", fetched_at="2026-11-19T18:00:00Z",
+    )
+    calls = []
+
+    def one_public_page(sport, market, *, personal_noncommercial_use_confirmed):
+        calls.append((sport, market, personal_noncommercial_use_confirmed))
+        return receipt
+
+    monkeypatch.setattr(module, "fetch_public_one_shot", one_public_page)
+    monkeypatch.setattr(sys, "argv", [
+        "propsmadness_multisport_public_explore",
+        "--sport", "NBA", "--market", "threes",
+        "--confirm-personal-noncommercial-use", "--research-handoff",
+    ])
+    assert module.main() == 0
+    assert calls == [("NBA", "threes", True)]
+    result = json.loads(capsys.readouterr().out)
+    assert result["schema"] == "WOW_PM_SHARED_INTELLIGENCE_RESEARCH_V1"
+    assert result["source_receipts"] == 1 and result["source_rows"] == 1
+    assert result["unique_prop_hints"] == 1
+    assert result["prop_discovery_hints"][0]["stat_type"] == "THREE_POINTERS_MADE"
+    assert result["prop_discovery_hints"][0]["official_identity_verified"] is False
+    assert result["verified_sporting_features"] == []
+    assert result["model_consumption_receipts"] == []
+    assert result["production_write_authorized"] is False
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_cli_handoff_rejects_forged_probability_and_remains_closed(monkeypatch, capsys):
+    from v17 import propsmadness_multisport_public_explore as module
+    receipt = parse_multisport_public_html(
+        page("NFL", "player-passing-yards", "Passing Yards", "220.5", "SEA", "CHI"),
+        sport="NFL", market="passing-yards", fetched_at="2026-11-19T18:00:00Z",
+    )
+    receipt["rows"][0]["model_probability"] = 0.9
+    monkeypatch.setattr(module, "fetch_public_one_shot", lambda *args, **kwargs: receipt)
+    monkeypatch.setattr(sys, "argv", [
+        "propsmadness_multisport_public_explore",
+        "--sport", "NFL", "--market", "passing-yards",
+        "--confirm-personal-noncommercial-use", "--research-handoff",
+    ])
+    assert module.main() == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "PUBLIC_SCRAPE_HOLD"
+    assert result["typed_blocker"] == "PM_HANDOFF_ROW_AUTHORITY_CONFLICT"
+    assert result["can_execute"] is False
+
+
+def test_cli_handoff_does_not_bypass_required_personal_use_confirmation(monkeypatch, capsys):
+    from v17 import propsmadness_multisport_public_explore as module
+    calls = []
+
+    def one_public_page(sport, market, *, personal_noncommercial_use_confirmed):
+        calls.append(personal_noncommercial_use_confirmed)
+        if not personal_noncommercial_use_confirmed:
+            raise PublicPageHold("PM_PUBLIC_USE_NOT_CONFIRMED")
+        raise AssertionError("unexpected scrape")
+
+    monkeypatch.setattr(module, "fetch_public_one_shot", one_public_page)
+    monkeypatch.setattr(sys, "argv", [
+        "propsmadness_multisport_public_explore",
+        "--sport", "NBA", "--market", "points", "--research-handoff",
+    ])
+    assert module.main() == 2
+    result = json.loads(capsys.readouterr().out)
+    assert calls == [False]
+    assert result["typed_blocker"] == "PM_PUBLIC_USE_NOT_CONFIRMED"
+    assert result["historical_training_authorized"] is False
+    assert result["can_execute"] is False
+
 
 def test_every_declared_market_has_a_non_authoritative_fixture_path():
     # No declared NBA/NFL/MLB/WNBA stat may rely on an unexercised alias.

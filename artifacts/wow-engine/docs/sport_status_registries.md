@@ -40,8 +40,9 @@ approximate; they are not dispositions and must not be treated as outcomes.
 | `NFL_EVENT_PREGAME_STATIONARY_DECAY_V1` | `v17/nfl_ml_challenger_v2.py` |
 | `NFL_EVENT_PROBABILITY` | `nfl_event_model_contract.py` |
 | `NFL_FITTED_MODEL_PATH_PROVEN` | `v17/nfl_team_event_specialist.py` |
-| `NFL_FORWARD_CALIBRATION_HEALTH_V1` | `v17/nfl_forward_shadow.py` |
-| `NFL_FORWARD_SHADOW_GRADE_V1` | `v17/nfl_forward_shadow.py` |
+| `NFL_FORWARD_CALIBRATION_HEALTH_V2` | `v17/nfl_daily_stage_receipts.py` |
+| `NFL_FORWARD_SHADOW_GRADE_V1` | `v17/nfl_exact_version_evidence_replay.py` |
+| `NFL_FORWARD_SHADOW_GRADE_V2` | `v17/nfl_forward_shadow.py` |
 | `NFL_FULL_GAME_HOME_AWAY` | `v17/nfl_daily_stage_receipts.py` |
 | `NFL_GSIS_GAMEBOOK` | `v17/nfl_atd_gamebook_evidence.py` |
 | `NFL_ML_REMOVE_CUMULATIVE_PRIOR_GAMES_V1` | `v17/nfl_ml_prior_games_ablation.py` |
@@ -95,9 +96,12 @@ approximate; they are not dispositions and must not be treated as outcomes.
 
 | Literal | Emitting module |
 |---|---|
+| `NBA_CANDIDATE_FORWARD_SHADOW_V1` | `v17/nba_candidate_forward_shadow.py` |
 | `NBA_CAPTURE` | `v17/nba_points_pregame_roster.py` |
 | `NBA_CDN_LIVE_BOXSCORE` | `v17/nba_points_pregame_roster.py` |
+| `NBA_DYNAMIC_BOUNDS_V1` | `v17/nba_current_pregame_scorer.py` |
 | `NBA_FANTASY_SCORE_EMPIRICAL_RESIDUAL` | `v17/nba_scalar_candidate_registry.py` |
+| `NBA_GAME_WIN_PROBABILITY_EXPERT_V1` | `v17/nba_current_pregame_scorer.py` |
 | `NBA_KICKOFF` | `v17/nba_points_pregame_roster.py` |
 | `NBA_PLAYER_PROP_EMPIRICAL_RESIDUAL_JOINT_V1` | `v17/nba_scalar_fitted_candidate.py` |
 | `NBA_SCALAR` | `v17/nba_scalar_fitted_candidate.py` |
@@ -142,9 +146,9 @@ approximate; they are not dispositions and must not be treated as outcomes.
 | `NCAAF_PROP_FEATURES_V1` | `v17/ncaaf_prop_challenger.py` |
 | `NCAAF_PROP_ROLLING_FORM_V1` | `v17/ncaaf_prop_challenger.py` |
 | `NCAAF_RESULT_FORM_FORWARD_FEATURES_DIAGNOSTIC_V1` | `v17/ncaaf_current_event_result_form.py` |
-| `NCAAF_RESULT_FORM_LOGIT_V1` | `v17/ncaaf_result_form_candidate.py` |
-| `NCAAF_RESULT_FORM_PRIOR_V1` | `v17/ncaaf_result_form_candidate.py` |
-| `NCAAF_SETTLED_PRIOR_RESULTS_RECONSTRUCTION_V1` | `v17/ncaaf_result_form_candidate.py` |
+| `NCAAF_RESULT_FORM_LOGIT_V1` | `v17/ncaaf_forward_candidate_shadow.py` |
+| `NCAAF_RESULT_FORM_PRIOR_V1` | `v17/ncaaf_forward_candidate_shadow.py` |
+| `NCAAF_SETTLED_PRIOR_RESULTS_RECONSTRUCTION_V1` | `v17/ncaaf_forward_candidate_shadow.py` |
 | `NCAAF_TEST_ONLY` | `ncaaf_trust.py` |
 | `NCAAF_TRUSTED` | `ncaaf_trust.py` |
 | `NCAAF_WATCH` | `ncaaf_trust.py` |
@@ -173,8 +177,8 @@ approximate; they are not dispositions and must not be treated as outcomes.
 | `NCAAB_ML_FROZEN_REPLAY_RECEIPT_V2` | `v17/ncaab_moneyline_replay.py` |
 | `NCAAB_PUBLIC_SOURCE_PINNED_NUMERICAL_REPLAY_V1` | `v17/ncaab_source_pinned_replay.py` |
 | `NCAAB_REPLAY_MARKET_FEATURES_USED` | `v17/ncaab_moneyline_replay.py` |
-| `NCAAB_RESULT_FORM_LOGIT_V1` | `v17/ncaab_sportsdataverse_candidate.py` |
-| `NCAAB_TEAM_FORM_PRIOR_V1` | `v17/ncaab_sportsdataverse_candidate.py` |
+| `NCAAB_RESULT_FORM_LOGIT_V1` | `v17/ncaab_forward_candidate_shadow.py` |
+| `NCAAB_TEAM_FORM_PRIOR_V1` | `v17/ncaab_forward_candidate_shadow.py` |
 
 <!-- sport-status-registry:NCAAB:end -->
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from v17.llp_v17_1_shadow_runtime import (
     DEFAULT_LAMBDAS,
     build_shadow_grade_rows,
     classify_shadow_reasons,
+    capture_event_prediction_shadows,
     event_prediction_side_rows,
     materialize_event_prediction_shadows,
     winner_team,
@@ -102,6 +106,70 @@ class TestLLPV171ShadowRuntime(unittest.TestCase):
         rows = materialize_event_prediction_shadows(_event_row(), observed_at="2026-09-21T22:10:00Z")
         self.assertEqual(len(DEFAULT_LAMBDAS), 5)
         self.assertEqual(len(rows), 10)
+
+    def test_capture_is_prospective_only_and_preserves_valid_pregame(self):
+        historical = _event_row()
+        historical["event_prediction_id"] = "historical"
+        future = dict(_event_row())
+        future.update(
+            event_prediction_id="pregame",
+            requested_slate_date="2026-11-22",
+            event_start_time="2026-11-22T16:00:00Z",
+            model_timestamp="2026-11-22T15:10:00Z",
+        )
+        unverified = dict(future)
+        unverified.update(event_prediction_id="unaware", event_start_time="2026-11-22T16:00:00")
+        synthetic_future = dict(future)
+        synthetic_future.update(
+            event_prediction_id="far_future_fixture",
+            requested_slate_date="2099-08-27",
+            event_start_time="2099-08-28T00:10:00Z",
+            model_timestamp="2099-08-27T21:58:00Z",
+        )
+        at_kickoff = dict(future)
+        at_kickoff.update(
+            event_prediction_id="at_exact_kickoff",
+            event_start_time="2026-11-22T15:30:00Z",
+        )
+
+        class Query:
+            def __init__(self, db, name):
+                self.db, self.name, self.pending = db, name, []
+            def select(self, *args, **kwargs):
+                return self
+            def order(self, *args, **kwargs):
+                return self
+            def limit(self, *args, **kwargs):
+                return self
+            def upsert(self, rows, **kwargs):
+                self.pending = list(rows)
+                return self
+            def execute(self):
+                if self.name == "wow_event_predictions":
+                    return SimpleNamespace(data=self.db.sources)
+                self.db.writes.extend(self.pending)
+                return SimpleNamespace(data=[])
+
+        class DB:
+            sources = [historical, future, unverified, synthetic_future, at_kickoff]
+            def __init__(self):
+                self.writes = []
+            def table(self, name):
+                return Query(self, name)
+
+        db = DB()
+        with patch(
+            "v17.llp_v17_1_shadow_runtime._capture_now",
+            return_value=datetime(2026, 11, 22, 15, 30, tzinfo=timezone.utc),
+        ):
+            result = capture_event_prediction_shadows(db, max_predictions=5)
+        self.assertEqual(result["source_prediction_n"], 5)
+        self.assertEqual(result["skipped_nonprospective_source_n"], 4)
+        self.assertEqual(result["shadow_observation_n"], 10)
+        self.assertEqual(len(db.writes), 10)
+        self.assertTrue(all(row["prediction_id"] == "pregame" for row in db.writes))
+        self.assertTrue(all(row["can_execute"] is False for row in db.writes))
+        self.assertTrue(all(row["observed_at"] == "2026-11-22T15:30:00+00:00" for row in db.writes))
 
     def test_winner_team_prefers_final_score(self):
         source = {"home_team": "BAL", "away_team": "TOR"}

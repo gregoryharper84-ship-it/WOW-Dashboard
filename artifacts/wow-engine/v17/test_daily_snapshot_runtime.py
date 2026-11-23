@@ -153,8 +153,316 @@ def test_reconciliation_includes_purged_and_invalid_terminal_buckets():
     result=_reconcile([{"row_status":"PURGED"},{"row_status":"INVALID"}])
     assert result["rows_purged"] == 1
     assert result["rows_invalid"] == 1
+    # Hard terminals fold into rows_rejected so the governed 3-way identity holds.
+    assert result["rows_rejected"] == 2
+    assert result["rows_in"] == (
+        result["rows_completed"] + result["rows_held"] + result["rows_rejected"]
+    )
     assert result["rows_unclassified"] == 0
     assert result["balanced"] is True
+
+
+def test_cross_sport_hard_scorer_terminals_are_not_soft_held():
+    from v17.daily_snapshot_runtime import _cross_sport_stage_status
+
+    rejected = {
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "NO_LOW_PROBABILITY",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "NO_LOW_PROBABILITY",
+            "terminal_label": "NO_LOW_PROBABILITY",
+            "pick_rejected": True,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    }
+    purged = {
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "rank_eligible": False,
+        "detail": {
+            "terminal_label": "PLAYER_RULED_OUT",
+            "pick_rejected": True,
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+    }
+    assert _cross_sport_stage_status(rejected) == "REJECTED"
+    assert _cross_sport_stage_status(purged) == "PURGED"
+
+
+def test_cross_sport_scorer_package_is_promoted_for_compact_and_stage_telemetry():
+    from v17.daily_response_contract import compact_moneyline_result
+    from v17.daily_snapshot_runtime import (
+        _compute_stage_progression_by_sport,
+        _cross_sport_stage_status,
+        _promote_cross_sport_scorer_result,
+        _reconcile,
+        _terminal_row,
+    )
+    from v17.daily_terminal_reduction import assert_no_terminal_upgrade, reduce_row_terminal
+
+    # Held-but-scored package: nested under detail before promotion. Fatal typed
+    # input failures intentionally keep model_probability_available=false; this
+    # fixture uses a governance hold so the numeric scorer package must survive.
+    routed = {
+        "official_event_id": "nba-1",
+        "commence_time_utc": FUTURE,
+        "home_team": "Home",
+        "away_team": "Away",
+        "sport": "NBA",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "blockers": ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"],
+            "calibrated_probability": 0.61,
+            "calibrated_lower_bound": 0.55,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    payload = _promote_cross_sport_scorer_result(routed)
+    assert payload["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert payload["blockers"] == ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+    assert payload["calibrated_probability"] == 0.61
+    assert payload["detail"]["blockers"] == ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+
+    compact = compact_moneyline_result(payload)
+    assert compact["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert compact["calibrated_probability"] == 0.61
+    assert compact["model_probability_available"] is True
+    assert compact["probability_visibility_status"] == "MODELED_HELD"
+
+    status = _cross_sport_stage_status(routed)
+    row = _terminal_row(
+        "MONEYLINE",
+        {"official_event_id": "nba-1", "sport": "NBA"},
+        payload,
+        assert_no_terminal_upgrade(reduce_row_terminal([status])),
+    )
+    assert row["row_status"] == "HELD"
+    assert row["terminal"] is True
+    assert row["result"]["calibrated_probability"] == 0.61
+    assert row["can_execute"] is False
+
+    recon = _reconcile([row])
+    assert recon["balanced"] is True
+    assert recon["rows_in"] == recon["rows_completed"] + recon["rows_held"] + recon["rows_rejected"]
+
+    stage = _compute_stage_progression_by_sport([row])
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in stage["by_sport"]["NBA"]["failure_codes"]
+
+    # Nested typed input failures still surface in stage telemetry without promotion.
+    nested_only = {
+        "lane": "MONEYLINE",
+        "identity": {"sport": "NCAAB"},
+        "row_status": "HELD",
+        "result": {
+            "model_status": "MODEL_INPUTS_INSUFFICIENT",
+            "detail": {"blockers": ["NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]},
+            "can_execute": False,
+        },
+    }
+    nested_stage = _compute_stage_progression_by_sport([nested_only])
+    assert "MODEL_INPUTS_INSUFFICIENT" in nested_stage["by_sport"]["NCAAB"]["failure_codes"]
+    assert "NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in nested_stage["by_sport"]["NCAAB"]["failure_codes"]
+    assert nested_stage["hydrated"] == nested_stage["model_evaluated"] == 0
+
+
+def test_rank_ceiling_demotion_recomputes_visibility_to_modeled_held():
+    from v17.daily_response_contract import compact_moneyline_result
+    from v17.daily_snapshot_runtime import _promote_cross_sport_scorer_result
+
+    demoted = {
+        "bucket": "MODEL_COMPLETED",
+        "model_status": "SPORTING_PROBABILITY_COMPLETED",
+        "rank_eligible": False,
+        "probability_publishable": True,
+        "rank_eligible_pre_audit": True,
+        "detail": {
+            "code": "FINAL_APPROVED",
+            "terminal_label": "FINAL_APPROVED",
+            "calibrated_probability": 0.67,
+            "calibrated_lower_bound": 0.62,
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "probability_visibility_status": "OFFICIAL_QUALIFIED",
+            "official_leaderboard_eligible": True,
+            "model_probability_available": True,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    payload = _promote_cross_sport_scorer_result(demoted)
+    assert payload["rank_eligible"] is False
+    assert payload["probability_publishable"] is True
+    assert payload["calibrated_probability"] == 0.67
+    assert payload["probability_visibility_status"] == "MODELED_HELD"
+    assert payload["official_leaderboard_eligible"] is False
+    compact = compact_moneyline_result(payload)
+    assert compact["probability_visibility_status"] == "MODELED_HELD"
+    assert compact["calibrated_probability"] == 0.67
+    assert compact["official_leaderboard_eligible"] is False
+    assert compact["can_execute"] is False
+
+
+def test_installed_parity_path_preserves_hard_terminals_and_scorer_package(monkeypatch):
+    """Production installers replace Daily's cross-sport builder; repair must survive."""
+    from v17 import daily_snapshot_runtime as daily
+    from v17.daily_response_contract import compact_moneyline_result
+    from v17.team_event_sport_parity import install_cross_sport_discovery_evidence_handoff
+
+    daily._v17_cross_sport_discovery_evidence_handoff_installed = False
+    assert install_cross_sport_discovery_evidence_handoff() is True
+
+    rejected = {
+        "official_event_id": "mlb-reject-1",
+        "commence_time_utc": FUTURE,
+        "home_team": "Home",
+        "away_team": "Away",
+        "sport": "MLB",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "NO_LOW_PROBABILITY",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "NO_LOW_PROBABILITY",
+            "terminal_label": "NO_LOW_PROBABILITY",
+            "pick_rejected": True,
+            "calibrated_probability": 0.41,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    held_modeled = {
+        "official_event_id": "nba-held-1",
+        "commence_time_utc": FUTURE,
+        "home_team": "Home",
+        "away_team": "Away",
+        "sport": "NBA",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "blockers": ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"],
+            "calibrated_probability": 0.61,
+            "calibrated_lower_bound": 0.55,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+
+    def fake_scan(**_kwargs):
+        return {
+            "rows": [rejected, held_modeled],
+            "reconciliation": {"row_reconciliation": "PASS"},
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(daily.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(daily.discovery, "run_cross_sport_winner_scan", fake_scan)
+    monkeypatch.setattr(
+        "v17.team_event_sport_parity.cross_sport_model_coverage",
+        lambda *_a, **_k: {"can_execute": False},
+    )
+
+    class Req:
+        requested_slate_date = SLATE_DATE
+        requested_timezone = "America/Chicago"
+        max_team_events = 12
+
+    produced = daily._cross_sport_moneyline_rows(
+        Req(), run_id="parity-continuity", event_api=object(), covered_event_ids=set()
+    )
+    assert produced is not None
+    rows, _scan = produced
+    assert len(rows) == 2
+    by_id = {row["identity"]["official_event_id"]: row for row in rows}
+
+    reject_row = by_id["mlb-reject-1"]
+    assert reject_row["row_status"] == "REJECTED"
+    assert reject_row["terminal"] is True
+    assert reject_row["result"]["calibrated_probability"] == 0.41
+    assert reject_row["result"]["pick_rejected"] is True
+    assert reject_row["can_execute"] is False
+
+    held_row = by_id["nba-held-1"]
+    assert held_row["row_status"] == "HELD"
+    assert held_row["result"]["calibrated_probability"] == 0.61
+    assert held_row["result"]["blockers"] == ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+    compact = compact_moneyline_result(held_row["result"])
+    assert compact["calibrated_probability"] == 0.61
+    assert compact["model_probability_available"] is True
+    assert compact["probability_visibility_status"] == "MODELED_HELD"
+
+    recon = daily._reconcile(rows)
+    assert recon["balanced"] is True
+    assert recon["rows_in"] == recon["rows_completed"] + recon["rows_held"] + recon["rows_rejected"]
+    assert recon["rows_rejected"] == 1
+    assert recon["rows_held"] == 1
+
+
+def test_cross_sport_rejected_row_reconciles_under_contract_identity():
+    from v17.daily_snapshot_runtime import (
+        _cross_sport_stage_status,
+        _promote_cross_sport_scorer_result,
+        _reconcile,
+        _terminal_row,
+    )
+    from v17.daily_terminal_reduction import assert_no_terminal_upgrade, reduce_row_terminal
+
+    routed = {
+        "official_event_id": "mlb-1",
+        "sport": "MLB",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "NO_LOW_PROBABILITY",
+            "terminal_label": "NO_LOW_PROBABILITY",
+            "pick_rejected": True,
+            "calibrated_probability": 0.41,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    }
+    payload = _promote_cross_sport_scorer_result(routed)
+    status = _cross_sport_stage_status(routed)
+    assert status == "REJECTED"
+    row = _terminal_row(
+        "MONEYLINE",
+        {"official_event_id": "mlb-1", "sport": "MLB"},
+        payload,
+        assert_no_terminal_upgrade(reduce_row_terminal([status])),
+    )
+    assert row["row_status"] == "REJECTED"
+    assert row["result"]["calibrated_probability"] == 0.41
+    assert row["result"]["pick_rejected"] is True
+    recon = _reconcile([row])
+    assert recon == {
+        "rows_in": 1,
+        "rows_completed": 0,
+        "rows_held": 0,
+        "rows_rejected": 1,
+        "rows_purged": 0,
+        "rows_invalid": 0,
+        "rows_unclassified": 0,
+        "balanced": True,
+    }
 
 
 def test_props_publishable_without_rank_is_held():
@@ -653,3 +961,78 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_daily_snapshot_reports_stage_progression_and_held_scoring_run_status(monkeypatch):
+    """A completed workflow with all rows held must report ALL_HELD scoring_run_status."""
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    # Scorer returns held result with insufficient inputs
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: {
+            "code": "MODEL_INPUTS_INSUFFICIENT",
+            "blockers": ["SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT"],
+            "model_invoked": False,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    )
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        ),
+        db=DB(),
+        market_api=Market(),
+        event_api=Event(),
+    )
+    assert result["run_status"] == "COMPLETED"
+    assert result["scoring_run_status"] == "ALL_HELD_ZERO_EVALUATED"
+    progression = result["stage_progression"]
+    assert progression["discovered"] == 1
+    assert progression["hydrated"] == 0
+    assert progression["model_evaluated"] == 0
+    assert progression["certified"] == 0
+    assert progression["publishable"] == 0
+    by_sport = result["stage_progression_by_sport"]
+    assert "MLB" in by_sport
+    assert by_sport["MLB"]["discovered"] == 1
+    assert by_sport["MLB"]["model_evaluated"] == 0
+    assert "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT" in by_sport["MLB"]["failure_codes"]
+    lane_rec = result["lane_reconciliation"]["MONEYLINE"]
+    assert lane_rec["scoring_run_status"] == "ALL_HELD_ZERO_EVALUATED"
+
+
+def test_stage_monitor_rejects_forged_certification_assertions():
+    from v17.daily_snapshot_runtime import _is_row_certified
+    alleged = [
+        {"certified": True}, {"model_certified": True},
+        {"certification_status": "PASS"}, {"certification_id": "fake-id"},
+        {"certification_receipt": {"status": "CERTIFIED"}},
+    ]
+    for values in alleged:
+        row = {"lane": "MONEYLINE", "row_status": "HELD", "result": {
+            "model_invoked": True, "code": "UNKNOWN", **values,
+        }}
+        assert _is_row_certified(row, evaluated=True) is False
+
+
+def test_stage_monitor_unknown_result_is_not_verified_hydration():
+    from v17.daily_snapshot_runtime import _is_row_hydrated
+    row = {"result": {"code": "UNKNOWN", "model_invoked": True}}
+    assert _is_row_hydrated(row)[0] is False
+
+
+def test_stage_monitor_distinguishes_verified_hydration_from_missing_model():
+    from v17.daily_snapshot_runtime import _is_row_hydrated, _is_row_model_evaluated
+    row = {"result": {
+        "code": "MODEL_UNAVAILABLE",
+        "feature_consumption_receipt": {
+            "consumption_verification_status": "VERIFIED", "receipt_complete": True,
+        },
+    }}
+    assert _is_row_hydrated(row)[0] is True
+    assert _is_row_model_evaluated(row, hydrated=True) is False

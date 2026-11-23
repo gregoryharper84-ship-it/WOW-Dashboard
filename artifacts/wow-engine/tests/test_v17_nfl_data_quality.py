@@ -78,6 +78,7 @@ def test_run_forward_shadow_reports_feature_refresh(monkeypatch):
     monkeypatch.setattr(shadow, "load_outcome_rows", lambda db: [])
     monkeypatch.setattr(shadow, "grade_forward_predictions", lambda c, o: [])
     monkeypatch.setattr(shadow, "persist_new_grades", lambda db, g: 0)
+    monkeypatch.setattr(shadow, "load_verified_grades", lambda db: [])
     monkeypatch.setattr(shadow, "calibration_health", lambda g, min_forward: {"status": "X"})
     monkeypatch.setattr(shadow, "persist_health", lambda db, h: None)
     monkeypatch.setattr(shadow, "active_nfl_season", lambda now=None: 2026)

@@ -9,8 +9,49 @@ Successful and informational NHL dispositions are catalogued separately in
 
 Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:ccbca8adf06a73cf62fa8e7d36d0f2cb1e256a02ddcaef152e5d2822fa78dee9 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+<!-- coderabbit-ai-generated-section:v1:da02db52c5cd11cd3bd00224d82c11f5aebaa6cc445a4a7e54a61abc0af27e72 -->
+<!-- coderabbit-ai-generated:v1 -->
+<!-- coderabbit-ai-generated-section:v1:cf64259410f3769b67608b7c70ae5b7109c5ae0f2302439fa87ca05602b5abde -->
+<!-- /coderabbit-ai-generated:v1 -->
+<!-- /coderabbit-ai-generated:v1 -->
+
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `NFL_INDEPENDENT_SPECIALIST_CERTIFICATION_UNPROVEN` | NFL fitted terminal reducer / independent specialist certification | CERTIFICATION_AUTHORITY_MISSING: absent, stale, mismatched or non-independently validated immutable specialist certificate; requires governed signed receipt plus exact model/calibrator evidence, never a probability or market fallback. Recovery: independent evidence/certification and new pregame replay | No |
+| `NFLVERSE_PLAYER_GAME_STAT_DUPLICATE` | NFL independent nflverse player-stat historical outcome normalization (`nflverse_historical_adapter.py`) | Two source rows produce the same `(official game ID claimed, GSIS player ID, statistic)` settled outcome, whether identical, conflicting in value, or contradictory in team. Reject the entire normalization batch rather than silently overweight fitted labels. **Recovery class:** SOURCE_SNAPSHOT_RECONCILIATION; reconcile original player_stats snapshot and canonical schedule/identity, then replay the unchanged input. This is historical source quality, not permission to synthesize a fitted probability. | No |
+| `NFL_EXACT_VERSION_EVIDENCE_CONSISTENT` | NFL independent read-only exact-version forward evidence observer | Validated 100+ exact-version model/artifact/grade rows have arithmetic and chronology consistent with the supplied health receipt. Informational evidence only: independent certification, publication, and production Action remain unproven. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_EXACT_VERSION_COHORT_MISMATCH` | NFL independent read-only exact-version forward evidence observer | A verified-grade row has a different expected model version, model artifact ID, or artifact checksum. Recovery: obtain immutable exact-artifact verified rows; do not borrow another champion's health. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_EVIDENCE_INSUFFICIENT` | NFL independent read-only exact-version forward evidence observer | Fewer than the existing 100 required verified grades, or fewer than the declared minimum. Recovery: acquire genuine additional settled prospective grades. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_HEALTH_NOT_PASS` | NFL independent read-only exact-version forward evidence observer | The read-only calibration health snapshot is unavailable, nonpassing, or has nonempty blockers. Recovery: independently reproduce and diagnose the genuine cohort; do not retune thresholds. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_HEALTH_COHORT_MISMATCH` | NFL independent read-only exact-version forward evidence observer | The health receipt count or minimum does not match the verified exact-version cohort. Recovery: run the health producer on the exact version and reconcile snapshots. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_GRADE_INVALID` | NFL independent read-only exact-version forward evidence observer | Missing model identity, malformed/out-of-range probability, invalid bound, outcome, schema, or can_execute claim. Recovery: repair the immutable source evidence or responsible producer. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_GRADE_IDENTITY_INVALID` | NFL independent read-only exact-version forward evidence observer | Missing/duplicate event or prediction ID or conflicting source-game identity. Recovery: independently resolve canonical event/prediction lineage. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_CHRONOLOGY_INVALID` | NFL independent read-only exact-version forward evidence observer | A prediction was created at/after kickoff or one of its timestamps is not attested timezone-aware UTC. Recovery: acquire valid original pregame evidence. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_GRADE_ARITHMETIC_MISMATCH` | NFL independent read-only exact-version forward evidence observer | Stored Brier/log-loss differs from independent replay on the same probability/outcome. Recovery: audit source grade and clipping contract before considering health. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `NFL_FORWARD_METRIC_REPLAY_MISMATCH` | NFL independent read-only exact-version forward evidence observer | Recomputed exact-version Brier, log loss, ten-bin ECE, bias, or lower-bound reliability differs from supplied global health. Recovery: correct cohort scope/health producer and re-review without bypass. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
+| `D1_CANDIDATE_SOURCE_REVIEW_SELF_APPROVAL_FORBIDDEN` | D1 research candidate creation and team-state runner persistence | Model/runner-authored candidate payload attempted to assert independent source-review PASS. Persist REQUIRED/provenance-ready state and obtain governed source-rights acceptance separately; self-attested PASS is forbidden. | No |
+| `SOURCE_REVIEW_REQUIRED` | D1 frozen-candidate source-rights acceptance | Technical source lineage or training-readiness evidence exists, but governed independent source-review state is not PASS. Frozen mathematical replay remains diagnostic, not a source approval. | No |
+| `SOURCE_REVIEW_FAILED` | D1 frozen-candidate source-rights acceptance | Governed candidate source review explicitly failed; no certification or publication can follow from a replay receipt. | No |
+| `MODEL_FACTORY_RECIPE_UNSUPPORTED` | V17 research-only model factory | Requested sport/market is not on the explicit research recipe allowlist; no cross-market or cross-sport model fallback. Recovery class: RECIPE_IMPLEMENTATION_REQUIRED. | No |
+| `MODEL_FACTORY_INPUT_INVALID` | V17 research-only model factory | Research run lacks usable DB client, exact source SHA, or valid ordered season scope. Recovery class: INPUT_CONTRACT_REPAIR. | No |
+| `MODEL_FACTORY_MAINTENANCE_EXCEPTION` | V17 research-only model factory | Sport-owned maintenance raised an unexpected exception; do not expose provider/credential details or claim research completion. Recovery class: DIAGNOSE_NATIVE_MAINTENANCE. | No |
+| `MODEL_FACTORY_NATIVE_RESULT_INVALID` | V17 research-only model factory | Sport maintenance returned malformed or incomplete receipt structure. Recovery class: NATIVE_RECEIPT_CONTRACT_REPAIR. | No |
+| `MODEL_FACTORY_NATIVE_INERTNESS_VIOLATION` | V17 research-only model factory | Any nested sport maintenance receipt claims authorization, publication, promotion or execution. Recovery class: FAIL_CLOSED_GOVERNANCE_REPAIR. | No |
+| `MODEL_FACTORY_NATIVE_HOLD` | V17 research-only model factory | Sport-owned maintenance did not report successful research evidence and supplied no specific typed blocker. Recovery class: NATIVE_EVIDENCE_DIAGNOSIS. | No |
+| `RESEARCH_SCREEN_FAILED` | NHL V17 research-only model factory / native research-screen preflight | A structurally valid NHL research candidate failed the sport-owned research screen; remain HOLD and preserve native diagnostics. Recovery: repair the underlying candidate/source inputs and rerun native preflight; never certify, rank or publish from the failed result. | No |
+| `COLUMNAR_SCHEMA_INVALID` | Offline Parquet corpus preflight | Any frozen Parquet file omits a required point-in-time column or has unusable per-file schema. Recovery: repair/repin the original authorized source schema, not nullable cross-file union coercion; no fitting or publishing. | No |
+| `COLUMNAR_MANIFEST_INVALID` | Offline Parquet corpus preflight | Manifest schema, immutable source file list, safe relative paths or explicitly false execution boundary is invalid. Recovery: correct frozen manifest; no fitting or publication. | No |
+| `COLUMNAR_SOURCE_UNAVAILABLE` | Offline Parquet corpus preflight | Expected frozen source file missing, nonregular, traversing a symlink or inaccessible. Recovery: restore exact source under approved research root; no fallback corpus. | No |
+| `COLUMNAR_SOURCE_HASH_MISMATCH` | Offline Parquet corpus preflight | Actual SHA-256 differs from manifest pin. Recovery: reconcile immutable source provenance, never silently repin. | No |
+| `COLUMNAR_DUCKDB_UNAVAILABLE` | Offline Parquet corpus preflight | Optional research-only DuckDB dependency absent. Recovery: install only in approved research environment; never in production or lower qualification. | No |
+| `COLUMNAR_SCAN_INVALID` | Offline Parquet corpus preflight | Parquet schema/query or integrity aggregate invalid; fail closed. Recovery: diagnose real DuckDB exception and corpus schema; never treat as empty or clean. | No |
+| `COLUMNAR_EMPTY_CORPUS` | Offline Parquet corpus preflight | Frozen inputs have zero observations. Recovery: acquire authorized actual source records, not fabricated or market-derived observations. | No |
+| `COLUMNAR_INTEGRITY_HOLD` | Offline Parquet corpus preflight | Missing/duplicate observation identity, wrong sport-season partition, invalid event time, future-available features or invalid/future quotes. Recovery: repair source lineage and pre-event timestamps; no fitting. | No |
 | `GOLDEN_ACCEPTANCE_CONTRACT_TESTS_FAILED` | optional read-only golden product acceptance observer | Deterministic product-journey contract pytest step returned a non-success raw outcome. **Recovery class:** REPAIRABLE_CODE or EVIDENCE_PENDING only after reading pytest logs; record the failed outcome in the receipt/summary without falsely asserting product health or blocking protected main through this optional observer. This is not QA/Release/model certification. | No |
 | `GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE` | optional golden product acceptance observer | Declared product-journey health command, JSON parse or status extraction failed. Preserve raw health-step failure and typed nonpublishable status; no substitution of a passing health state. **Recovery class:** EVIDENCE_PENDING or REPAIRABLE_CODE after source/receipt inspection. | No |
 | `GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED` | optional golden product acceptance observer | Checked-out protected-main commit cannot be reliably resolved; recorded receipt SHA is explicit UNVERIFIED, never the workflow dispatch SHA. **Recovery class:** SOURCE_IDENTITY_UNVERIFIED; repair checkout/provenance before accepting this receipt. | No |
@@ -20,6 +61,10 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE` | optional read-only nightly engineering scan | Production health/governance probe could not return usable read-only evidence; preserve typed observer result and no product PASS inference. **Recovery class:** RUNTIME_EVIDENCE_PENDING; inspect source logs and live service SHA before rechecking. | No |
 | `PROP_LATEST_SNAPSHOT_AMBIGUOUS` | governed prop evidence latest-snapshot read | The two newest exact-identity observations have equal capture instants (including equivalent timezone offsets), or the maximum timestamp cannot be verified. Source UUID ordering is not evidence chronology. Reject any attempt to select an arbitrary clean snapshot, keep the row nonpublishable, and investigate authoritative source ordering/dedupe. **Recovery class:** SOURCE_AUTHORITY_CONFLICT, no retry without new official evidence or corrected immutable lineage. | No |
 | `NFL_FORWARD_PAGINATION_INVALID` | NFL prospective forward grading and calibration health | PostgREST page reads lacked stable primary-key order or contained missing/duplicate prediction, settled-game or existing-grade identities. Fail the entire shadow-grading run before appending misleading calibration results; not a fitted-model capability error. | No |
+| `WNBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED` | WNBA fitted forward-feature hydration / source identity | Official future WNBA event identity is ESPN-prefixed, but persisted settled-game history is BallDontLie, unknown-provider, or not ESPN-prefixed; no verified cross-provider mapping exists. Hold before feature assembly, never reinterpret mismatch as missing games or guess team IDs. Recovery: independently prove a one-to-one identity crosswalk or ingest matched ESPN-keyed history; research-only, no rank/publish/execute. | No |
+| `NBA_CURRENT_SEASON_SETTLED_DATA_MISSING` | NBA default scheduled basketball maintenance / fresh-source hydration | For a current-season refresh in October–June, the persisted most-recent settled game is absent/invalid/future dated or predates the current October NBA season. October may replay prior history only before an aware opening instant from the acquired canonical SportsDataverse schedule; unknown/malformed/conflicting opening evidence does not waive the hold. Jul–Sep offseason and explicit season selection remain separate. Historical shadow replay cannot be claimed as a successful current-season refresh. Fail closed before replay; preserve native acquisition failures, recovery_class=SOURCE_COVERAGE_REPAIR, required_season_start, latest_persisted_game_date and ending-year reacquisition target. Never promote, publish, or execute. | No |
+| `BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED` | NBA/WNBA explicit-clock model maintenance / persisted replay | Hydration honors the requested clock but persisted provenance, freshness, feature replay and fitting reads do not yet share that cutoff. Preserve acquisition results and native source failures; do not replay, fit, promote or publish historical shadow evidence. Default live maintenance remains supported. Restore historical fitting only after every persisted read proves cutoff-aware evidence. | No |
+| `BASKETBALL_MODEL_MAINTENANCE_FAILED` | NBA/WNBA maintenance HTTP boundary and per-sport maintenance row | An exception escaping the HTTP wrapper returns a fixed HTTP 500 body with `status=BLOCKED`, `stage=BASKETBALL_MODEL_MAINTENANCE`, `code`, and false automatic-certification, automatic-promotion, probability-publishable and can-execute flags; it contains no database, provider, or stack-trace detail. An exception caught inside per-sport processing instead appears in the returned `rows` entry with `sport`, `status=BLOCKED`, `code`, `model_development`, `promotion_attempted=false`, `probability_publishable=false`, `can_execute=false`, and optional `error_type`/`hydration_blocker`. Clients must inspect per-sport rows as well as the HTTP-level response; neither shape indicates model readiness or execution. | No |
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
 | `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
@@ -31,6 +76,21 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `CLAUDE_REVIEW_INCOMPLETE` | independent semantic reviewer / Claude response | Provider ended without required authenticated tool output for a non-truncation stop reason (including `end_turn`, `stop_sequence`, `pause_turn`, unknown). `EVIDENCE_PENDING`; QA App HOLD and security owner investigates allowlisted stop-reason metadata. Do not retry or fallback on such ambiguity. | No |
 | `CLAUDE_RESPONSE_INVALID` | independent semantic reviewer / Claude tool transport | Provider message or content is not a valid dict/list container for exact-one `submit_review` tool payload. `REPAIRABLE_CODE` only after source/transport diagnosis, never fallback or PASS. | No |
 | `CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE` | independent semantic reviewer / Claude tool contract | `tool_use` stop reason but not exactly one named `submit_review` result. `EVIDENCE_PENDING`; preserve HOLD and inspect the code-level tool schema, not the raw response. No retry or alternate reviewer shopping. | No |
+| `SPREAD_NFLVERSE_CLOSE_PROXY_TEAM_IDENTITY_MISMATCH` | NFL historical spread close-proxy source binding | Canonical nflverse `game_id` away/home tokens disagree with row participants, or row lists the same team twice. **Recovery class:** SOURCE_IDENTITY_CONFLICT; reject that research evidence row, reduce exact-line coverage, reconcile against authoritative source before replay. Never substitute a line or infer a probability. | No |
+| `SPREAD_EXACT_LINE_PREGAME_QUOTE_UNAVAILABLE` | spread exact-line historical evidence binding | No matching pregame source quote survives exact event, market and first-seen capture-time checks, including rejected legacy OPEN/CLOSE records. **Recovery class:** SOURCE_TIME_INTEGRITY; preserve missing-evidence HOLD, reconcile independently observed pregame timestamps, never substitute a synthetic line or sportsbook probability. | No |
+| `PICKEM_AUDIT_REQUEST_INVALID` | NFL Pick'em read-only exact-week receipt audit | Invalid season, week or expected game count; reject request before reconciling. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_SOURCE_UNVERIFIED` | NFL Pick'em read-only exact-week receipt audit | Caller did not supply a usable immutable official schedule snapshot identifier; obtain independent source proof. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_EVENT_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Schedule contains missing, malformed or inconsistent official IDs, teams or times; reconcile authoritative fixture. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_EVENT_WEEK_IDENTITY_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Canonical event belongs to another season/week; reject cross-week collision. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_DUPLICATE_CANONICAL_SCHEDULE_EVENT` | NFL Pick'em read-only exact-week receipt audit | Official event appears twice; deduplicate at authenticated source rather than inflate count. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_OFFICIAL_SLATE_COUNT_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Distinct valid official games differ from expected weekly denominator; reconcile full schedule. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREDICTION_ROW_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction observation is not a mapping; repair source serialization. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREDICTION_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction lacks or contradicts a canonical official event ID; no implicit alias fallback. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_REUSED_IMMUTABLE_PREDICTION_ID` | NFL Pick'em read-only exact-week receipt audit | Same immutable prediction ID belongs to two distinct official games, even if one observation is postkickoff; reject all uses pending lineage repair. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREGAME_RECEIPT_ORDER_AMBIGUOUS` | NFL Pick'em read-only exact-week receipt audit | Latest pregame observations have the same trusted creation instant but distinct IDs or conflicting flags; never use UUID sorting to choose publication state. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREGAME_PREDICTION_MISSING` | NFL Pick'em read-only exact-week receipt audit | No unique eligible matching immutable pregame receipt remains for an official game; repair through authenticated scoring route. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_WEEKLY_RUN_NOT_OBSERVED` | NFL Pick'em read-only exact-week receipt audit | No asynchronous run bears the exact requested season/week identity; inspect existing authenticated Action submission ledger. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_WEEKLY_RUN_NOT_COMPLETED` | NFL Pick'em read-only exact-week receipt audit | Exact-week run exists but none has completed; diagnose worker/terminal run evidence. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -99,6 +159,10 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `CATALOG_ACCESS_REQUIRED_FIRST` | TheRundown health | Strict provider health did not attempt event access because catalog authentication/access failed first. | Does not decide sporting rank |
 | `DATE_MUST_BE_YYYY_MM_DD` | diagnostic API | Invalid date supplied to a bounded health/discovery diagnostic route. | N/A |
 | `INVALID_PAGINATION` | diagnostic API | Page/page-size request is invalid. | N/A |
+
+
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Multisport calibration artifact detail blockers
 
@@ -259,12 +323,13 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_QA_SOURCE_PR_SUPERSEDED` | release authority / workflow_run admission | The complete authenticated QA run/policy identifies a same-repository, main-based source PR that was subsequently closed or advanced to a different valid head. **Neutral only for the automatic historical workflow_run**: no release check is published and no PASS is asserted. A current PR head, invalid/foreign identity, stale artifact, or manual release stays fail-closed. Prevention: superseded-policy negative tests and exact-source required checks. | No |
 | `RELEASE_QA_POLICY_ARTIFACT_ABSENT` | release authority / workflow_run admission | Opt-in only (`--neutral-if-superseded` / `allow_superseded_target`). For an automatic main-scoped callback with zero matching `wow-v17-qa-policy-{run}-{attempt}` artifacts, authenticate the producer QA run (workflow/event/main SHA/repositories/completed status/conclusion) **before returning neutral**; forged/incomplete runs raise `QA_POLICY_RUN_PROVENANCE_MISMATCH` (resolver SourceReviewError; not a Phase-C `RELEASE_QA_*` registry row). Neutral publishes **no Release check or PASS** and does not fail the unrelated protected-main tip under Render `checksPass`. The artifact-present path instead validates GitHub artifact metadata and downloads the matching archive before `verify_qa_review_policy` authenticates the policy and its run provenance; it must not be described as a pre-download provenance check. Fail-closed distinctions: missing artifact in strict/manual mode or duplicates in any mode → `QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING`; expired GitHub artifact → `QA_POLICY_ARTIFACT_EXPIRED`; stale/future-dated GitHub artifact → `QA_POLICY_ARTIFACT_STALE_OR_FUTURE`; expired/future-dated policy payload → `QA_POLICY_EXPIRED_OR_FUTURE`. | No |
 | `QA_SOURCE_PR_HEAD_SUPERSEDED` | independent QA / workflow_run admission | Authenticated upstream event refers to a single main-based same-repository PR whose verified live head has changed or whose PR has closed. The obsolete event exits neutral **before** QA policy/decision/check creation, leaving any real current-head QA gate untouched. Foreign/malformed/ambiguous targets and explicit manual requests still fail closed. | No |
+| `QA_SOURCE_PR_DRAFT` | independent QA / workflow_run admission | Authenticated upstream event refers to a single main-based same-repository PR that is an open **draft** at the exact event head. A draft cannot be merged, so the automatic callback exits neutral **before** QA policy/decision/check creation (mirrors Release `--neutral-if-draft-target`) and does not fail the protected-main tip under Render `checksPass`. A moved-head draft keeps the strict identity mismatch; manual dispatch still evaluates drafts (`QA_PR_DRAFT`). | No |
 | `RELEASE_UPSTREAM_QA_SKIPPED` | release authority | The upstream QA workflow conclusion is `skipped`. Neutral: no policy lookup and no Release check. | N/A |
 | `RELEASE_UPSTREAM_QA_UNREADABLE` | release authority | The upstream QA run or its job list could not be read as a complete inventory. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_UNTRUSTED` | release authority | The upstream run is not the protected-main QA workflow at the claimed attempt, or its repository, event, or job identity does not match. Cancelled runs are untrusted. No Release check is published. | N/A |
 | `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
-| `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
+| `TARGET_PR_UNREADABLE` | check targeting / independent QA admission | Current canonical PR could not be read or has no head SHA; never accept the event as a substitute. Suffixed with HTTP status, and for a known 403/429 failure a safe discriminator `SECONDARY_RATE_LIMIT`, `RATE_LIMIT`, `APP_PERMISSION_DENIED`, or `CREDENTIAL_REJECTED`. Unknown messages remain numeric and untrusted API messages are never printed. **Recovery:** identify the actual response class; only a proven transient rate limit permits one bounded identical retry, permission failures need installation/token repair. No QA or Release PASS on unreadable PR. | N/A |
 | `TARGET_PR_IDENTITY_MISMATCH` | check targeting | The fresh canonical PR does not match the workflow_run PR number/head, canonical head repository, or main base repository/ref. | N/A |
 | `TARGET_SWEEP_UNREADABLE` | check targeting | Open-PR sweep listing could not be read; suffixed with HTTP status. | N/A |
 
@@ -598,6 +663,7 @@ Discovery-only failure codes; they do not authorize fitted probabilities or publ
 | `NCAAB_CANONICAL_EVENT_NOT_FOUND` | NCAAB identity | SOURCE_MISMATCH | No |
 | `NCAAB_CANONICAL_EVENT_AMBIGUOUS` | NCAAB identity | SOURCE_AMBIGUOUS | No |
 | `NCAAB_CANONICAL_EVENT_ID_MISSING` | NCAAB handoff | SOURCE_MALFORMED | No |
+| `NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE` | NCAAB team-event bridge | SOURCE_UNAVAILABLE (no authoritative event/history producer) | No |
 | `NCAAB_SCHEDULE_SOURCE_NOT_READY` | NCAAB source | SOURCE_NOT_READY | No |
 | `NCAAB_SCHEDULE_SOURCE_UNAVAILABLE` | NCAAB source | SOURCE_UNAVAILABLE | No |
 | `NCAAB_SCHEDULE_SOURCE_RATE_LIMITED` | NCAAB source | TRANSIENT | No |
@@ -625,6 +691,15 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+## NBA season-boundary and fitted-calibrator RPC integrity (2026-11-04)
+
+These pre-existing detail failures remain in the NBA hydration / calibrated-specialist lane. They cannot become a fitted probability, and do not grant any release authority.
+
+| Canonical detail code | Owning lane/stage | Exact condition | Recovery class | Rank eligible? |
+|---|---|---|---|---|
+| `ESPN_RECENT_WINDOW_GAP_NOT_COVERED` | NBA current-season SportsDataverse/ESPN hydration | For the **current NBA ending-year season only**, the permitted 14-day ESPN supplement cannot cover the complete gap from the persisted canonical corpus. A completed preceding season must never trigger this code. | DATA_SOURCE_COVERAGE | No |
+| `NBA_CERTIFIED_CALIBRATOR_INVALID` | NBA fitted specialist certified-calibrator RPC | RPC row missing nested mapping `artifact_payload` or containing a legacy flat outer `artifact_type` that would bypass digest verification; reject even if declared digest/ID appear to match certification. | CODE_REPAIR | No |
 
 ## Offline MLflow/Evidently research-receipt preflight (incident #2536)
 
@@ -815,6 +890,13 @@ raises `NHL_EVENT_TIME_INVALID`, registered once under the event-identity sectio
 | `NHL_SOURCE_HTTP_<status>` | The club-season endpoint returned a non-200, non-429 status; the suffix is the status and detail is the team. | `nhl_candidate_pipeline.py` | — | No |
 | `NHL_SOURCE_RESPONSE_INVALID` | The response body could not be decoded as JSON; detail is the exception type. | `nhl_candidate_pipeline.py` | — | No |
 | `NHL_SOURCE_SCHEMA_DRIFT` | The decoded body is not a mapping or lacks a `games` list. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_EVENT_INVALID` | A source game entry is not a mapping, or its game ID, `startTimeUTC`, home/away abbreviation or `season` is missing. Non-strict mode drops the row; strict re-ingest fails closed with the detail naming the missing field. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_EVENT_TIME_INVALID` | `startTimeUTC` is malformed or timezone-naive. Non-strict mode drops the row; strict re-ingest fails closed rather than inventing a start instant. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_GAME_TYPE_INVALID` | `gameType` is missing or not an exact non-negative integer. Only regular-season games (`gameType=2`) are admitted to a training or schedule receipt. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_GAME_STATE_UNVERIFIED` | `gameState` is missing on a regular-season game, or carries a state outside the admitted settled (`FINAL`/`OFF`) and unsettled sets. A completed game is never inferred from a score alone. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_TEAM_IDENTITY_INVALID` | `homeTeam` or `awayTeam` is not a mapping, so no canonical club abbreviation can be read. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_SCORE_INVALID` | Home or away score is missing, not an exact non-negative integer, or the two are equal. An NHL game cannot end tied, so equality is invalid score evidence rather than a push. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_SEASON_IDENTITY_INVALID` | `season` is missing or not an exact non-negative integer, so the game cannot be tied to a season identity. | `nhl_candidate_pipeline.py` | — | No |
 | `NHL_SOURCE_SEASON_IDENTITY_DRIFT` | A normalized game's season differs from the season requested for that team schedule; detail is the first mismatched game ID. | `nhl_candidate_pipeline.py` | — | No |
 | `NHL_DUPLICATE_GAME_CONFLICT` | The same game ID observed through two team mirrors disagrees on season, start, teams or scores. Identical duplicates are merged without error. | `nhl_candidate_pipeline.py` | — | No |
 | `NHL_RECENT_HISTORY_EMPTY` | Recent-form metrics were requested for a team with no prior games in its window. | `nhl_candidate_pipeline.py` | — | No |
@@ -912,6 +994,21 @@ absence of a fitted model.
 | `NHL_CANONICAL_EVENT_NOT_FOUND` | No scheduled game matched both normalized participants and a start within the 30-minute tolerance, so no canonical official event ID exists. | `v17/nhl_event_identity.py` | — | No |
 | `NHL_CANONICAL_EVENT_AMBIGUOUS` | More than one distinct official event ID matched the same participants and start window. No arbitrary winner is chosen. | `v17/nhl_event_identity.py` | — | No |
 
+
+## NHL source re-ingest and fitted timeline coverage (November 2026)
+
+Append-only schedule/result persistence and fitted-timeline receipt coverage.
+`can_execute=false` and dry-run-only remain invariant; this section grants no
+probability, ranking, certification or execution authority. None of these codes
+is `MODEL_UNAVAILABLE`: they describe source rights, writer contention or
+schedule coverage, not the absence of a fitted model.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `NHL_SOURCE_RIGHTS_HOLD` | Live persistence of NHL schedule/result rows is held until an explicit source-rights approval (`WOW_NHL_SOURCE_RIGHTS_APPROVED` or authorized `rights_approved=True`). API reachability is not commercial training permission. Dry-run remains available. Recovery: `SOURCE_RIGHTS` decision by an independent rights owner; never scrape or invent rights. Not a fitted-model capability error. | `v17/nhl_source_reingest.py` | — | No |
+| `NHL_SOURCE_REINGEST_IN_PROGRESS` | Another season-scoped writer holds the re-ingest lease. Fail closed rather than racing append-only identities. Recovery: retry after the active lease expires or is released. Not a fitted-model capability error. | `v17/nhl_source_reingest.py` | — | No |
+| `NHL_SOURCE_TIMELINE_INCOMPLETE` | Settled V2 rows do not exactly match the independently sourced schedule settled-ID set, or schedule digest/scheduled-events coverage is missing. A partial settled subset cannot self-attest `FULL_SEASON`. Recovery: re-acquire official schedule coverage including scheduled/unsettled games, then re-ingest. Not permission to fabricate history. | `v17/nhl_fitted_specialist.py` | — | No |
+| `SOURCE_TIMELINE_SCHEDULE_COVERAGE_INCOMPLETE` | Settled V2 rows do not exactly match the independently sourced schedule settled-ID set, or schedule digest/scheduled-events coverage is missing. A partial settled subset cannot self-attest `FULL_SEASON`. Recovery: re-acquire official schedule coverage including scheduled/unsettled games, then re-ingest. Not permission to fabricate history. | `v17/nhl_fitted_specialist.py` | — | No |
 ## NHL total-goals research lane (November 2026)
 
 Research challengers only (`v17/nhl_total_goals_*`). Every artifact and receipt in
@@ -1188,6 +1285,8 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NFL_EVENT_START_SLATE_DATE_MISMATCH` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
 | `NFL_EVENT_START_TIME_INVALID` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
 | `NFL_EVENT_STATUS_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `_nfl_event_finality`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_EVENT_WINNER` | No inline message; terminal code raised in `module scope`. | `v17/nfl_event_challenger_pairs.py` | — | No |
+| `NFL_EXISTING_SNAPSHOT_ALREADY_CAPTURED` | No inline message; terminal code raised in `acquire_nfl_forward_evidence_batch`. | `v17/nfl_prop_evidence_control_plane.py` | — | No |
 | `NFL_FEATURE_ASSEMBLY_FAILED` | No inline message; terminal code raised in `score_nfl_team_event`. | `v17/nfl_team_event_specialist.py` | — | No |
 | `NFL_FEATURE_ORDER_ARTIFACT_MISMATCH` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
 | `NFL_FEATURE_ORDER_HASH_MISMATCH` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
@@ -1212,9 +1311,14 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NFL_IMMUTABLE_PREDICTION_PERSISTENCE_NO_ROW` | No inline message; terminal code raised in `score_nfl_team_event`. | `v17/nfl_team_event_specialist.py` | — | No |
 | `NFL_IMMUTABLE_PREDICTION_REUSE_SNAPSHOT_MISSING` | No inline message; terminal code raised in `_reused_prediction_result`. | `v17/nfl_team_event_specialist.py` | — | No |
 | `NFL_IMMUTABLE_PREGAME_PREDICTION_READBACK` | No inline message; terminal code raised in `module scope`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE` | No inline message; terminal code raised in `refresh_nfl_injury_source`. | `nfl_event_hydration_runtime.py` | — | No |
+| `NFL_INJURY_SOURCE_CAPTURE_SCOPE_CONFLICT` | No inline message; terminal code raised in `refresh_nfl_injury_source`. | `nfl_event_hydration_runtime.py` | — | No |
+| `NFL_INJURY_SOURCE_PERSISTENCE_DB_REQUIRED` | No inline message; terminal code raised in `refresh_nfl_injury_source`. | `nfl_event_hydration_runtime.py` | — | No |
+| `NFL_INJURY_SOURCE_SEASON_INVALID` | No inline message; terminal code raised in `refresh_nfl_injury_source`. | `nfl_event_hydration_runtime.py` | — | No |
 | `NFL_MODEL_CERTIFICATION_BLOCKED` | No inline message; terminal code raised in `score_nfl_team_event_request`. | `v17/nfl_team_event_publication.py` | — | No |
 | `NFL_MODEL_CONSUMED_VECTOR_MISMATCH` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
 | `NFL_MODEL_PROMOTION_INVALID_RESPONSE` | No inline message; terminal code raised in `ensure_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_P2_FITTED_MODEL_PUBLICATION_HELD` | No inline message; terminal code raised in `_model_reason`. | `v17/nfl_team_event_specialist.py` | — | No |
 | `NFL_PICKEM_ASYNC_IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST` | No inline message; terminal code raised in `_submit`. | `v17/nfl_pickem_async_runtime.py` | — | No |
 | `NFL_PICKEM_ASYNC_RUN_NOT_FOUND` | No inline message; terminal code raised in `get_nfl_pickem_run`. | `v17/nfl_pickem_async_runtime.py` | — | No |
 | `NFL_PICKEM_ASYNC_STATUS_UNAVAILABLE` | No inline message; terminal code raised in `get_nfl_pickem_run`. | `v17/nfl_pickem_async_runtime.py` | — | No |
@@ -1236,6 +1340,7 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NFL_PROP_LINEAR_PREDICTOR_INVALID` | No inline message; terminal code raised in `expected_value`. | `nfl_prop_model_adapter.py` | — | No |
 | `NFL_PROP_OPPORTUNITY_INVALID` | No inline message; terminal code raised in `history_pairs`. | `nfl_prop_model_adapter.py` | — | No |
 | `NFL_PROP_PMF_INVALID` | No inline message; terminal code raised in `distribution_for_vector`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_ROSTER_IDENTITY_CONFLICT` | official roster has ambiguous event/player/stat identity | `v17/nfl_prop_evidence_control_plane.py` | — | No |
 | `NFL_PROP_SOURCE_UNAVAILABLE` | required NFL evidence source could not be retrieved | `nfl_prop_auto_hydration.py` | — | No |
 | `NFL_PROVIDER_EVENT_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
 | `NFL_PROVIDER_EVENT_ID_CANONICAL_MATCH_AMBIGUOUS` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
@@ -1330,16 +1435,38 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 
 | Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
 |---|---|---|---|---|
+| `NBA_BACKFILL_CORPUS_TOO_LARGE` | No inline message; terminal code raised in `_load_existing`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_DUPLICATE_CANONICAL_ID` | No inline message; terminal code raised in `_fetch_normalized_sources`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_DUPLICATE_STORED_ID` | No inline message; terminal code raised in `_load_existing`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_NO_SEASONS` | No inline message; terminal code raised in `run`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_PAGE_READ_INVALID` | No inline message; terminal code raised in `_load_existing`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_RACE_OR_SOURCE_CONFLICT` | No inline message; terminal code raised in `_apply_one`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_SOURCE_IDENTITY_CHANGED` | No inline message; terminal code raised in `_apply_one`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_START_READBACK_MISMATCH` | No inline message; terminal code raised in `_apply_one`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_STORED_ROW_INVALID` | No inline message; terminal code raised in `_load_existing`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_UPDATE_RESPONSE_INVALID` | No inline message; terminal code raised in `_apply_one`. | `v17/nba_tipoff_backfill.py` | — | No |
+| `NBA_BACKFILL_WRITE_READBACK_INVALID` | No inline message; terminal code raised in `_read_one`. | `v17/nba_tipoff_backfill.py` | — | No |
 | `NBA_CALIBRATOR_PAYLOAD_RESOLVER_UNAVAILABLE` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
-| `NBA_CALIBRATOR_RESOLUTION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CALIBRATOR_RESOLUTION_FAILED` | No inline message; terminal code raised in `resolve_nba_calibrator_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CANDIDATE_ARTIFACT_INTEGRITY_FAILED` | No inline message; terminal code raised in `load_candidate`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_ARTIFACT_NOT_FOUND` | No inline message; terminal code raised in `load_candidate`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_CALIBRATED_PROBABILITY_INVALID` | No inline message; terminal code raised in `score`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_CALIBRATOR_INVALID` | No inline message; terminal code raised in `load_candidate`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_CALIBRATOR_NOT_FOUND` | No inline message; terminal code raised in `load_candidate`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_FORWARD_SHADOW` | No inline message; terminal code raised in `run_nba_candidate_forward_shadow`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_GRADE_EVENT_DUPLICATED` | No inline message; terminal code raised in `scorecard`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_NOT_REGISTERED` | No inline message; terminal code raised in `load_candidate`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_CANDIDATE_RAW_PROBABILITY_INVALID` | No inline message; terminal code raised in `score`. | `v17/nba_candidate_forward_shadow.py` | — | No |
 | `NBA_CANONICAL_EVENT_AMBIGUOUS` | No inline message; terminal code raised in `resolve_nba_current_event_identity`. | `v17/nba_event_identity.py` | — | No |
 | `NBA_CANONICAL_EVENT_NOT_FOUND` | No inline message; terminal code raised in `resolve_nba_current_event_identity`. | `v17/nba_event_identity.py` | — | No |
 | `NBA_CANONICAL_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CANONICAL_IDENTITY_RESOLUTION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE` | No inline message; terminal code raised in `score_nba_team_event_request`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CERTIFICATION_RESOLUTION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CERTIFICATION_SPECIALIST_SCOPE_OR_MODEL_MISMATCH` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
-| `NBA_CERTIFIED_CALIBRATOR_INVALID` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
-| `NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH` | No inline message; terminal code raised in `resolve_nba_calibrator_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_CALIBRATOR_METHOD_MISMATCH` | No inline message; terminal code raised in `resolve_nba_calibrator_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE` | No inline message; terminal code raised in `resolve_nba_calibrator_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CERTIFIED_MODEL_ARTIFACT_CERTIFICATION_MISMATCH` | No inline message; terminal code raised in `resolve_nba_champion_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CERTIFIED_MODEL_ARTIFACT_LOOKUP_FAILED` | No inline message; terminal code raised in `resolve_nba_champion_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND` | No inline message; terminal code raised in `resolve_nba_champion_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
@@ -1354,7 +1481,19 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NBA_CURRENT_PREGAME_FEATURES_NOT_READY` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_CURRENT_ROSTER_ACTIVE_SOURCE_VERIFIED_ROLE_NOT_PROVEN` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_DYNAMIC_BOUNDS_CALCULATION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_ESPN_COMPETITION_AMBIGUOUS` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_EVENT_AMBIGUOUS` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_EVENT_CHRONOLOGY_CONFLICT` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_EVENT_ID_MISMATCH` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_EVENT_NOT_FOUND` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_EVENT_TIME_UNVERIFIED` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_PARTICIPANTS_INVALID` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_SETTLEMENT_NOT_FINAL` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_SOURCE_INVALID_RESPONSE` | No inline message; terminal code raised in `_fetch_day`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_TEAMS_OR_SCORE_CONFLICT` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_ESPN_WINNER_CONFLICT` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
 | `NBA_EVENT_TIME_INVALID` | No inline message; terminal code raised in `_aware`. | `v17/nba_event_identity.py` | — | No |
 | `NBA_FEATURE_AS_OF_AFTER_CUTOFF` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_FEATURE_AS_OF_INVALID` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
@@ -1400,9 +1539,12 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NBA_HISTORY_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `_get`. | `v17/nba_points_official_history.py` | — | No |
 | `NBA_HISTORY_TIME_INVALID` | No inline message; terminal code raised in `_utc`. | `v17/nba_points_official_history.py` | — | No |
 | `NBA_HISTORY_TIME_NAIVE` | No inline message; terminal code raised in `_utc`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_IMMUTABLE_PREDICTION_RECEIPT_UNAVAILABLE` | No inline message; terminal code raised in `score_nba_team_event_request`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_INJURY_REPORT_NOT_CURRENT` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_LINEUP_EVIDENCE_MISSING` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_LINEUP_UPDATE_TIMESTAMP_MISSING` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_OFFICIAL_TIPOFF_CORROBORATED` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PLATT_REVIEW_REQUIRED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_POINTS_ADJACENT_LINE_NOT_EXACT` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
 | `NBA_POINTS_CANONICAL_EVENT_UNRESOLVED` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
 | `NBA_POINTS_CANONICAL_EVENT_UNVERIFIED` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
@@ -1433,7 +1575,22 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NBA_POINTS_SOURCE_TIMESTAMPS_MISSING` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
 | `NBA_POINTS_SOURCE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
 | `NBA_POINTS_TEAM_IDENTITY_CONFLICT` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_PREFLIGHT_BUDGET_INVALID` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PREFLIGHT_CLOCK_NAIVE` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PREFLIGHT_DAY_BUDGET_DEFERRED` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PREFLIGHT_DUPLICATE_OR_MISSING_ID` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PREFLIGHT_PROVIDER_NOT_IN_SCOPE` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PREFLIGHT_ROW_BUDGET_DEFERRED` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PREFLIGHT_ROW_INVALID` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_PREGAME_HOLD` | No inline message; terminal code raised in `score_nba_team_event_request`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_PREGAME_SCORED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | `v17/nba_event_shadow_prediction_persistence.py` | No |
 | `NBA_PROVIDER_TEAM_ALIAS_INVALID` | No inline message; terminal code raised in `resolve_nba_current_event_identity`. | `v17/nba_event_identity.py` | — | No |
+| `NBA_REPLAY_ARTIFACT_TRAIN_DATES_REVERSED` | No inline message; terminal code raised in `_artifact_from_row`. | `v17/nba_team_event_certification_replay.py` | — | No |
+| `NBA_REPLAY_CALIBRATOR_COEFFICIENTS_INVALID` | No inline message; terminal code raised in `_replay_calibrator_fit`. | `v17/nba_team_event_certification_replay.py` | — | No |
+| `NBA_REPLAY_FORWARD_PAGINATION_DUPLICATE_CAPTURE_IDS` | No inline message; terminal code raised in `_forward_shadow_audit`. | `v17/nba_team_event_certification_replay.py` | — | No |
+| `NBA_REPLAY_HOLDOUT_METRICS_INVALID` | No inline message; terminal code raised in `_metrics`. | `v17/nba_team_event_certification_replay.py` | — | No |
+| `NBA_REPLAY_RAW_PROBABILITY_INVALID` | No inline message; terminal code raised in `run_nba_team_event_certification_replay`. | `v17/nba_team_event_certification_replay.py` | — | No |
+| `NBA_REPLAY_SETTLED_GAME_IDENTITY_INVALID` | No inline message; terminal code raised in `_training_game`. | `v17/nba_team_event_certification_replay.py` | — | No |
 | `NBA_ROSTER_ACTIVE_STATUS_NOT_AFFIRMED` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
 | `NBA_ROSTER_CAPTURE_IN_FUTURE` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
 | `NBA_ROSTER_CLOCK_INVALID` | No inline message; terminal code raised in `acquire_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
@@ -1492,6 +1649,30 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NBA_SCALAR_SOURCE_PROVENANCE_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
 | `NBA_SCALAR_SOURCE_PROVIDER_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
 | `NBA_SCHEDULE_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `_schedule_rows`. | `v17/nba_event_identity.py` | — | No |
+| `NBA_SHADOW_BOUNDS_INVALID` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_CALIBRATOR_ID_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_CANONICAL_TEAM_ID_INVALID` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_CERTIFIED_SCORE_REQUIRED` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_CERT_ID_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_DATASET_ID_INVALID` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_DATASET_ID_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_DIGEST_INVALID` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_EVENT_ID_INVALID` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_EVENT_ID_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_GOVERNED_RESULT_REQUIRED` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_IMMUTABLE_READBACK_CONFLICT` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_MODEL_ID_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_MODEL_VERSION_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_NOT_PROSPECTIVE` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_PROBABILITY_INVALID` | No inline message; terminal code raised in `_p`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_READBACK_FAILED` | No inline message; terminal code raised in `_read`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_READBACK_INVALID` | No inline message; terminal code raised in `_read`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_SCORER_RECEIPT_MISMATCH` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_SOURCE_ID_INVALID` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_SOURCE_ID_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_TEAM_MISSING` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_utc`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
+| `NBA_SHADOW_WRITE_NOT_PERSISTED` | No inline message; terminal code raised in `persist_nba_shadow_prediction`. | `v17/nba_event_shadow_prediction_persistence.py` | — | No |
 | `NBA_SOURCE_EVENT_REPLAY_NOT_VERIFIED` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_SOURCE_SNAPSHOT_AFTER_FEATURE` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_SOURCE_SNAPSHOT_AFTER_KICKOFF` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
@@ -1500,6 +1681,12 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NBA_SOURCE_TIMESTAMP_ATTESTATION_NOT_VERIFIED` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_STARTING_ROTATION_NOT_CONFIRMED` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_START_ALREADY_PRESENT` | No inline message; terminal code raised in `preflight`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_STORED_IDENTITY_INVALID` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_STORED_RESULT_INVALID` | No inline message; terminal code raised in `_verify_event`. | `v17/nba_official_tipoff_preflight.py` | — | No |
+| `NBA_TRAINING_HISTORY_INVALID` | No inline message; terminal code raised in `load_settled_games`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_TRAINING_HISTORY_PAGE_LIMIT` | No inline message; terminal code raised in `load_settled_games`. | `v17/nba_candidate_forward_shadow.py` | — | No |
+| `NBA_UNTRUSTED_CALLER_FEATURES_REJECTED` | No inline message; terminal code raised in `score_nba_team_event_request`. | `v17/nba_current_pregame_scorer.py` | — | No |
 
 <!-- sport-failure-registry:NBA:end -->
 
@@ -1759,6 +1946,27 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NCAAF_SDV_SOURCE_IDENTITY_OR_CATEGORY_MISSING` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
 | `NCAAF_SDV_STAT_INVALID` | No inline message; terminal code raised in `_stat`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
 | `NCAAF_SDV_UNAPPROVED_REDIRECT` | No inline message; terminal code raised in `acquire_release`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SHADOW_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_ARTIFACT_MISSING` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_ARTIFACT_NUMERIC_INVALID` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_ARTIFACT_SCHEMA_INVALID` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_CALIBRATOR_UNSUPPORTED` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_CANDIDATE_LIFECYCLE_INVALID` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_CANDIDATE_POST_AS_OF` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_CANDIDATE_VERSION_INVALID` | No inline message; terminal code raised in `_candidate`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_CANONICAL_IDENTITY_UNVERIFIED` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_CANONICAL_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `run_fitted_ncaaf_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_FITTED_CANDIDATE_NOT_FOUND` | No inline message; terminal code raised in `run_fitted_ncaaf_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_HISTORY_DUPLICATE` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_HISTORY_INVALID` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_HISTORY_NOT_AS_OF` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_HISTORY_OUTCOME_INCONSISTENT` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_HISTORY_READ_FAILED` | No inline message; terminal code raised in `run_fitted_ncaaf_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_MODEL_REGISTRY_READ_FAILED` | No inline message; terminal code raised in `run_fitted_ncaaf_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_NOT_PREGAME` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_PRIOR_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_SOURCE_UNVERIFIED` | No inline message; terminal code raised in `score_forward_shadow`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
+| `NCAAF_SHADOW_TIME_INVALID` | No inline message; terminal code raised in `_when`. | `v17/ncaaf_forward_candidate_shadow.py` | — | No |
 | `NCAAF_SKILL_AGGREGATION_INVALID` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
 | `NCAAF_SKILL_PROBABILITY_INVALID` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
 | `NCAAF_SKILL_PROBABILITY_NOT_SOURCE_DEFINED` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
@@ -1873,18 +2081,38 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NCAAB_REPLAY_TRAINING_CODE_SHA_INVALID` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
 | `NCAAB_REPLAY_VERIFIER_SHA_REQUIRED` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
 | `NCAAB_REPLAY_WRONG_SPORT` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_SHADOW_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_ARTIFACT_MISSING` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_ARTIFACT_NUMERIC_INVALID` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_ARTIFACT_SCHEMA_INVALID` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_CALIBRATOR_UNSUPPORTED` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_CANDIDATE_LIFECYCLE_INVALID` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_CANDIDATE_POST_AS_OF` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_CANDIDATE_VERSION_INVALID` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_FEATURE_PACKAGE_INVALID` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_FEATURE_VECTOR_MISMATCH` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_SOURCE_NOT_PREGAME` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_SOURCE_RECEIPT_HASH_MISMATCH` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_SOURCE_RECEIPT_INVALID` | No inline message; terminal code raised in `score_ncaab_candidate_shadow`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
+| `NCAAB_SHADOW_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_dt`. | `v17/ncaab_forward_candidate_shadow.py` | — | No |
 | `NCAAB_SOURCE_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_ASSET_COUNT_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_CALIBRATOR_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_DATASET_HASH_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_DUPLICATE_SEASON` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_GAME_ID_CONFLICT` | No inline message; terminal code raised in `validated_team_box_pair`. | `v17/ncaab_source_pair_integrity.py` | — | No |
+| `NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS` | No inline message; terminal code raised in `validated_team_box_pair`. | `v17/ncaab_source_pair_integrity.py` | — | No |
 | `NCAAB_SOURCE_GOVERNANCE_VIOLATION` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_LICENSE_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_METRIC_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_PAIR_PROVENANCE_MISMATCH` | No inline message; terminal code raised in `validated_team_box_pair`. | `v17/ncaab_source_pair_integrity.py` | — | No |
+| `NCAAB_SOURCE_PARTICIPANT_COLLISION` | No inline message; terminal code raised in `validated_team_box_pair`. | `v17/ncaab_source_pair_integrity.py` | — | No |
 | `NCAAB_SOURCE_PIN_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_REPLAY_INPUT_OR_RUNTIME_BLOCKED` | No inline message; terminal code raised in `main`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_ROW_COUNT_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_ROW_PROVENANCE_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_SCORE_INVALID` | No inline message; terminal code raised in `validated_team_box_pair`. | `v17/ncaab_source_pair_integrity.py` | — | No |
+| `NCAAB_SOURCE_SCORE_TIE_UNSETTLED` | No inline message; terminal code raised in `validated_team_box_pair`. | `v17/ncaab_source_pair_integrity.py` | — | No |
 | `NCAAB_SOURCE_SEASON_MISSING` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_SPECIALIST_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
 | `NCAAB_SOURCE_TOTAL_ROWS_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |

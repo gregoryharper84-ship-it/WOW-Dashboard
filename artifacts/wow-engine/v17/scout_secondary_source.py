@@ -184,6 +184,7 @@ def _scoreboard(
     merged_data: dict[str, Any] = {}
     merged_events: dict[str, dict[str, Any]] = {}
     provider_truncated = False
+    provider_completeness_unverified = False
     response_status = 200
     endpoint = f"{ESPN_BASE}/{sport}/{league}/scoreboard"
 
@@ -237,6 +238,13 @@ def _scoreboard(
             len(daily_events) >= bounded_limit
             or (total_hint_int is not None and total_hint_int > len(daily_events))
         )
+        # Live 2026-11-14 FBS checks returned exactly 25 rows with limit=1000,
+        # no total, and the same 25 IDs with offset=25/page=2. This does not
+        # PROVE truncation, but it cannot establish a complete NCAAF slate.
+        # Do not label this as provider-limit exhaustion without that proof.
+        if (sport_key == "americanfootball_ncaaf" and bounded_limit > 25
+                and len(daily_events) == 25 and total_hint_int is None):
+            provider_completeness_unverified = True
         for index, event in enumerate(daily_events):
             if not isinstance(event, dict):
                 continue
@@ -260,6 +268,7 @@ def _scoreboard(
     merged_data["_wow_provider_limit"] = bounded_limit
     merged_data["_wow_provider_result_count"] = len(events)
     merged_data["_wow_provider_truncated"] = provider_truncated
+    merged_data["_wow_provider_completeness_unverified"] = provider_completeness_unverified
     merged_data["_wow_provider_request_dates"] = date_keys
     merged_data["_wow_provider_daily_request_count"] = len(date_keys)
     # A process may live across many Daily scans. Never freeze a live slate
@@ -352,16 +361,57 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
     }
 
 
+# Require tight point-in-time matching when bridging an outside provider ID to
+# ESPN. Same-team repeat fixtures must never silently acquire another game's odds.
+_EVENT_RELOOKUP_TOLERANCE_SECONDS = 30 * 60
+
+
+def _identity_time(value: Any) -> datetime | None:
+    """Identity matches require explicit source timezone, not a guessed UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
 def _event_matches(event: dict[str, Any], context: dict[str, Any] | None, event_id: str) -> bool:
-    if str(event.get("id")) == event_id.removeprefix("espn-"):
-        return True
-    if not context:
+    requested = str(event_id or "").strip()
+    event_identity = str(event.get("id") or "").strip()
+    exact_espn_id = requested.startswith("espn-") and event_identity == requested[5:]
+    # When the caller knows the ESPN ID, names cannot override a conflicting ID.
+    if requested.startswith("espn-") and not exact_espn_id:
         return False
+    if not context:
+        return exact_espn_id
+
     home, away = _competitors(event)
-    return (
-        _norm(_team_name(home)) == _norm(context.get("home_team"))
-        and _norm(_team_name(away)) == _norm(context.get("away_team"))
-    )
+    expected_home = _norm(context.get("home_team"))
+    expected_away = _norm(context.get("away_team"))
+    if expected_home and _norm(_team_name(home)) != expected_home:
+        return False
+    if expected_away and _norm(_team_name(away)) != expected_away:
+        return False
+    if not exact_espn_id and not (expected_home and expected_away):
+        return False
+
+    expected_start_raw = context.get("commence_time")
+    if expected_start_raw:
+        expected_start = _identity_time(expected_start_raw)
+        observed_start = _identity_time(event.get("date"))
+        if (expected_start is None or observed_start is None
+                or abs((observed_start - expected_start).total_seconds())
+                > _EVENT_RELOOKUP_TOLERANCE_SECONDS):
+            return False
+    elif not exact_espn_id:
+        return False
+    # Outside-provider IDs can match only by both teams and a near-identical
+    # kickoff; these matches are additionally required to be unique below.
+    return exact_espn_id or bool(expected_home and expected_away and expected_start_raw)
 
 
 def _moneyline(value: Any) -> int | float | None:
@@ -410,10 +460,10 @@ def espn_h2h_payload(event: dict[str, Any], *, primary_failure: str | None = Non
         "bookmakers": [{
             "key": f"espn_backup_{_norm(provider_name) or 'scoreboard'}",
             "title": f"{provider_name} via ESPN backup",
-            "last_update": odds.get("lastUpdated") or event.get("date"),
+            "last_update": odds.get("lastUpdated"),
             "markets": [{
                 "key": "h2h",
-                "last_update": odds.get("lastUpdated") or event.get("date"),
+                "last_update": odds.get("lastUpdated"),
                 "outcomes": [
                     {"name": home_name, "price": home_ml},
                     {"name": away_name, "price": away_ml},
@@ -435,7 +485,18 @@ def _find_event(
             if value and value not in lookup_dates:
                 lookup_dates.append(value)
         if not lookup_dates and context.get("commence_time"):
-            lookup_dates.append(_date_key(str(context.get("commence_time"))))
+            # ESPN partitions US evening events by Eastern date, not UTC.
+            # The permitted 30-minute identity-match window may straddle
+            # Eastern midnight: query both affected day partitions or we
+            # would lose a matching event despite a valid kickoff tolerance.
+            start = _identity_time(context["commence_time"])
+            if start is None:
+                return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_EVENT_NOT_FOUND")
+            margin = timedelta(seconds=_EVENT_RELOOKUP_TOLERANCE_SECONDS)
+            lookup_dates.extend(sorted({
+                (start - margin).astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d"),
+                (start + margin).astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d"),
+            }))
 
     if not lookup_dates:
         board = _scoreboard(sport_key, {})
@@ -453,11 +514,38 @@ def _find_event(
                 return board
             boards.append(board)
 
+    # An external provider ID is resolved by *uniqueness* across a source
+    # slate. Missing or unverified completeness makes that proof impossible;
+    # an ESPN-prefixed exact ID does not depend on whole-slate uniqueness.
+    if not str(event_id).startswith("espn-"):
+        if any(
+            isinstance(board.data, dict)
+            and board.data.get("_wow_provider_truncated") is True
+            for board in boards
+        ):
+            return SecondaryResult(
+                False, status=409, code="ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
+            )
+        if any(
+            not isinstance(board.data, dict)
+            or board.data.get("_wow_provider_truncated") is not False
+            or board.data.get("_wow_provider_completeness_unverified") is not False
+            for board in boards
+        ):
+            return SecondaryResult(
+                False, status=409, code="ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
+            )
+
+    candidates: dict[str, dict[str, Any]] = {}
     for board in boards:
         events = board.data.get("events") if isinstance(board.data, dict) else []
         for event in events or []:
             if isinstance(event, dict) and _event_matches(event, context, event_id):
-                return SecondaryResult(True, event, 200)
+                candidates[str(event.get("id"))] = event
+    if len(candidates) > 1:
+        return SecondaryResult(False, status=409, code="ESPN_EVENT_RELOOKUP_AMBIGUOUS")
+    if candidates:
+        return SecondaryResult(True, next(iter(candidates.values())), 200)
     return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_EVENT_NOT_FOUND")
 
 
@@ -496,6 +584,10 @@ def secondary_for_request(
                 code=("ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
                       if board.data.get("_wow_provider_truncated") is True
                       else "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"),
+            )
+        if board.data.get("_wow_provider_completeness_unverified") is True:
+            return SecondaryResult(
+                False, status=board.status, code="ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
             )
         events = board.data["events"]
         in_window = [event for event in events if isinstance(event, dict) and _within_exact_window(event, params)]
