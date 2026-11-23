@@ -110,7 +110,7 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
 
 def _verified_event_key(row: dict[str, Any]) -> tuple[str, str, str] | None:
     """Exactly bind peers by sport, event ID and timezone-aware start time."""
-    sport = str(row.get("sport_key") or "").strip()
+    sport = str(row.get("sport_key") or row.get("sport") or "").strip()
     event_id = str(row.get("official_event_id") or "").strip()
     raw = candidate_event_start(row)
     if not sport or not event_id or not isinstance(raw, str):
