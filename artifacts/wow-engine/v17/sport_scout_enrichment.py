@@ -14,6 +14,7 @@ from typing import Any
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
     from v17.matchup_discovery import discover_matchup
+    from v17.context_change_impact import assess_context_change_impact
     from v17.news_event_research_handoff import reconcile_news_handoff
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
@@ -21,6 +22,7 @@ try:  # package import under pytest/backend runtime
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
     from matchup_discovery import discover_matchup
+    from context_change_impact import assess_context_change_impact
     from news_event_research_handoff import reconcile_news_handoff
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
@@ -82,6 +84,15 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
         )
         enriched["news_intelligence_status"] = enriched["news_research_handoff"]["research_status"]
         enriched["news_research_rescore_requested"] = enriched["news_research_handoff"]["research_rescore_requested"]
+    # Read-only, event-wide fail-closed handoff. This does not rescore or
+    # change the controlling specialist / V17 terminal authority.
+    enriched["context_change_impact"] = assess_context_change_impact(
+        enriched, enriched.get("news_research_handoff")
+    )
+    if enriched["context_change_impact"]["research_invalidation_requested"]:
+        enriched["research_recommendation_status"] = (
+            enriched["context_change_impact"]["impact_status"]
+        )
     enriched["can_execute"] = False
     return enriched
 
@@ -131,6 +142,26 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         "rows_with_screened_exact_quote": quote_screened_rows,
         "model_rescore_verified": False,
         "prediction_authority": False,
+        "can_execute": False,
+    }
+    # Visibility across both lanes; requested rescores are NOT verified
+    # specialist consumption or certified probability updates.
+    context_statuses: dict[str, int] = {}
+    context_stale_rows = 0
+    for lane_key in ("team_event_candidates", "prop_candidates"):
+        for candidate in handoff.get(lane_key, []) or []:
+            impact = candidate.get("context_change_impact") or {}
+            status = str(impact.get("impact_status") or "CONTEXT_AUDIT_MISSING")
+            context_statuses[status] = context_statuses.get(status, 0) + 1
+            context_stale_rows += bool(impact.get("research_invalidation_requested"))
+    out["context_impact_summary"] = {
+        "schema_version": "wow.v17.context_impact_coverage.v1",
+        "impact_status_counts": context_statuses,
+        "rows_research_invalidation_requested": context_stale_rows,
+        "all_position_roles_scoped": True,
+        "all_applicable_market_families_scoped": True,
+        "fitted_specialist_rescore_verified": False,
+        "terminal_enforcement_verified": False,
         "can_execute": False,
     }
     out["sport_scout_registry"] = registry_payload()
