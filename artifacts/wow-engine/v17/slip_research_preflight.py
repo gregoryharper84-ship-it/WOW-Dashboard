@@ -232,8 +232,38 @@ def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> 
             or _text(news.get("sport")).upper() != _text(leg.get("sport")).upper()
             or _text(news.get("official_event_id")) != _text(leg.get("official_event_id"))):
         return ["NEWS_PREGAME_VERIFICATION_UNVERIFIED"]
-    if news.get("material_change") is True and not _text(news.get("new_model_receipt_id")):
-        return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+    # A free-text receipt ID is not evidence that the fitted model saw the
+    # post-change lineup/role. This is a downgrade-only, research-level shape
+    # audit: even a passing caller-supplied receipt is NOT authenticated proof.
+    if news.get("material_change") is True:
+        receipt = news.get("new_model_receipt")
+        if not isinstance(receipt, Mapping):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        frozen = _time(receipt.get("frozen_at_utc"))
+        if (not _text(news.get("new_model_receipt_id"))
+                or _text(receipt.get("immutable_pregame_receipt_id")) != _text(news.get("new_model_receipt_id"))
+                or not _text(receipt.get("fitted_model_hash"))
+                or not _text(receipt.get("calibration_receipt_id"))
+                or _text(receipt.get("consumed_news_review_receipt_id")) != _text(news.get("independent_review_receipt_id"))
+                or frozen is None or frozen < seen or frozen > as_of or frozen >= start
+                or _text(receipt.get("sport")).upper() != _text(leg.get("sport")).upper()
+                or _text(receipt.get("official_event_id")) != _text(leg.get("official_event_id"))
+                or _market(receipt.get("market_family")) != _market(leg.get("market_family"))
+                or _text(receipt.get("market_period")).upper() != _text(leg.get("market_period")).upper()
+                or _text(receipt.get("side")).upper() != _text(leg.get("side")).upper()
+                or _text(receipt.get("settlement_basis")).upper() != _text(leg.get("settlement_basis")).upper()
+                or _line_key(receipt.get("exact_line")) != _line_key(leg.get("exact_line"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        market = _market(leg.get("market_family"))
+        if market in _PROPS and (
+                not _text(leg.get("official_player_id")) or not _text(leg.get("stat_type"))
+                or _text(receipt.get("official_player_id")) != _text(leg.get("official_player_id"))
+                or _text(receipt.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        if market == "TEAM_TOTAL" and (
+                not _text(leg.get("selected_team_id"))
+                or _text(receipt.get("selected_team_id")) != _text(leg.get("selected_team_id"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
     return []
 
 
