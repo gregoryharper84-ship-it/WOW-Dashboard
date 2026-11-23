@@ -20,6 +20,9 @@ class _Response:
 
     def __init__(self, payload):
         self.payload = payload
+        # Identity is matched from these bytes and their SHA-256 is recorded, so
+        # a schedule fixture has to provide the body, not only a parsed payload.
+        self.content = json.dumps(payload).encode()
 
     def json(self):
         return self.payload

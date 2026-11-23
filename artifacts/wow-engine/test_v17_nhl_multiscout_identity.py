@@ -1,6 +1,8 @@
 """Official NHL Multiscout identity mapping regressions."""
 from __future__ import annotations
 
+import json
+
 from v17.nhl_multiscout_identity import resolve_multiscout_nhl_identity
 
 
@@ -9,6 +11,9 @@ class _Response:
 
     def __init__(self, payload):
         self.payload = payload
+        # Identity is matched from these bytes and their SHA-256 is recorded, so
+        # a schedule fixture has to provide the body, not only a parsed payload.
+        self.content = json.dumps(payload).encode()
 
     def json(self):
         return self.payload
