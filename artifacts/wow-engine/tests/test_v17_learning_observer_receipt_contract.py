@@ -61,3 +61,90 @@ def test_missing_credential_emits_durable_typed_receipt(tmp_path: Path) -> None:
     assert receipt["automatic_promotion_allowed"] is False
     assert "BLOCKED: LEARNING_CREDENTIAL_NOT_CONFIGURED" in summary_path.read_text()
     assert "Status: PASS" not in summary_path.read_text()
+
+
+def test_bad_capture_count_writes_only_blocked_not_false_pass(tmp_path: Path) -> None:
+    _, script = _learn_script()
+    safe_result = {
+        "schema_version": "WOW17_CONTINUOUS_INTELLIGENCE_V1",
+        "status": "PASS", "can_execute": False,
+        "automatic_promotion_allowed": False,
+        "model_parameters_changed": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "authority": "ADVISORY_ONLY",
+        "completed_stages": 4, "total_stages": 4,
+        "stages": [
+            {"stage": stage, "status": "PASS", "can_execute": False,
+             "observation_n": ("invalid" if i == 0 else 1)}
+            for i, stage in enumerate([
+                "PROP_CAPTURE", "EVENT_CAPTURE", "COHORT_SUMMARY",
+                "COMPOUNDING_MEMORY",
+            ])
+        ],
+    }
+    mock = (
+        "import io, json, urllib.request\n"
+        "class StubResponse(io.BytesIO): pass\n"
+        f"_receipt = {repr(safe_result)}\n"
+        "urllib.request.urlopen = lambda *a, **kw: "
+        "StubResponse(json.dumps(_receipt).encode('utf-8'))\n"
+    )
+    summary = tmp_path / "summary.md"
+    env = {
+        **os.environ,
+        "WOW_ACTION_API_KEY": "synthetic-test-only",
+        "WOW_CAN_EXECUTE": "false", "WOW_DRY_RUN_ONLY": "true",
+        "WOW_ACTION_ORIGIN": "https://synthetic.invalid",
+        "RUNNER_TEMP": str(tmp_path), "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    process = subprocess.run(
+        [sys.executable, "-c", mock + script], env=env, cwd=ROOT,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert process.returncode != 0
+    assert "LEARNING_CAPTURE_COUNT_INVALID" in process.stderr
+    receipt = json.loads((tmp_path / "wow-v17-learning-receipt.json").read_text())
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["blocker"] == "LEARNING_CAPTURE_COUNT_INVALID"
+    assert receipt["can_execute"] is False
+    assert "Status: PASS" not in summary.read_text()
+
+
+def test_zero_capture_is_not_success(tmp_path: Path) -> None:
+    _, script = _learn_script()
+    result = {
+        "schema_version": "WOW17_CONTINUOUS_INTELLIGENCE_V1",
+        "status": "PASS", "can_execute": False,
+        "automatic_promotion_allowed": False,
+        "model_parameters_changed": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "authority": "ADVISORY_ONLY", "completed_stages": 4, "total_stages": 4,
+        "stages": [
+            {"stage": stage, "status": "PASS", "can_execute": False,
+             "observation_n": 0}
+            for stage in [
+                "PROP_CAPTURE", "EVENT_CAPTURE", "COHORT_SUMMARY",
+                "COMPOUNDING_MEMORY",
+            ]
+        ],
+    }
+    stub = (
+        "import io, json, urllib.request\n"
+        f"_data = {repr(result)}\n"
+        "urllib.request.urlopen = lambda *a, **kw: io.BytesIO(json.dumps(_data).encode())\n"
+    )
+    env = {
+        **os.environ, "WOW_ACTION_API_KEY": "synthetic-test-only",
+        "WOW_CAN_EXECUTE": "false", "WOW_DRY_RUN_ONLY": "true",
+        "WOW_ACTION_ORIGIN": "https://synthetic.invalid",
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+    }
+    process = subprocess.run(
+        [sys.executable, "-c", stub + script], env=env, cwd=ROOT,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert process.returncode != 0
+    assert "LEARNING_ZERO_CAPTURE_NOT_VERIFIED" in process.stderr
+    receipt = json.loads((tmp_path / "wow-v17-learning-receipt.json").read_text())
+    assert receipt["status"] == "BLOCKED"
