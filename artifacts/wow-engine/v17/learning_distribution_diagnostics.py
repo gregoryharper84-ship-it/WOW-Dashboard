@@ -92,7 +92,7 @@ def _prop_identity(row: Mapping[str, Any]) -> tuple[Any, ...] | None:
     values = tuple(row.get(k) for k in fields)
     if any(x is None or x == "" for x in values):
         return None
-    if str(row.get("direction")).upper() not in ("MORE", "LESS"):
+    if row.get("direction") not in ("MORE", "LESS"):
         return None
     return values
 
@@ -150,7 +150,7 @@ def discrete_prop_distribution_audit(
         ):
             reason = "OFFICIAL_SETTLEMENT_MISSING_OR_NONBINARY"
         actual = settlement.get("actual_count")
-        if not reason and (type(actual) is not int or actual < 0):
+        if not reason and (type(actual) is not int or not 0 <= actual <= 10000):
             reason = "ACTUAL_COUNT_INVALID"
         pmf = prediction.get("predictive_count_pmf")
         if not reason and (not isinstance(pmf, (list, tuple)) or not 1 <= len(pmf) <= 10001):
