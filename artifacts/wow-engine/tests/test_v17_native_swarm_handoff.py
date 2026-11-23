@@ -153,3 +153,42 @@ def test_existing_handoff_not_affected_by_candidate_default(monkeypatch):
     assert all("native_swarm_summary" not in item for key in ("team_event_candidates", "prop_candidates")
                for item in output["model_handoff"][key])
     assert output["can_execute"] is False
+
+
+def test_real_five_worker_local_path_is_research_hold_without_source_facts():
+    """Exercise actual native coordinator with canonical V17 imports, no fake run_swarm."""
+    output = enrich_candidate(candidate(native_swarm_requested=True), "TEAM_EVENT")
+    summary = output["native_swarm_summary"]
+    assert summary["status"] == "RESEARCH_ONLY_HOLD"
+    assert summary["reason_code"] is None
+    assert summary["workers_completed"] == 5
+    assert summary["research_facts_screened"] == 0
+    assert summary["missing_evidence_count"] > 0
+    assert isinstance(summary["receipt_sha256"], str)
+    assert len(summary["receipt_sha256"]) == 64
+    assert summary["external_llm_calls"] == 0
+    assert summary["paid_provider_calls"] == 0
+    assert summary["prediction_authority"] is False
+    assert summary["may_publish_or_qualify"] is False
+    assert summary["independent_source_verification"] is False
+    assert summary["can_execute"] is False
+    assert output["matchup_discovery"]["review_status"] == "MATCHUP_EVIDENCE_NOT_OBSERVED"
+
+
+def test_real_opt_in_handoff_preserves_non_opted_candidate_and_terminal_authority():
+    from v17.sport_scout_enrichment import enrich_handoff
+    out = enrich_handoff({
+        "can_execute": False,
+        "model_handoff": {
+            "team_event_candidates": [candidate(native_swarm_requested=True)],
+            "prop_candidates": [candidate(official_event_id="other-future-event")],
+        },
+    })
+    event = out["model_handoff"]["team_event_candidates"][0]
+    prop = out["model_handoff"]["prop_candidates"][0]
+    assert event["native_swarm_summary"]["status"] == "RESEARCH_ONLY_HOLD"
+    assert event["native_swarm_summary"]["workers_completed"] == 5
+    assert "native_swarm_summary" not in prop
+    assert out["governance"]["v17_terminal_reducer_is_terminal_authority"] is True
+    assert out["can_execute"] is False
+    assert out["model_handoff"]["team_event_candidates"][0]["can_execute"] is False
