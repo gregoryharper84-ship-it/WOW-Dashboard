@@ -37,6 +37,15 @@ def leg(row, event, *, sport="NBA", market="MONEYLINE", side="HOME", line=None):
         official_source_id="fixture-source-" + row,
         material_change=False,
     )
+    data["official_fixture_evidence"] = dict(
+        official_source_id="synthetic-official-schedule",
+        manifest_receipt_id="synthetic-official-event-" + event,
+        verified_at_utc="2026-11-19T23:30:00Z",
+        event_start_utc=START,
+        event_status="SCHEDULED",
+        sport=sport, official_event_id=event,
+        home_team_id="HOME", away_team_id="AWAY",
+    )
     return data
 
 
@@ -75,6 +84,16 @@ def prop(row, event, *, player="NUGGETS-15", team="HOME", line=24.5):
         official_player_id=player, player_team_id=team,
         official_source_id="synthetic-official-roster",
         observed_at_utc="2026-11-19T23:45:00Z",
+    )
+    data["prop_matchup_evidence"] = dict(
+        sport="NBA", official_event_id=event, official_player_id=player,
+        stat_type="POINTS", observed_at_utc="2026-11-19T23:42:00Z",
+        source_receipt_id="synthetic-prop-context",
+        opponent_efficiency_source_id="synthetic-defense",
+        role_minutes_source_id="synthetic-minutes",
+        usage_source_id="synthetic-usage",
+        pace_game_script_source_id="synthetic-scripts",
+        tail_scenario_source_id="synthetic-variance",
     )
     return data
 
@@ -367,6 +386,179 @@ def test_invalid_asof_and_missing_card_handled_explicitly():
     assert "RESEARCH_LEG_INVALID" in out["cards"][0]["blockers"]
     assert out["can_execute"] is False
 
+
+def test_wrong_date_or_already_final_official_fixture_holds_research_slip():
+    # McDavid-style prior-day fixture must never be relabeled today's pregame event.
+    old = leg("mc-david", "nhl-prior-game", sport="NHL")
+    old["official_fixture_evidence"]["event_start_utc"] = "2026-11-19T02:00:00Z"
+    result = audit_research_slips(
+        cards([old, leg("valid", "nba-current")]), as_of_utc=AS_OF)
+    assert "OFFICIAL_FIXTURE_IDENTITY_OR_CHRONOLOGY_UNVERIFIED" in result["cards"][0]["blockers"]
+    current = leg("already-final", "nba-final")
+    current["official_fixture_evidence"]["event_status"] = "FINAL"
+    result = audit_research_slips(
+        cards([current, leg("valid", "nba-other")]), as_of_utc=AS_OF)
+    assert "OFFICIAL_FIXTURE_NOT_SCHEDULED" in result["cards"][0]["blockers"]
+    assert result["joint_probability"] is None
+
+
+def test_fixture_provenance_absent_or_wrong_team_is_not_inferred_from_bookmaker_quote():
+    row = leg("one", "nba-one")
+    del row["official_fixture_evidence"]
+    result = audit_research_slips(cards([row, leg("two", "nba-two")]), as_of_utc=AS_OF)
+    assert "OFFICIAL_FIXTURE_EVIDENCE_MISSING" in result["cards"][0]["blockers"]
+    row = leg("one", "nba-one")
+    row["official_fixture_evidence"]["away_team_id"] = "OTHER"
+    result = audit_research_slips(cards([row, leg("two", "nba-two")]), as_of_utc=AS_OF)
+    assert "OFFICIAL_FIXTURE_IDENTITY_OR_CHRONOLOGY_UNVERIFIED" in result["cards"][0]["blockers"]
+
+
+def test_robertson_style_common_game_hinge_across_three_cards_is_held():
+    # Different props on the same event are not exact duplicate theses, but
+    # they still concentrate event/game-script risk across the whole session.
+    one = prop("robertson", "stars-penguins", player="NHL-ROB")
+    two = prop("johnston", "stars-penguins", player="NHL-JOH")
+    three = prop("malkin", "stars-penguins", player="NHL-MAL")
+    for row in (one, two, three):
+        row["sport"] = "NHL"
+        row["market_quote"]["sport"] = "NHL"
+        row["player_roster_evidence"]["sport"] = "NHL"
+        row["prop_matchup_evidence"]["sport"] = "NHL"
+        row["official_fixture_evidence"]["sport"] = "NHL"
+        row["news_evidence"]["sport"] = "NHL"
+    proposed = cards(
+        [one, leg("other-a", "nba-a")],
+        [two, leg("other-b", "nba-b")],
+        [three, leg("other-c", "nba-c")],
+    )
+    snapshot = deepcopy(proposed)
+    report = audit_research_slips(proposed, as_of_utc=AS_OF)
+    assert proposed == snapshot
+    assert report["cards"][0]["blockers"] == []
+    assert report["cards"][1]["blockers"] == []
+    assert "CROSS_SLIP_EVENT_HINGE_CONCENTRATION" in report["cards"][2]["blockers"]
+    assert report["cross_slip_event_exposure_counts"]["NHL|stars-penguins"] == 3
+    assert max(report["cross_slip_exact_exposure_counts"].values()) == 1
+    assert report["can_execute"] is False
+
+
+def test_claimed_price_edge_is_rejected_when_research_probability_below_breakeven():
+    jax = leg("jacksonville", "jaguars-giants")
+    jax["market_quote"]["american_odds"] = -266
+    jax["value_claim"] = "STRONG_VALUE"
+    jax["research_value_evidence"] = dict(
+        source_id="synthetic-external-forecast",
+        observed_at_utc="2026-11-19T23:45:00Z",
+        sport="NBA", official_event_id="jaguars-giants",
+        market_family="MONEYLINE", market_period="FULL_GAME",
+        side="HOME", exact_line=None,
+        settlement_basis="INCL_OT",
+        estimated_selection_probability=0.70,
+    )
+    result = audit_research_slips(cards([jax, leg("second", "nba-second")]), as_of_utc=AS_OF)
+    assert "RESEARCH_PRICE_EDGE_NOT_SUPPORTED" in result["cards"][0]["blockers"]
+    jax["research_value_evidence"]["estimated_selection_probability"] = 0.80
+    result = audit_research_slips(cards([jax, leg("second", "nba-second")]), as_of_utc=AS_OF)
+    assert "RESEARCH_PRICE_EDGE_NOT_SUPPORTED" not in result["cards"][0]["blockers"]
+    assert result["cards"][0]["can_publish_as_certified"] is False
+    assert result["cards"][0]["joint_probability"] is None
+    del jax["research_value_evidence"]
+    result = audit_research_slips(cards([jax, leg("second", "nba-second")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_CLAIM_UNSUPPORTED" in result["cards"][0]["blockers"]
+
+
+def test_gordon_style_under_requires_pace_role_usage_and_tail_context():
+    gordon = prop("gordon-under", "nuggets-bulls", player="NBA-GORDON")
+    del gordon["prop_matchup_evidence"]["pace_game_script_source_id"]
+    result = audit_research_slips(cards([gordon, leg("other", "other")]), as_of_utc=AS_OF)
+    assert "PROP_MATCHUP_CONTEXT_UNVERIFIED" in result["cards"][0]["blockers"]
+    gordon = prop("gordon-under", "nuggets-bulls", player="NBA-GORDON")
+    del gordon["prop_matchup_evidence"]
+    result = audit_research_slips(cards([gordon, leg("other", "other")]), as_of_utc=AS_OF)
+    assert "PROP_MATCHUP_CONTEXT_MISSING" in result["cards"][0]["blockers"]
+
+
+def test_duplicate_card_id_cannot_launder_repeated_exposure_as_one_card():
+    duplicated = cards([leg("a", "nba-x"), leg("b", "nba-y")],
+                       [leg("c", "nba-x"), leg("d", "nba-z")])
+    duplicated[1]["card_id"] = duplicated[0]["card_id"]
+    result = audit_research_slips(duplicated, as_of_utc=AS_OF)
+    assert "RESEARCH_CARD_ID_DUPLICATE" in result["cards"][1]["blockers"]
+    assert result["can_execute"] is False
+
+
+def test_research_value_cannot_launder_other_player_or_stat_into_price_edge():
+    gordon = prop("gordon", "nuggets-bulls", player="NBA-GORDON")
+    gordon["value_claim"] = "STRONG_VALUE"
+    gordon["research_value_evidence"] = dict(
+        source_id="synthetic-player-estimate",
+        observed_at_utc="2026-11-19T23:45:00Z",
+        sport="NBA", official_event_id="nuggets-bulls",
+        market_family="PLAYER_PROP", market_period="FULL_GAME",
+        side="UNDER", exact_line=24.5,
+        settlement_basis="INCL_OT",
+        official_player_id="NBA-JOKIC", stat_type="REBOUNDS",
+        estimated_selection_probability=0.80,
+    )
+    unrelated = leg("other", "nba-other")
+    result = audit_research_slips(cards([gordon, unrelated]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_PLAYER_STAT_MISMATCH" in result["cards"][0]["blockers"]
+    gordon["research_value_evidence"]["official_player_id"] = "NBA-GORDON"
+    result = audit_research_slips(cards([gordon, unrelated]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_PLAYER_STAT_MISMATCH" in result["cards"][0]["blockers"]
+    gordon["research_value_evidence"]["stat_type"] = "POINTS"
+    result = audit_research_slips(cards([gordon, unrelated]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_PLAYER_STAT_MISMATCH" not in result["cards"][0]["blockers"]
+    assert result["cards"][0]["can_publish_as_certified"] is False
+    assert result["cards"][0]["joint_probability"] is None
+
+
+def test_research_value_team_total_must_match_exact_selected_team():
+    g = total("home-team-total", "nba-1", side="UNDER", line=115.5)
+    g["market_family"] = "TEAM_TOTAL"
+    g["selected_team_id"] = "HOME"
+    g["market_quote"]["market_family"] = "TEAM_TOTAL"
+    g["market_quote"]["selected_team_id"] = "HOME"
+    g["total_evidence"]["selected_team_id"] = "HOME"
+    g["total_evidence"]["fitted_total_distribution_receipt"]["selected_team_id"] = "HOME"
+    g["value_claim"] = "STRONG_VALUE"
+    g["research_value_evidence"] = dict(
+        source_id="synthetic-team-estimate",
+        observed_at_utc="2026-11-19T23:45:00Z",
+        sport="NBA", official_event_id="nba-1",
+        market_family="TEAM_TOTAL", market_period="FULL_GAME",
+        side="UNDER", exact_line=115.5,
+        settlement_basis="INCL_OT",
+        selected_team_id="AWAY", estimated_selection_probability=0.80,
+    )
+    result = audit_research_slips(cards([g, leg("other", "nba-2")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_TEAM_MISMATCH" in result["cards"][0]["blockers"]
+    g["research_value_evidence"]["selected_team_id"] = "HOME"
+    result = audit_research_slips(cards([g, leg("other", "nba-2")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_TEAM_MISMATCH" not in result["cards"][0]["blockers"]
+    assert result["cards"][0]["can_publish_as_certified"] is False
+
+
+def test_research_value_settlement_basis_must_match_exact_over_time_rule():
+    gordon = prop("gordon-under", "nuggets-bulls", player="NBA-GORDON")
+    gordon["value_claim"] = "STRONG_VALUE"
+    gordon["research_value_evidence"] = dict(
+        source_id="synthetic-stat-prob",
+        observed_at_utc="2026-11-19T23:45:00Z",
+        sport="NBA", official_event_id="nuggets-bulls",
+        market_family="PLAYER_PROP", market_period="FULL_GAME",
+        side="UNDER", exact_line=24.5,
+        settlement_basis="EXCL_OT",
+        official_player_id="NBA-GORDON", stat_type="POINTS",
+        estimated_selection_probability=0.80,
+    )
+    out = audit_research_slips(cards([gordon, leg("other", "nba-other")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_EVIDENCE_UNVERIFIED" in out["cards"][0]["blockers"]
+    gordon["research_value_evidence"]["settlement_basis"] = "INCL_OT"
+    out = audit_research_slips(cards([gordon, leg("other", "nba-other")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_EVIDENCE_UNVERIFIED" not in out["cards"][0]["blockers"]
+    assert out["joint_probability"] is None
+    assert out["cards"][0]["can_publish_as_certified"] is False
 
 SPORTS_13 = (
     "NFL", "NBA", "NHL", "NCAAF", "MLB", "WNBA", "NCAAB",
