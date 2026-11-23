@@ -167,3 +167,11 @@ def test_bool_and_nan_never_become_calibrated_probability():
 def test_source_receipt_fields_are_not_returned_as_secret_or_execution_authority():
     p, o = prop()
     assert capture_eligibility(p, o, kind="PROP") is None
+
+
+@pytest.mark.parametrize("kind,factory", [("PROP", prop), ("EVENT", event)])
+def test_zero_calibrated_lower_bound_is_valid_not_an_arbitrary_haircut(kind, factory):
+    p, o = factory()
+    key = "calibrated_probability_lower_bound" if kind == "PROP" else "calibrated_home_lower_bound"
+    p[key] = 0.0
+    assert capture_eligibility(p, o, kind=kind) is None
