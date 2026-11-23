@@ -608,6 +608,16 @@ def audit_research_slips(
             if _text(leg.get("market_family")).upper() not in _TOTALS | _PROPS | {"MONEYLINE", "ML", "POINT_SPREAD", "SPREAD"}:
                 reasons.append("MARKET_FAMILY_UNSUPPORTED")
             market = _market(leg.get("market_family"))
+            niche_research = classify_niche_prop(leg)
+            if (niche_research["stat_type"] == "FIELD_GOALS_MADE_COMBO"
+                    and _text(leg.get("sport")).upper() == "NFL"):
+                # The fitted prop manifest has no dedicated first-quarter
+                # two-kicker combo route. Never launder a combo into the
+                # individual-player prop contract, even with a plausible quote.
+                reasons.append("NFL_KICKER_COMBO_SPECIALIST_NOT_DECLARED")
+                if market == "PLAYER_PROP":
+                    reasons.append("NFL_KICKER_COMBO_NOT_SINGLE_PLAYER_PROP")
+                reasons.extend("NICHE_" + gap for gap in niche_research["identity_gaps"])
             if market in _TOTALS | _PROPS | {"POINT_SPREAD", "SPREAD"} and _number(leg.get("exact_line")) is None:
                 reasons.append("EXACT_LINE_MISSING")
             if not _text(leg.get("settlement_basis")):
@@ -646,7 +656,7 @@ def audit_research_slips(
             reasons = list(dict.fromkeys(reasons))
             leg_reports.append({"index": i, "row_id": leg.get("row_id"),
                                 "blockers": reasons, "research_only": True,
-                                "niche_prop_research": classify_niche_prop(leg),
+                                "niche_prop_research": niche_research,
                                 "quote_independently_authenticated": False,
                                 "news_independently_authenticated": False,
                                 "model_probability_verified": False})
