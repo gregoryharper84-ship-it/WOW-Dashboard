@@ -8,13 +8,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
     from v17.matchup_discovery import discover_matchup
-    from v17.context_change_impact import assess_context_change_impact
+    from v17.context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact
     from v17.news_event_research_handoff import reconcile_news_handoff
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
@@ -22,7 +23,7 @@ try:  # package import under pytest/backend runtime
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
     from matchup_discovery import discover_matchup
-    from context_change_impact import assess_context_change_impact
+    from context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact
     from news_event_research_handoff import reconcile_news_handoff
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
@@ -97,6 +98,87 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
     return enriched
 
 
+def _verified_event_key(row: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Exactly bind peers by sport, event ID and timezone-aware start time."""
+    sport = str(row.get("sport_key") or "").strip()
+    event_id = str(row.get("official_event_id") or "").strip()
+    raw = row.get("event_start_utc") or row.get("commence_time") or row.get("event_start_time_utc")
+    if not sport or not event_id or not isinstance(raw, str):
+        return None
+    try:
+        at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if at.utcoffset() is None:
+            return None
+        return (sport, event_id, at.astimezone(timezone.utc).isoformat())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _propagate_peer_context_holds(handoff: dict[str, Any]) -> int:
+    """Conservatively quarantine every peer role/market for the same event.
+
+    Material research evidence on one starter/bench/specialist must not leave
+    same-event opponent/team/player candidates appearing unaffected. This is a
+    research publication HOLD only. News assertions cannot validate model use.
+    """
+    lanes = ("team_event_candidates", "prop_candidates")
+    affected: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for lane in lanes:
+        for row in handoff.get(lane) or []:
+            key = _verified_event_key(row)
+            impact = row.get("context_change_impact")
+            if (key is None or not isinstance(impact, dict)
+                    or impact.get("impact_status") not in {
+                        "CONTEXT_STALE_RECALC_REQUIRED",
+                        "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+                    } or impact.get("research_invalidation_requested") is not True):
+                continue
+            evidence = affected.setdefault(key, {"sources": set(), "subjects": set()})
+            receipt = impact.get("trigger_research_receipt_sha256")
+            if isinstance(receipt, str) and len(receipt) == 64:
+                evidence["sources"].add(receipt)
+            for subject in impact.get("source_subject_ids") or []:
+                if isinstance(subject, str) and subject:
+                    evidence["subjects"].add(subject)
+    propagated = 0
+    for lane in lanes:
+        updated = []
+        for row in handoff.get(lane) or []:
+            key = _verified_event_key(row)
+            peer = affected.get(key) if key is not None else None
+            impact = row.get("context_change_impact")
+            if (peer is None or not isinstance(impact, dict)
+                    or impact.get("research_invalidation_requested") is True):
+                updated.append(row)
+                continue
+            clone = dict(row)
+            peer_impact = dict(impact)
+            peer_impact.update({
+                "impact_status": "CONTEXT_STALE_RECALC_REQUIRED",
+                "research_invalidation_requested": True,
+                "research_rescore_requested": False,
+                "fitted_specialist_rescore_verified": False,
+                "terminal_invalidation_enforced_by_this_module": False,
+                "model_probability_created": False,
+                "prediction_authority": False,
+                "position_scope": ALL_POSITION_SCOPE,
+                "no_position_exclusions": True,
+                "market_scope_policy": "EVENT_WIDE_CONSERVATIVE_FAIL_CLOSED",
+                "affected_market_families": list(ALL_MARKET_FAMILIES),
+                "source_subject_ids": sorted(peer["subjects"]),
+                "event_peer_research_receipt_sha256": sorted(peer["sources"]),
+                "propagated_from_event_peer": True,
+                "can_execute": False,
+            })
+            clone["context_change_impact"] = peer_impact
+            clone["research_recommendation_status"] = "CONTEXT_STALE_RECALC_REQUIRED"
+            clone["can_execute"] = False
+            updated.append(clone)
+            propagated += 1
+        handoff[lane] = updated
+    return propagated
+
+
 def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("can_execute") is not False:
         raise ValueError("SCOUT_HANDOFF_CAN_EXECUTE_MUST_BE_FALSE")
@@ -116,6 +198,7 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         )
     handoff["team_event_candidates"] = [enrich(row, "TEAM_EVENT") for row in handoff.get("team_event_candidates", []) or [] if isinstance(row, dict)]
     handoff["prop_candidates"] = [enrich(row, "PROP") for row in handoff.get("prop_candidates", []) or [] if isinstance(row, dict)]
+    peer_holds = _propagate_peer_context_holds(handoff)
     out["model_handoff"] = handoff
     # Count source-screened evidence only; a requested feature is not proof
     # that current evidence exists or any fitted specialist consumed it.
@@ -158,6 +241,7 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "wow.v17.context_impact_coverage.v1",
         "impact_status_counts": context_statuses,
         "rows_research_invalidation_requested": context_stale_rows,
+        "same_event_peer_rows_quarantined": peer_holds,
         "all_position_roles_scoped": True,
         "all_applicable_market_families_scoped": True,
         "fitted_specialist_rescore_verified": False,
