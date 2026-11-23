@@ -5,7 +5,8 @@ on:
     - cron: "0 10 * * *"
   workflow_dispatch:
   workflow_run:
-    workflows: ["wow-v17-render-production-deploy"]
+    # Active checked deploy controller is required-checks-deploy; retain legacy.
+    workflows: ["wow-v17-render-production-deploy", "wow-v17-required-checks-deploy"]
     types: [completed]
     branches: [main]
   push:
