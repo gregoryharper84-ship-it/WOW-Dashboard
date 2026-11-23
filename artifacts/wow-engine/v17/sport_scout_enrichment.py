@@ -33,7 +33,7 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
 
 
 def _native_swarm_receipt_valid(
-    receipt: dict[str, Any], candidate: dict[str, Any],
+    receipt: dict[str, Any], expected_manifest: dict[str, Any],
     worker_ids: tuple[str, ...], validate_submission: Any,
 ) -> bool:
     """Bound a local receipt before promoting *any* field to public metadata."""
@@ -50,8 +50,8 @@ def _native_swarm_receipt_valid(
                 or not isinstance(run_id, str) or len(run_id) != 20
                 or any(c not in hexdigits for c in run_id)
                 or not isinstance(event, dict)
-                or event.get("official_event_id") != candidate.get("official_event_id")
-                or event.get("sport_key") != candidate.get("sport_key")
+                or event != expected_manifest.get("event")
+                or run_id != expected_manifest.get("run_id")
                 or event.get("can_execute") is not False
                 or receipt.get("max_parallel") != 2
                 or receipt.get("waves_completed") != 3
@@ -60,10 +60,7 @@ def _native_swarm_receipt_valid(
                 or not isinstance(handoff, dict)
                 or not isinstance(handoff.get("source_screened_research_facts"), list)):
             return False
-        manifest = {
-            "event": event, "run_id": run_id,
-            "workers": [{"worker_id": worker_id} for worker_id in worker_ids],
-        }
+        manifest = expected_manifest
         for i, report in enumerate(workers):
             if (not isinstance(report, dict)
                     or report.get("worker_id") != worker_ids[i]
@@ -93,7 +90,9 @@ def _native_swarm_receipt_valid(
                         or verdict.get("facts_screened_structurally") != len(worker["facts"])):
                     return False
         domain_facts = [fact for worker in workers[1:] for fact in worker["facts"]]
-        return handoff["source_screened_research_facts"] == domain_facts
+        return (all(isinstance(fact, dict) and fact.get("source_rights_status") == "CLEARED_FOR_RESEARCH"
+                    for fact in domain_facts)
+                and handoff["source_screened_research_facts"] == domain_facts)
     except (KeyError, TypeError, ValueError, AttributeError):
         # A malformed/untrusted receipt is a typed research hold, never metadata.
         return False
@@ -131,12 +130,19 @@ def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
              or event_request.get("event_start_time_utc"))
     normalized = {**candidate, "commence_time": start}
     try:
-        from tools.wow_specialized_swarm import WORKERS, run_swarm, validate_submission
-        receipt = run_swarm(normalized, max_parallel=2)
+        from tools.wow_specialized_swarm import WORKERS, build_manifest, run_swarm, validate_submission
+        # The manifest is recomputed from the caller's canonical event, not
+        # from the untrusted return. Invalid source identity/time is INPUT.
+        expected_manifest = build_manifest(normalized, max_parallel=2)
     except (ValueError, TypeError, KeyError):
         return {**base, "reason_code": "NATIVE_SWARM_INPUT_INVALID"}
     except Exception:
-        # Never expose provider, credential or source values in a public handoff.
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    try:
+        receipt = run_swarm(normalized, max_parallel=2)
+    except Exception:
+        # Once admitted, all worker/verification faults are runtime contract
+        # failures, even if the coordinator raises ValueError.
         return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
     if not isinstance(receipt, dict):
         return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
@@ -161,7 +167,7 @@ def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
             or not isinstance(handoff.get("source_screened_research_facts"), list)
             or not isinstance(handoff.get("missing_evidence"), list)
             or not isinstance(handoff.get("conflicts"), list)
-            or not _native_swarm_receipt_valid(receipt, normalized, WORKERS, validate_submission)):
+            or not _native_swarm_receipt_valid(receipt, expected_manifest, WORKERS, validate_submission)):
         return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
     return {
         **base, "status": receipt["status"],
