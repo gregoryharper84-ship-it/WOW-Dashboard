@@ -120,3 +120,18 @@ def test_missing_utc_timezone_not_accepted():
     pre['event_start_utc'] = '2026-11-23T02:00:00'
     r = discrete_prop_distribution_audit([(pre, post)])
     assert r['rows_graded'] == 0
+
+
+def test_lowercase_direction_is_not_accepted_as_canonical():
+    pre, post = prop_pair()
+    pre['direction'] = post['direction'] = 'more'
+    r = discrete_prop_distribution_audit([(pre, post)])
+    assert r['rows_graded'] == 0
+
+
+def test_unbounded_actual_count_cannot_create_unbounded_crps_loop():
+    pre, post = prop_pair()
+    post['actual_count'] = 10**9
+    r = discrete_prop_distribution_audit([(pre, post)])
+    assert r['rows_graded'] == 0
+    assert r['blockers'][0]['reason'] == 'ACTUAL_COUNT_INVALID'
