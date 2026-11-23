@@ -274,17 +274,22 @@ def _context_impact_blockers(leg: Mapping[str, Any]) -> list[str]:
     update. They may only downgrade the research card, not clear an invalidation.
     """
     impact = leg.get("context_change_impact")
-    status = _text(leg.get("research_recommendation_status"))
+    recommendation_status = _text(leg.get("research_recommendation_status"))
+    impact_status = ""
     if isinstance(impact, Mapping):
-        status = _text(impact.get("impact_status")) or status
+        impact_status = _text(impact.get("impact_status"))
         if impact.get("research_invalidation_requested") is True:
             return ["CONTEXT_STALE_RECALC_REQUIRED"]
-    if status in {
+    # Neither caller-supplied assessment can clear the other. A newer
+    # NO_MATERIAL_EVENT_RECEIPT is NOT a verified fitted rescore or a release
+    # of an earlier peer-derived stale recommendation.
+    stale_states = {
         "CONTEXT_STALE_RECALC_REQUIRED", "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
         "CONTEXT_MATERIAL_EVIDENCE_INVALID", "CONTEXT_RECEIPT_DIGEST_INVALID",
         "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
         "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH", "CONTEXT_SPORT_NOT_MAPPED",
-    }:
+    }
+    if recommendation_status in stale_states or impact_status in stale_states:
         return ["CONTEXT_STALE_RECALC_REQUIRED"]
     return []
 
