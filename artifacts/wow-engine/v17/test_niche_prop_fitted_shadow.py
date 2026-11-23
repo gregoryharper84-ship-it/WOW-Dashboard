@@ -68,7 +68,7 @@ def test_fit_is_deterministic_only_research_and_uses_untouched_test():
     assert fitted["status"] == "SHADOW_UNCERTIFIED"
     assert fitted["artifact"]["model_digest"] == repeat["artifact"]["model_digest"]
     assert fitted["artifact"]["feature_keys"][-1] == "exact_line"
-    assert len(fitted["artifact"]["weights"]) == len(FEATURE_KEYS["NBA_LOW_VOLUME_UNDER"]) + 1
+    assert len(fitted["artifact"]["weights"]) == len(FEATURE_KEYS["NBA_LOW_VOLUME_UNDER"]) + 2
     assert set(("brier", "log_loss", "ece", "sample_count")) <= set(fitted["holdout_metrics"])
     assert fitted["holdout_metrics"]["sample_count"] == len(test)
     assert all(math.isfinite(fitted["holdout_metrics"][k]) for k in ("brier", "log_loss", "ece"))
