@@ -86,7 +86,7 @@ def test_action_schema_preserves_v17_boundary():
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
 
 
-def test_live_editor_schema_is_single_domain_and_exposes_all_27_operations():
+def test_live_editor_schema_is_single_domain_and_exposes_all_31_operations():
     document = _schema()
     assert document["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
     operations = {
@@ -95,7 +95,7 @@ def test_live_editor_schema_is_single_domain_and_exposes_all_27_operations():
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(operations) == 29
+    assert len(operations) == 31
     assert {
         "scoreWowTeamEventRequest",
         "submitWowV17DailySnapshot",
@@ -108,6 +108,8 @@ def test_live_editor_schema_is_single_domain_and_exposes_all_27_operations():
         "scoreWowV17MLBRunLineForwardShadow",
         "submitWowV17NFLPickemBoard",
         "getWowV17NFLPickemRun",
+        "readWowV17KalshiSlipResearch",
+        "publishWowV17KalshiSlipResearch",
     }.issubset(operations)
     assert "runWowV17NFLPickemBoard" not in operations
     assert "/v17/nfl-pickem-board" not in document["paths"]

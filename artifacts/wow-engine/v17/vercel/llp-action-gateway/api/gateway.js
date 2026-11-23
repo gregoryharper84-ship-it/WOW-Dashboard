@@ -6,6 +6,7 @@ const ROUTES = new Map([
   ["/health", { method: "GET", auth: false }],
   ["/governance", { method: "GET", auth: false }],
   ["/v17/host-contract", { method: "GET", auth: true }],
+  ["/v17/intelligence/kalshi-slip-exchange", { method: "GET", allowResearchPost: true, auth: true }],
   ["/v17/daily-snapshot-run", { method: "POST", auth: true }],
   ["/v17/daily-snapshot-run/__ROWS__", { method: "GET", auth: true }],
   ["/v17/llp-team-intelligence/__EVENTS__", { method: "GET", auth: true }],
@@ -81,7 +82,7 @@ export default async function handler(req, res) {
   if (!route) {
     return fail(res, 404, "LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED", requestId);
   }
-  if (req.method !== route.method) {
+  if (req.method !== route.method && !(route.allowResearchPost && req.method === "POST")) {
     return fail(res, 405, "LLP_VERCEL_GATEWAY_METHOD_NOT_ALLOWED", requestId, {
       allowed_method: route.method,
     });
