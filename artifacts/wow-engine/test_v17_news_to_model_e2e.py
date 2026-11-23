@@ -63,7 +63,7 @@ def _ok_scorer(request):
     }
 
 
-def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path):
+def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, monkeypatch):
     identity = resolve_multiscout_nhl_identity(
         {
             "sport_key": "icehockey_nhl",
@@ -145,7 +145,22 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path):
 
     # Default enrich_handoff uses unbound scorer → MODEL_UNAVAILABLE.
     # Re-dispatch with a genuine scorer to prove the fitted path.
-    enriched = enrich_handoff(attached)
+    # This synthetic as-of fixture is fixed at NOW. The production enrich
+    # function uses a live clock by default, so after 12h the independent
+    # league-news freshness gate legitimately rejects this archived claim.
+    # Inject only the deterministic *test* clock into the real reconciler;
+    # never loosen the production freshness check or fabricate a live receipt.
+    import v17.sport_scout_enrichment as enrichment_module
+    original_reconcile = enrichment_module.reconcile_news_handoff
+
+    def test_clock_reconcile(discovery, event, facts, **kwargs):
+        return original_reconcile(
+            discovery, event, facts, observed_at=NOW, **kwargs
+        )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(enrichment_module, "reconcile_news_handoff", test_clock_reconcile)
+        enriched = enrich_handoff(attached)
     candidate = enriched["model_handoff"]["team_event_candidates"][0]
     assert candidate["news_research_handoff"]["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
     assert candidate["news_research_rescore_requested"] is True
