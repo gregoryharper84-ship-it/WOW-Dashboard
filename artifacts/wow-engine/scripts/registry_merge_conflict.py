@@ -38,9 +38,11 @@ REGISTRY_DOCS = (
 _OID_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
-def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+def _git(
+    *args: str, check: bool = True, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
     proc = subprocess.run(
-        ("git",) + args, cwd=ROOT, capture_output=True, text=True
+        ("git",) + args, cwd=cwd or ROOT, capture_output=True, text=True
     )
     if check and proc.returncode not in (0, 1):
         raise SystemExit(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -73,8 +75,22 @@ def parse_merge_tree(stdout: str) -> list[str]:
 
 
 def conflicted_paths(base: str, head: str = "HEAD") -> list[str]:
-    """Paths that conflict when ``head`` is merged with ``base``; empty if clean."""
-    proc = _git("merge-tree", "--write-tree", "--name-only", base, head)
+    """Paths that conflict when ``head`` is merged with ``base``; empty if clean.
+
+    ``git merge-tree`` prints paths relative to the directory it runs in, so it
+    runs from the repository top level to match ``documented_paths()``; running
+    it from ``ROOT`` would print ``docs/failure_codes.md`` and never match. The
+    ``Auto-merging``/``CONFLICT`` notes are suppressed so only paths are parsed.
+    """
+    proc = _git(
+        "merge-tree",
+        "--write-tree",
+        "--name-only",
+        "--no-messages",
+        base,
+        head,
+        cwd=repo_root(),
+    )
     if proc.returncode == 0:
         return []
     return parse_merge_tree(proc.stdout)
