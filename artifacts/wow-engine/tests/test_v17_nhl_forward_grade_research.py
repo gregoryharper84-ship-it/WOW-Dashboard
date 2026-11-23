@@ -20,6 +20,7 @@ def forecast(**overrides):
         "official_event_id": "2026020381",
         "immutable_prediction_id": "synthetic-immutable-prediction-1",
         "forecast_created_at_utc": (START - timedelta(hours=2)).isoformat(),
+        "source_snapshot_timestamp": (START - timedelta(hours=3)).isoformat(),
         "fitted_model_version": "synthetic-nhl-fitted-1",
         "model_artifact_checksum": "a" * 64,
         "feature_snapshot_hash": "b" * 64,
@@ -79,6 +80,10 @@ def test_exact_official_forward_grade_and_cohort_remain_research_only():
 @pytest.mark.parametrize("change,code", [
     ({"forecast_created_at_utc": START.isoformat()}, "NHL_GRADE_CHRONOLOGY_INVALID"),
     ({"forecast_created_at_utc": (START + timedelta(minutes=2)).isoformat()},
+     "NHL_GRADE_CHRONOLOGY_INVALID"),
+    ({"source_snapshot_timestamp": (START - timedelta(hours=1)).isoformat()},
+     "NHL_GRADE_CHRONOLOGY_INVALID"),
+    ({"source_snapshot_timestamp": (START + timedelta(minutes=1)).isoformat()},
      "NHL_GRADE_CHRONOLOGY_INVALID"),
     ({"immutable_prediction_id": ""}, "NHL_FORECAST_RECEIPT_PROVENANCE_INCOMPLETE"),
     ({"source_snapshot_id": ""}, "NHL_FORECAST_RECEIPT_PROVENANCE_INCOMPLETE"),
