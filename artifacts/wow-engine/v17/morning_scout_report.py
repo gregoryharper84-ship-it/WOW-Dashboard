@@ -117,6 +117,34 @@ def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, 
                 return float(value)
         return -1.0
 
+    # Discovery is not independent publisher verification or fitted rescoring.
+    # Every published candidate carries an explicit unverified news provenance
+    # until a separate, authenticated specialist receipt proves otherwise.
+    bridge = handoff.get("public_news_discovery_bridge")
+    bridge = bridge if isinstance(bridge, dict) else {}
+    news_feed = {
+        "source_status": bridge.get("source_status") or "NOT_VERIFIED",
+        "source_code": bridge.get("source_code") or "NOT_VERIFIED",
+        "article_count": bridge.get("article_count", 0),
+        "selected_sport": bridge.get("sport_key"),
+        "source_observed_at_utc": bridge.get("source_observed_at"),
+        "discovery_receipt_sha256": bridge.get("source_sha256"),
+        "matched_scout_candidates": bridge.get("candidates_touched", 0),
+        "latest_independently_verified_news_at_utc": None,
+        "model_rescore_verified": False,
+        "news_layer_certified": False,
+        "can_execute": False,
+    }
+    for item in qualified + blocked:
+        item["news_feed_audit"] = {
+            **news_feed,
+            "selection_sport_match": bool(
+                news_feed["selected_sport"]
+                and news_feed["selected_sport"] ==
+                (item.get("sport_key") or item.get("sport"))
+            ),
+        }
+
     qualified.sort(key=lower_bound, reverse=True)
     report = {
         "schema_version": "wow.v17.morning-scout-picks.v1",
@@ -128,6 +156,7 @@ def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, 
         "specialist_reconciliation_pass": reconciliation_pass,
         "publication_gate_open": publication_gate_open,
         "governed_picks": qualified,
+        "news_feed_audit": news_feed,
         "blocked_or_unresolved": blocked,
         "research_only_candidates": handoff.get("model_handoff", {}),
         "durable_handoff": {

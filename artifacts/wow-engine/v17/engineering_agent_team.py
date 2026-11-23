@@ -464,15 +464,30 @@ def reliability_blocks_frontier(records: list[dict[str, Any]]) -> bool:
     return any(is_actionable(record) for record in records)
 
 
-def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
-    actionable = [r for r in records if is_actionable(r)]
+def select_priority_incident(
+    records: list[dict[str, Any]], *, exclude_release: bool = False
+) -> PriorityDecision:
+    """Select engineering work without starving repairs behind read-only release checks.
+
+    The independent release-resume workflow retains normal priority selection.
+    Only the 24-hour controller opts out of selecting release states; it does
+    not remove those states from the reliability/frontier gate.
+    """
+    all_actionable = [r for r in records if is_actionable(r)]
+    actionable = (
+        [r for r in all_actionable if str(r.get("state") or "OPEN").upper() not in ACTIVE_RELEASE_STATES]
+        if exclude_release else all_actionable
+    )
     if not actionable:
         return PriorityDecision(
             incident_id=None,
             severity="NONE",
             state="NONE",
-            reason="No actionable incident in durable ledger.",
-            frontier_allowed=True,
+            reason=(
+                "No non-release engineering incident; independent release verification continues."
+                if exclude_release and all_actionable else "No actionable incident in durable ledger."
+            ),
+            frontier_allowed=not reliability_blocks_frontier(records),
         )
 
     def sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
@@ -491,7 +506,7 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
         severity=severity,
         state=state,
         reason=f"Highest-priority actionable ledger item: {severity} {state}.",
-        frontier_allowed=not reliability_blocks_frontier(actionable),
+        frontier_allowed=not reliability_blocks_frontier(records),
     )
 
 
@@ -884,6 +899,8 @@ def main() -> None:
     parser.add_argument("--typed-failure", default="")
     parser.add_argument("--subsystem", default="")
     parser.add_argument("--wait-state", default="")
+    parser.add_argument("--exclude-release", action="store_true",
+                        help="Controller only: leave release-state verification to the independent release agent")
     args = parser.parse_args()
 
     if args.command == "lifecycle-classify":
@@ -925,7 +942,7 @@ def main() -> None:
 
     records = load_ledger(args.ledger)
     if args.command == "priority":
-        print(json.dumps(select_priority_incident(records).as_dict(), indent=2, sort_keys=True))
+        print(json.dumps(select_priority_incident(records, exclude_release=args.exclude_release).as_dict(), indent=2, sort_keys=True))
         return
     if args.command == "dual-priority":
         print(json.dumps(select_dual_stream_work(records).as_dict(), indent=2, sort_keys=True))

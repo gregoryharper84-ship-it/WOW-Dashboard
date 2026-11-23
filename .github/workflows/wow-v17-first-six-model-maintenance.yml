@@ -137,6 +137,8 @@ jobs:
       WOW_DRY_RUN_ONLY: "true"
     steps:
       - name: Assert non-execution governance and OIDC context
+        id: gov
+        continue-on-error: true
         shell: bash
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
@@ -145,6 +147,11 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Advance governed model-development lanes and team-state challengers
+        id: work
+        continue-on-error: true
+        # Fail closed: never run governed work unless the can_execute/OIDC
+        # governance assertion succeeded.
+        if: steps.gov.outcome == 'success'
         shell: bash
         run: |
           python - <<'PY'
@@ -334,3 +341,24 @@ jobs:
               print("::error title=FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED::" + json.dumps(blocked_ancillary, sort_keys=True)[:3500])
               raise RuntimeError("FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED:" + json.dumps(blocked_ancillary, sort_keys=True))
           PY
+      - name: Record authentic optional-observer outcome
+        continue-on-error: true
+        shell: bash
+        env:
+          GOV_OUTCOME: ${{ steps.gov.outcome }}
+          WORK_OUTCOME: ${{ steps.work.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Optional main-scoped observer"
+            echo "governance_outcome=$GOV_OUTCOME work_outcome=$WORK_OUTCOME"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOV_OUTCOME" != "success" ]; then
+            echo "FIRST_SIX_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED"
+          elif [ "$WORK_OUTCOME" = "success" ]; then
+            echo "FIRST_SIX_MODEL_MAINTENANCE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "FIRST_SIX_MODEL_MAINTENANCE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_MODEL_MAINTENANCE_INCOMPLETE"
+          fi

@@ -33,7 +33,7 @@ ACTION ORCHESTRATION
 - Missing or unbound required Action => LIVE_GPT_ACTION_INVOCATION_BLOCKED (host-orchestration failure); rows_attempted=0; action_invocation_attempted=false; scoring_attempted=false; backend_model_capability=UNKNOWN; not a model result.
 - If an invoked Action times out/disconnects/returns 5xx/no valid response, preserve ACTION_TRANSPORT_TIMEOUT/ACTION_TRANSPORT_FAILURE; action_invocation_attempted=true; do not relabel the invoked transport failure as LIVE_GPT_ACTION_INVOCATION_BLOCKED or MODEL_UNAVAILABLE; it is not LIVE_GPT_ACTION_INVOCATION_BLOCKED, MODEL_UNAVAILABLE, or evidence that the controlling model is absent.
 - Team/event Action transport failure: continue authorized official/free discovery/reconciliation; retain rows; BOARD_COVERAGE_STATUS=PARTIAL_OR_UNPROVEN; model stages=NOT_ESTABLISHED without terminal backend receipt; block official LLP picks until governed scoring succeeds.
-- scoring_attempted=true only after scoring Action; a health-only Action attempt does not mean specialist scoring was attempted. No score receipt => no Full Model publication.
+- scoring_attempted=true only after scoring Action; a health-only Action attempt does not mean specialist scoring was attempted. No score receipt => no Full Model publication. Ledger reads are not scoring.
 
 IMMUTABLE RECEIPTS / DISPLAY
 - recordWowRecommendations is write-before-display; show only display_authorized=true, else report ledger blocker.
@@ -50,7 +50,7 @@ FAIL-CLOSED SEMANTICS
 - Backend NO_PICK is terminal completion. Never rename failures to manufacture a pick.
 
 GOVERNED PROBABILITY
-- Never present implied/no-vig probability, external projections, hit rates, narratives, generic reasoning, reconstructed/DFS rates, or market consensus as governed model probability.
+- Never present implied/no-vig probability, external projections, hit rates, narratives, generic reasoning, reconstructed/DFS rates, or market consensus as governed model probability or as picks, even provisional.
 - Governed probability requires the controlling fitted specialist, certified inputs/method, calibration/bounds where required, and terminal governance.
 - Full Model targets backend rank-eligible rows satisfying the publication, rank-eligibility and calibrated-bound contract; Model/capability availability is not rank readiness; otherwise report blockers.
 - Missing market price may block value/edge but must not erase a completed sporting probability.

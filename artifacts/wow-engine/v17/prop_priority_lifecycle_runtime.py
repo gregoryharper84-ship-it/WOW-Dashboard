@@ -38,6 +38,7 @@ from v17.prop_lifecycle_autopilot_runtime import (
     enrich_artifact_cohort_health,
     enrich_calibrator_candidate_health,
 )
+from v17.prop_operator_summary import summarize_prop_routes
 from v17.prop_production_registration import (
     PropProductionRegistrationAuditRequest,
     run_prop_production_registration_audit,
@@ -321,6 +322,9 @@ def run_priority_durable_audit(req: PriorityPropDurableAuditRequest, *, db: Any)
     }
     failed = [name for name, status in stage_statuses.items() if status != "PASS"]
     result["stage_statuses"] = stage_statuses
+    result["operator_summary"] = summarize_prop_routes(
+        result["dashboard"], requested_routes=tokens, stage_statuses=stage_statuses,
+    )
     result["failed_stages"] = failed
     result["run_status"] = "COMPLETED" if not failed else "COMPLETED_WITH_STAGE_BLOCKERS"
     result["health_persistence"] = lifecycle_base.persist_lifecycle_health(
