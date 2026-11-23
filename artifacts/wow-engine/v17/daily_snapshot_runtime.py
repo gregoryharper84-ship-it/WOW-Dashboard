@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -47,6 +47,7 @@ from v17.daily_terminal_reduction import (
 from v17.team_event_probability_preservation import _annotate_probability_visibility
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
+from v17.sep21_orchestration_integrity_repair import force_daily_prop_acquisition
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
 from v17.player_availability_gate import (
     PLAYER_AVAILABILITY_RECHECK_REQUIRED,
@@ -526,6 +527,25 @@ def _snapshot_captured_at(row: dict[str, Any]) -> datetime:
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _prop_manifest_requires_refresh(
+    manifest: list[dict[str, Any]], *, selected_limit: int,
+    now: datetime | None = None,
+) -> bool:
+    """Request fresh research evidence for selected stale NFL/MLB snapshots.
+
+    Source freshness is not a certification or terminal decision. Refreshing
+    only selected stale rows keeps Daily bounded while preventing a historical
+    PASS snapshot from suppressing pregame acquisition indefinitely.
+    """
+    if selected_limit <= 0 or not manifest:
+        return False
+    cutoff = (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(minutes=30)
+    return any(
+        datetime.min.replace(tzinfo=timezone.utc) < _snapshot_captured_at(row) < cutoff
+        for row in manifest[:selected_limit]
+    )
+
+
 def _read_side_availability_blocker(row: dict[str, Any]) -> str | None:
     """Re-evaluate persisted role_status so Daily does not trust blockers alone.
 
@@ -613,7 +633,7 @@ def _prop_manifest_rows(
     """
     selected = (
         "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,"
-        "stat_type,line,hydration_status,blockers,role_status"
+        "stat_type,line,hydration_status,blockers,role_status,source_timestamps"
     )
     manifest: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -1132,17 +1152,34 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             prop_rows = []
             prop_manifest = []
             blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
-        # Acquisition exists to fill an empty canonical lane. A zero-length page
-        # caused by max_props is not an empty lane, so it must not trigger a
-        # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
-        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        # A trusted orchestration context can require a fresh acquisition
+        # even when the canonical slate is populated. Keep the initial manifest
+        # to prioritize exact stale NFL identities; never infer market offers.
+        refresh_targets = [
+            {key: row.get(key) for key in
+             ("event_id", "event_start_time", "sport", "player", "stat_type", "line")}
+            for row in prop_manifest[:req.max_props]
+            if _prop_manifest_requires_refresh([row], selected_limit=1)
+        ]
+        # max_props=0 is an explicit no-acquisition request, not an empty slate.
+        if (
+            req.max_props > 0
+            and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
+            and (
+                not prop_manifest
+                or bool(refresh_targets)
+                or force_daily_prop_acquisition()
+            )
+        ):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
                 requested_timezone=req.requested_timezone,
                 max_candidates=max(req.max_props * 3, req.max_props),
+                include_nfl=True,
+                refresh_targets=refresh_targets,
             )
-            if prop_acquisition.get("status") == "DATA_UNOBTAINABLE":
+            if prop_acquisition.get("status") in {"DATA_UNOBTAINABLE", "COMPLETED_WITH_SOURCE_BLOCKERS"}:
                 blockers.extend(prop_acquisition.get("blockers") or [])
             elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
@@ -1191,14 +1228,44 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 and _prop_outcome_rank_eligible(x["payload"])
                 for x in outcomes
             )
-            rows.append(
-                _terminal_row(
-                    "PROPS",
-                    identity,
-                    {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False},
-                    _props_row_reduction(outcomes),
-                )
+            # This table freezes sporting evidence, not an authenticated
+            # sportsbook offer (offer ID/book/period/quote timestamp/price).
+            # Even a successful fitted sporting model cannot authorize a
+            # market-value edge or a multi-leg betting card from this source.
+            # Keep calibrated sporting evidence and model evaluation intact.
+            source_times = row.get("source_timestamps")
+            source_times = source_times if isinstance(source_times, dict) else {}
+            discovery_line = any(key in source_times for key in (
+                "WOW_AUTONOMOUS_DISCOVERY_LINE",
+                "INPUT_CAPTURE_V17_DAILY_AUTONOMOUS_DISCOVERY",
+            ))
+            offer_receipt = {
+                "status": "MARKET_OFFER_NOT_ATTESTED",
+                "line_provenance": (
+                    "AUTONOMOUS_DISCOVERY_PRIOR10_HALF_POINT"
+                    if discovery_line else "UNVERIFIED_SOURCE_LINE"
+                ),
+                "exact_offer_verified": False,
+                "market_value_edge_eligible": False,
+                "market_card_eligible": False,
+                "can_execute": False,
+            }
+            terminal_row = _terminal_row(
+                "PROPS", identity,
+                {
+                    "outcomes": outcomes,
+                    "probability_publishable": publishable,
+                    "rank_eligible": publishable,
+                    "market_offer_verification": offer_receipt,
+                    "market_value_edge_eligible": False,
+                    "market_card_eligible": False,
+                    "can_execute": False,
+                },
+                _props_row_reduction(outcomes),
             )
+            terminal_row["market_offer_verification"] = offer_receipt
+            terminal_row["market_card_eligible"] = False
+            rows.append(terminal_row)
 
     if "PROPS" in requested_lanes:
         scored_prop_rows = sum(1 for row in rows if row.get("lane") == "PROPS")
