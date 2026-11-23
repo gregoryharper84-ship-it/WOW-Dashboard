@@ -348,7 +348,7 @@ def test_native_swarm_direct_cli_without_pythonpath(tmp_path):
     result = subprocess.run(
         [sys.executable, str(engine_root / "v17/sport_scout_enrichment.py"),
          "--input", str(source), "--output", str(output)],
-        cwd=tmp_path,
+        cwd=engine_root,  # matches existing production workflow cwd
         env=env,
         capture_output=True,
         text=True,
