@@ -379,7 +379,8 @@ jobs:
           test -f "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
           python v17/sport_scout_enrichment.py \
             --input "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
-            --output "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json"
+            --output "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json" \
+            --native-swarm-verified-pilot
           mv "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json" "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
           python - <<'PY'
           import json, os
@@ -388,6 +389,37 @@ jobs:
           data = json.loads(p.read_text())
           assert data.get("can_execute") is False
           assert data.get("sport_scout_registry", {}).get("can_execute") is False
+          pilot = data.get("native_swarm_pilot", {})
+          assert pilot.get("can_execute") is False
+          assert pilot.get("may_publish_or_qualify") is False
+          assert pilot.get("paid_provider_calls") == 0
+          assert pilot.get("requested_count") in (0, 1)
+          opted = [r for lane in ("team_event_candidates", "prop_candidates")
+                   for r in data.get("model_handoff", {}).get(lane, [])
+                   if r.get("native_swarm_requested") is True]
+          assert len(opted) == pilot["requested_count"]
+          summary = opted[0].get("native_swarm_summary") if opted else None
+          if summary is not None:
+              assert summary.get("can_execute") is False
+              assert summary.get("may_publish_or_qualify") is False
+              assert summary.get("paid_provider_calls") == 0
+              assert summary.get("external_llm_calls") == 0
+          elif opted:
+              raise AssertionError("NATIVE_SWARM_PILOT_RECEIPT_MISSING")
+          receipt = {
+              "schema_version": "wow.v17.native_swarm_production_readback.v1",
+              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "source_revision": os.environ.get("GITHUB_SHA"),
+              "pilot": pilot,
+              "summary": summary,
+              "can_execute": False,
+              "may_publish_or_qualify": False,
+          }
+          (p.parent / "native-swarm-receipt.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print("native Swarm pilot:", pilot.get("status"),
+                "workers:", (summary or {}).get("workers_completed", 0),
+                "research facts:", (summary or {}).get("research_facts_screened", 0))
           for lane in ("team_event_candidates", "prop_candidates"):
               for row in data.get("model_handoff", {}).get(lane, []):
                   assert row.get("research_ceiling") == "RESEARCH_INTEREST"
@@ -418,6 +450,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/model-handoff.json
             ${{ runner.temp }}/wow-multiscout/public-gdelt-receipt.json
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
+            ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
           if-no-files-found: error
@@ -564,6 +597,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
+            ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
             ${{ runner.temp }}/wow-multiscout/terminal-acceptance-receipt.json
             ${{ runner.temp }}/wow-multiscout/market-evidence.json
