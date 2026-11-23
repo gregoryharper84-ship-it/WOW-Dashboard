@@ -843,6 +843,17 @@ def test_qa_pr_unreadable_fails_closed_with_safe_http_classification(status, bod
     assert dispatch == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:{suffix}"]}
 
 
+def test_non_object_pr_read_fails_closed_instead_of_raising():
+    """The read guard now precedes head/base extraction, so a 200 with a
+    non-object body is unreadable rather than an AttributeError, and the state
+    gate does not swallow that failure as a neutral non-target."""
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, ["unexpected"])})
+    assert m.targets(REPO, workflow_run_prs=event_pr, neutral_superseded=True,
+                     fetch=routes) == {
+        "targets": [], "errors": ["TARGET_PR_UNREADABLE:7:200"]}
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
