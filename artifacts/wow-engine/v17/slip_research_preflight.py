@@ -77,6 +77,65 @@ def exact_key(leg: Mapping[str, Any]) -> tuple[str, ...] | None:
             _text(leg.get("settlement_basis")).upper())
 
 
+def _fixture_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Screen caller-supplied official fixture provenance, without authenticating it.
+
+    A sportsbook quote, player matchup narrative or yesterday's fixture cannot
+    supply the required scheduled official event for this research card.
+    """
+    fixture = leg.get("official_fixture_evidence")
+    if not isinstance(fixture, Mapping):
+        return ["OFFICIAL_FIXTURE_EVIDENCE_MISSING"]
+    observed = _time(fixture.get("verified_at_utc"))
+    scheduled = _time(fixture.get("event_start_utc"))
+    if (not _text(fixture.get("official_source_id"))
+            or not _text(fixture.get("manifest_receipt_id"))
+            or observed is None or observed > as_of or observed >= start
+            or scheduled != start
+            or _text(fixture.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(fixture.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or any(_text(fixture.get(k)) != _text(leg.get(k))
+                   for k in ("home_team_id", "away_team_id")
+                   if _text(leg.get(k)))):
+        return ["OFFICIAL_FIXTURE_IDENTITY_OR_CHRONOLOGY_UNVERIFIED"]
+    if _text(fixture.get("event_status")).upper() not in {"SCHEDULED", "NOT_STARTED"}:
+        return ["OFFICIAL_FIXTURE_NOT_SCHEDULED"]
+    return []
+
+
+def _price_edge_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Contradiction screening only; this cannot authorize a positive-EV claim."""
+    value = leg.get("research_value_evidence")
+    asserted = _text(leg.get("value_claim")).upper() in {"POSITIVE_VALUE", "STRONG_VALUE", "ELITE_VALUE"}
+    if not isinstance(value, Mapping):
+        return ["RESEARCH_VALUE_CLAIM_UNSUPPORTED"] if asserted else []
+    recorded = _time(value.get("observed_at_utc"))
+    p = _number(value.get("estimated_selection_probability"), minimum=0)
+    if (recorded is None or recorded > as_of or recorded >= start
+            or not _text(value.get("source_id")) or p is None or p > 1
+            or _text(value.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(value.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _market(value.get("market_family")) != _market(leg.get("market_family"))
+            or _text(value.get("market_period")).upper() != _text(leg.get("market_period")).upper()
+            or _text(value.get("side")).upper() != _text(leg.get("side")).upper()
+            or _line_key(value.get("exact_line")) != _line_key(leg.get("exact_line"))):
+        return ["RESEARCH_VALUE_EVIDENCE_UNVERIFIED"]
+    quote = leg.get("market_quote")
+    if not isinstance(quote, Mapping):
+        return ["RESEARCH_VALUE_PRICE_UNVERIFIED"]
+    decimal = _number(quote.get("decimal_odds"), minimum=1.00000001)
+    if decimal is None:
+        american = quote.get("american_odds")
+        if type(american) is not int or -100 < american < 100:
+            return ["RESEARCH_VALUE_PRICE_UNVERIFIED"]
+        decimal = 1 + (100 / -american if american < 0 else american / 100)
+    # Even a caller-claimed forecast greater than market breakeven is not
+    # independently authenticated or a calibrated sporting probability.
+    if p <= 1 / decimal:
+        return ["RESEARCH_PRICE_EDGE_NOT_SUPPORTED"]
+    return []
+
+
 def _quote_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
     quote = leg.get("market_quote")
     if not isinstance(quote, Mapping):
@@ -199,6 +258,25 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
     )
 
 
+def _prop_context_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Require sourced opportunity, matchup, game-script and tail context for props."""
+    evidence = leg.get("prop_matchup_evidence")
+    if not isinstance(evidence, Mapping):
+        return ["PROP_MATCHUP_CONTEXT_MISSING"]
+    required = ("source_receipt_id", "opponent_efficiency_source_id",
+                "role_minutes_source_id", "usage_source_id",
+                "pace_game_script_source_id", "tail_scenario_source_id")
+    observed = _time(evidence.get("observed_at_utc"))
+    if (any(not _text(evidence.get(k)) for k in required)
+            or observed is None or observed > as_of or observed >= start
+            or _text(evidence.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(evidence.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _text(evidence.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(evidence.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+        return ["PROP_MATCHUP_CONTEXT_UNVERIFIED"]
+    return []
+
+
 def _player_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
     if not _text(leg.get("official_player_id")):
         return ["PROP_PLAYER_ID_UNVERIFIED"]
@@ -242,6 +320,7 @@ def audit_research_slips(
     *,
     as_of_utc: str,
     max_distinct_slips_per_leg: int = 1,
+    max_distinct_slips_per_event: int = 2,
     max_standard_legs: int = _STANDARD_MAX_LEGS,
 ) -> dict[str, Any]:
     """Evaluate all proposed slips as one portfolio; input remains unchanged.
@@ -253,9 +332,11 @@ def audit_research_slips(
     at = _time(as_of_utc)
     if at is None:
         raise ValueError("RESEARCH_PREFLIGHT_AS_OF_INVALID")
-    if max_distinct_slips_per_leg < 1 or max_standard_legs < 2:
+    if max_distinct_slips_per_leg < 1 or max_distinct_slips_per_event < 1 or max_standard_legs < 2:
         raise ValueError("RESEARCH_PREFLIGHT_LIMIT_INVALID")
     seen_exact: dict[tuple[str, ...], set[str]] = {}
+    seen_events: dict[tuple[str, str], set[str]] = {}
+    seen_card_ids: set[str] = set()
     reports: list[dict[str, Any]] = []
     for idx, slip in enumerate(slips):
         if not isinstance(slip, Mapping):
@@ -265,6 +346,9 @@ def audit_research_slips(
         if not isinstance(legs, list):
             legs = []
         blockers = []
+        if slip_id in seen_card_ids:
+            blockers.append("RESEARCH_CARD_ID_DUPLICATE")
+        seen_card_ids.add(slip_id)
         if len(legs) < 2:
             blockers.append("RESEARCH_SLIP_TOO_FEW_LEGS")
         if len(legs) > max_standard_legs:
@@ -292,19 +376,27 @@ def audit_research_slips(
             if not _text(leg.get("settlement_basis")):
                 reasons.append("EXACT_SETTLEMENT_RULE_MISSING")
             if start is not None:
+                reasons.extend(_fixture_blockers(leg, at, start))
                 reasons.extend(_quote_blockers(leg, at, start))
+                reasons.extend(_price_edge_blockers(leg, at, start))
                 reasons.extend(_news_blockers(leg, at, start))
                 if market in _TOTALS:
                     reasons.extend(_total_blockers(leg, at, start))
                 if market in _PROPS:
                     reasons.extend(_player_blockers(leg, at, start))
+                    reasons.extend(_prop_context_blockers(leg, at, start))
             if identity:
                 previous = seen_exact.setdefault(identity, set())
                 if any(x != slip_id for x in previous) and len(previous) >= max_distinct_slips_per_leg:
                     reasons.append("CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE")
                 previous.add(slip_id)
                 if identity[0] and identity[1]:
-                    event_counts[(identity[0], identity[1])] += 1
+                    event_key = (identity[0], identity[1])
+                    prior_cards = seen_events.setdefault(event_key, set())
+                    if slip_id not in prior_cards and len(prior_cards) >= max_distinct_slips_per_event:
+                        reasons.append("CROSS_SLIP_EVENT_HINGE_CONCENTRATION")
+                    prior_cards.add(slip_id)
+                    event_counts[event_key] += 1
             reasons = list(dict.fromkeys(reasons))
             leg_reports.append({"index": i, "row_id": leg.get("row_id"),
                                 "blockers": reasons, "research_only": True,
@@ -336,6 +428,9 @@ def audit_research_slips(
         "cards": reports,
         "cross_slip_exact_exposure_counts": {
             "|".join(key): len(value) for key, value in sorted(seen_exact.items())
+        },
+        "cross_slip_event_exposure_counts": {
+            "|".join(key): len(value) for key, value in sorted(seen_events.items())
         },
         "research_only": True,
         "fitted_model_changed": False,
