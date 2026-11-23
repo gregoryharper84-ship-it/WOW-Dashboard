@@ -13,13 +13,16 @@ import json
 import math
 from typing import Any, Mapping, Sequence
 
+from v17.niche_prop_research import classify_niche_prop
+
 CAN_EXECUTE = False
 QUOTE_VERSION = "wow.v17.niche-offer-integrity.v1"
 MAX_CAPTURE_AGE_SECONDS = 900
 EXACT_FIELDS = (
-    "platform", "offer_id", "official_event_id", "official_player_ids",
+    "platform", "sport", "offer_id", "official_event_id", "official_player_ids",
     "category", "stat_type", "market_period", "side", "exact_line",
-    "projection_type", "event_start_utc",
+    "projection_type", "event_start_utc", "settlement_basis",
+    "official_player_position", "combo_team_ids", "home_team_id", "away_team_id",
 )
 ALLOWED_TIERS = {"STANDARD", "GOBLIN", "DEMON"}
 
@@ -182,6 +185,28 @@ def verify_capture(envelope: Mapping[str, Any], secret: bytes,
             _hold("KICKER_COMBO_ROUTE_INVALID")
     elif len(ids) != 1:
         _hold("CAPTURE_SINGLE_PLAYER_MARKET_INVALID")
+    if (not isinstance(payload.get("settlement_basis"), str)
+            or not payload["settlement_basis"].strip()):
+        _hold("EXACT_SETTLEMENT_BASIS_MISSING")
+    # A valid signature cannot make a player-points prop a low-volume FTA
+    # under, nor make a full-game attempt count a first-quarter QB prop.
+    category_match = classify_niche_prop({
+        "sport": payload.get("sport"),
+        "stat_type": payload.get("stat_type"),
+        "market_period": payload.get("market_period"),
+        "side": payload.get("side"),
+        "exact_line": payload.get("exact_line"),
+        "official_event_id": payload.get("official_event_id"),
+        "official_player_id": ids[0] if len(ids) == 1 else None,
+        "combo_participant_ids": ids if len(ids) == 2 else None,
+        "combo_team_ids": payload.get("combo_team_ids"),
+        "home_team_id": payload.get("home_team_id"),
+        "away_team_id": payload.get("away_team_id"),
+        "official_player_position": payload.get("official_player_position"),
+    })
+    if (category_match["category"] != payload.get("category")
+            or category_match["identity_gaps"]):
+        _hold("NICHE_ROUTE_OR_PLAYER_IDENTITY_MISMATCH")
     return {
         "status": "INTERNAL_CAPTURE_INTEGRITY_ONLY",
         "quote_integrity_verified": True,
