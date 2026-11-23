@@ -147,3 +147,28 @@ market quote with a canonical league ID. The approved verified-ID mapping
 must then reach the Scout event candidate before a research rescore request;
 an authorized independent reviewed-fact record and actual specialist
 rescore are still separate gates.
+
+## November 22, 2026 — NHL Multiscout identity + reviewed-fact + rescore path
+
+Issue #2749 completion slice (one sport first: NHL):
+
+1. `nhl_multiscout_identity.resolve_multiscout_nhl_identity` maps Multiscout
+   odds-provider aliases to a 10-digit NHL league game id via the official
+   club schedule while retaining `provider_event_id`. Failures stay
+   `ALIAS_ONLY_UNRESOLVED` / unverified.
+2. `news_reviewed_fact_producer` accepts only independently reviewed claims
+   whose `source_url` appears in the same-run discovery receipt. Unsupported
+   publisher classes, missing review refs, conflicts and syndicated
+   high-impact duplicates are rejected. The same-run sibling
+   `news-reviewed-facts.json` attaches only to
+   `official_event_identity_verified=true` rows.
+3. `news_fitted_rescore_dispatch` consumes
+   `NEWS_RESEARCH_RESCORE_REQUESTED`, builds a permitted feature snapshot
+   delta, invokes an injectable controlling specialist scorer, and freezes a
+   receipt with before/after feature hashes. `model_rescore_verified=true`
+   requires a genuine scorer success; missing scorer is typed
+   `MODEL_UNAVAILABLE`. `can_execute` remains false.
+
+Adversarial coverage includes forged/provider IDs, unsupported publishers,
+syndicated duplicates, started events and unbound fitted models. Expanding
+beyond NHL reuses the same contract sport-by-sport.
