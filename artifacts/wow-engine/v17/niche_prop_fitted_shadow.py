@@ -38,6 +38,28 @@ FEATURE_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 _MAX_ABS_FEATURE = 100000.0
+# Immutable schema bounds; prevent impossible usage, first-quarter rate
+# and pace inputs from being fitted as if they were valid sporting context.
+FEATURE_BOUNDS: dict[str, tuple[float, float]] = {
+    "expected_q1_drives": (0, 12),
+    "home_q1_fg_attempt_rate_prior": (0, 1),
+    "away_q1_fg_attempt_rate_prior": (0, 1),
+    "q1_red_zone_td_rate_prior": (0, 1),
+    "weather_wind_mph": (0, 100),
+    "fourth_down_go_rate_prior": (0, 1),
+    "projected_minutes": (0, 65),
+    "stat_opportunities_per_min_prior": (0, 5),
+    "opponent_adjustment_prior": (0, 4),
+    "game_pace_prior": (40, 155),
+    "usage_shift_prior": (-1, 1),
+    "projected_q1_drives": (0, 10),
+    "pass_rate_prior": (0, 1),
+    "plays_per_drive_prior": (0, 20),
+    "opponent_pressure_prior": (0, 1),
+    "projected_q1_plays": (0, 55),
+    "pass_epa_prior": (-10, 10),
+    "qb_rush_share_prior": (0, 1),
+}
 
 
 class NicheShadowHold(ValueError):
@@ -102,7 +124,10 @@ def _validate(row: Mapping[str, Any], *, settled: bool) -> dict[str, Any]:
     feature_values = row.get("features")
     if not isinstance(feature_values, Mapping) or set(feature_values) != set(keys):
         _fail("FEATURE_SCHEMA_MISMATCH_OR_LEAKAGE")
-    features = tuple(_finite(feature_values[key]) for key in keys)
+    features = []
+    for key in keys:
+        low, high = FEATURE_BOUNDS[key]
+        features.append(_finite(feature_values[key], lower=low, upper=high))
     line = _finite(category_data["exact_line"], lower=0, upper=10000)
     selected = {
         "row_id": row["row_id"], "official_event_id": row["official_event_id"],
@@ -130,6 +155,9 @@ def _validate(row: Mapping[str, Any], *, settled: bool) -> dict[str, Any]:
         if settlement_time <= start:
             _fail("SETTLEMENT_NOT_AFTER_EVENT_START")
         actual = _finite(row.get("actual_stat"), lower=0)
+        if (category != "NFL_1Q_QB_FANTASY_SCORE_OVER"
+                and not actual.is_integer()):
+            _fail("COUNT_STAT_NOT_INTEGER")
         side = category_data["side"]
         if actual == line:
             _fail("PUSH_NOT_BINARY_SETTLEMENT")
