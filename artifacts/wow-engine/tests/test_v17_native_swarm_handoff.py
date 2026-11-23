@@ -323,3 +323,45 @@ def test_malformed_candidate_time_is_input_hold_before_worker_admission(monkeypa
     summary = _native_swarm_summary(candidate(commence_time="bad timestamp"))
     assert summary["reason_code"] == "NATIVE_SWARM_INPUT_INVALID"
     assert summary["workers_completed"] == 0
+
+
+def test_native_swarm_direct_cli_without_pythonpath(tmp_path):
+    """The real workflow's direct v17 script entrypoint must launch local workers."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    engine_root = Path(__file__).resolve().parents[1]
+    source = tmp_path / "scout-input.json"
+    output = tmp_path / "scout-output.json"
+    payload = {
+        "can_execute": False,
+        "model_handoff": {
+            "team_event_candidates": [candidate(native_swarm_requested=True)],
+            "prop_candidates": [],
+        },
+    }
+    import json
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": ""}
+    result = subprocess.run(
+        [sys.executable, str(engine_root / "v17/sport_scout_enrichment.py"),
+         "--input", str(source), "--output", str(output)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-1500:]
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    summary = receipt["model_handoff"]["team_event_candidates"][0]["native_swarm_summary"]
+    assert summary["status"] == "RESEARCH_ONLY_HOLD"
+    assert summary["reason_code"] is None
+    assert summary["workers_completed"] == 5
+    assert summary["external_llm_calls"] == 0
+    assert summary["paid_provider_calls"] == 0
+    assert summary["can_execute"] is False
+    assert receipt["can_execute"] is False
