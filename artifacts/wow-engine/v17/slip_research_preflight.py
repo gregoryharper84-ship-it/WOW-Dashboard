@@ -267,6 +267,28 @@ def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> 
     return []
 
 
+def _context_impact_blockers(leg: Mapping[str, Any]) -> list[str]:
+    """Hold research candidates when event-wide news invalidation is pending.
+
+    Never use caller-supplied flags as proof that a fitted scorer consumed the
+    update. They may only downgrade the research card, not clear an invalidation.
+    """
+    impact = leg.get("context_change_impact")
+    status = _text(leg.get("research_recommendation_status"))
+    if isinstance(impact, Mapping):
+        status = _text(impact.get("impact_status")) or status
+        if impact.get("research_invalidation_requested") is True:
+            return ["CONTEXT_STALE_RECALC_REQUIRED"]
+    if status in {
+        "CONTEXT_STALE_RECALC_REQUIRED", "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "CONTEXT_MATERIAL_EVIDENCE_INVALID", "CONTEXT_RECEIPT_DIGEST_INVALID",
+        "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
+        "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH", "CONTEXT_SPORT_NOT_MAPPED",
+    }:
+        return ["CONTEXT_STALE_RECALC_REQUIRED"]
+    return []
+
+
 def audit_research_slips(
     slips: Sequence[Mapping[str, Any]],
     *,
@@ -306,7 +328,7 @@ def audit_research_slips(
                 leg_reports.append({"index": i, "blockers": ["RESEARCH_LEG_INVALID"]})
                 blockers.append("RESEARCH_LEG_INVALID")
                 continue
-            reasons: list[str] = []
+            reasons: list[str] = _context_impact_blockers(leg)
             identity = exact_key(leg)
             start = _time(leg.get("event_start_utc"))
             snapshot = _time(leg.get("source_snapshot_at_utc"))
