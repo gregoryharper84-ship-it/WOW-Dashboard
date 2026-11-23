@@ -71,10 +71,13 @@ def grade_nhl_pregame_forecast(
         raise NHLForwardGradeError("NHL_GRADE_EVENT_IDENTITY_MISMATCH")
 
     forecast_at = _dt(forecast.get("forecast_created_at_utc"))
+    source_snapshot_at = _dt(forecast.get("source_snapshot_timestamp"))
     scheduled_at = _dt(settled.get("event_start_time"))
     retrieved_at = _dt(settled.get("source_retrieved_at"))
     if (
         forecast_at is None or scheduled_at is None
+        or source_snapshot_at is None
+        or source_snapshot_at > forecast_at or source_snapshot_at >= scheduled_at
         or forecast_at >= scheduled_at
         or retrieved_at is None or retrieved_at < scheduled_at
     ):
@@ -141,6 +144,7 @@ def grade_nhl_pregame_forecast(
         "source_snapshot_id": forecast["source_snapshot_id"],
         "feature_snapshot_hash": forecast["feature_snapshot_hash"],
         "forecast_created_at_utc": forecast_at.isoformat(),
+        "source_snapshot_timestamp": source_snapshot_at.isoformat(),
         "settlement_source_sha256": expected,
         "settlement_state": outcome["game_state"],
         "outcome": y,
