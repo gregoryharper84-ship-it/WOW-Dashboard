@@ -222,3 +222,23 @@ def test_pmf_mass_error_beyond_tolerance_blocks_frozen_distribution():
     r = discrete_prop_distribution_audit([(p, o)], min_n=1)
     assert r["rows_graded"] == 0
     assert r["blockers"][0]["reason"] == "FROZEN_COUNT_PMF_INVALID"
+
+
+
+def test_canonical_soccer_out_right_winner_requires_draw_state():
+    before, after = soccer_pair(
+        result="HOME", dist={"HOME": .6, "AWAY": .4}
+    )
+    before["market_family"] = "OUTRIGHT_WINNER"
+    after["market_family"] = "OUTRIGHT_WINNER"
+    r = multiclass_event_distribution_audit([(before, after)], min_n=1)
+    assert r["rows_graded"] == 0
+    assert r["blockers"][0]["reason"] == "EXACT_OUTCOME_SPACE_OR_SETTLEMENT_INVALID"
+
+
+def test_canonical_soccer_three_way_distribution_grades_one_outcome():
+    before, after = soccer_pair(result="HOME")
+    before["market_family"] = after["market_family"] = "OUTRIGHT_WINNER"
+    r = multiclass_event_distribution_audit([(before, after)], min_n=1)
+    assert r["rows_graded"] == 1
+    assert r["reconciled"] is True
