@@ -651,7 +651,35 @@ def test_migration_requires_the_artifact_evidence_columns_first(conn, cluster):
                 _apply(isolated, path)
             with pytest.raises(psycopg.errors.UndefinedColumn):
                 _apply(isolated, RPC_SQL)
+            # Production has legacy calibrator rows predating artifact evidence.
+            # Prove schema admission preserves them and tolerates a repeat apply.
+            legacy_id = uuid.uuid4()
+            isolated.execute(
+                """
+                insert into public.wow_basketball_team_event_calibrators
+                  (calibrator_id, sport, calibrator_version, model_artifact_version,
+                   calibration_method, coefficients, calibration_row_count)
+                values (%s, 'NBA', 'NBA_PRE_ARTIFACT_EVIDENCE',
+                        'NBA_EXISTING_ARTIFACT', %s, %s, 40)
+                """,
+                (legacy_id, METHOD, Jsonb({"a": 1.0, "b": 0.0})),
+            )
             _apply(isolated, EVIDENCE_SQL)
+            _apply(isolated, EVIDENCE_SQL)
+            legacy = isolated.execute(
+                """
+                select calibrator_id, calibration_artifact_payload,
+                       calibration_artifact_sha256
+                  from public.wow_basketball_team_event_calibrators
+                 where calibrator_id = %s
+                """,
+                (legacy_id,),
+            ).fetchone()
+            assert legacy == {
+                "calibrator_id": legacy_id,
+                "calibration_artifact_payload": None,
+                "calibration_artifact_sha256": None,
+            }
             _apply(isolated, RPC_SQL)
             # Re-applying the function is idempotent and refreshes the catalog.
             _apply(isolated, RPC_SQL)

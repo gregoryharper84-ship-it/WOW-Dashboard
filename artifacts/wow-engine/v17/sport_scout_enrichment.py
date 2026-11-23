@@ -13,19 +13,26 @@ from typing import Any
 
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from v17.matchup_discovery import discover_matchup
     from v17.news_event_research_handoff import reconcile_news_handoff
+    from v17.news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
+    from v17.news_reviewed_fact_producer import attach_reviewed_facts_bundle
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from matchup_discovery import discover_matchup
     from news_event_research_handoff import reconcile_news_handoff
+    from news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
+    from news_reviewed_fact_producer import attach_reviewed_facts_bundle
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
 
-def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None) -> dict[str, Any]:
+def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None,
+                     public_news_sha256: str | None = None) -> dict[str, Any]:
     enriched = dict(row)
     team = scout_team_for(str(row.get("sport_key") or ""))
     enriched["sport_scout_team"] = team.to_handoff()
@@ -43,6 +50,9 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
         for worker_id in SUPPORTED_RESEARCH_WORKERS
     }
     enriched["research_workers_may_create_probability"] = False
+    # Mandatory per-event review request: report what was actually screened,
+    # rather than treating a game-script hypothesis as completed research.
+    enriched["matchup_discovery"] = discover_matchup(enriched)
     enriched["news_intelligence_status"] = "NEWS_NOT_OBSERVED"
     enriched["news_latest_verified_at_utc"] = None
     enriched["news_model_rescore_verified"] = False
@@ -57,16 +67,36 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
             {
                 "sport_key": row.get("sport_key"),
                 "official_event_id": row.get("official_event_id"),
+                "provider_event_id": row.get("provider_event_id"),
+                "provider_event_source": row.get("provider_event_source"),
+                "official_event_identity_verified": row.get("official_event_identity_verified"),
+                "canonical_identity_status": row.get("canonical_identity_status"),
                 "event_start_utc": (
-                    row.get("event_start_utc")
+                    row.get("canonical_identity_event_start_utc")
+                    or row.get("event_start_utc")
                     or row.get("commence_time")
                     or (row.get("event_request") or {}).get("event_start_time_utc")
                 ),
             },
             facts if isinstance(facts, list) else [],
+            source_receipt_sha256=(
+                row.get("news_discovery_sha256")
+                if isinstance(row.get("news_discovery_receipt"), dict)
+                else public_news_sha256
+            ),
         )
         enriched["news_intelligence_status"] = enriched["news_research_handoff"]["research_status"]
         enriched["news_research_rescore_requested"] = enriched["news_research_handoff"]["research_rescore_requested"]
+        facts = enriched.get("news_reviewed_facts")
+        if isinstance(facts, list) and facts:
+            latest = None
+            for fact in facts:
+                if not isinstance(fact, dict):
+                    continue
+                stamp = fact.get("independently_reviewed_at_utc")
+                if isinstance(stamp, str) and (latest is None or stamp > latest):
+                    latest = stamp
+            enriched["news_latest_verified_at_utc"] = latest
     enriched["can_execute"] = False
     return enriched
 
@@ -84,10 +114,40 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         receipt = (common_news if isinstance(common_news, dict) and isinstance(digest, str)
                    and len(digest) == 64 and row.get("public_news_discovery_sha256") == digest
                    and row.get("sport_key") == common_news.get("sport_key") else None)
-        return enrich_candidate(row, lane, public_news=receipt)
+        return enrich_candidate(
+            row, lane, public_news=receipt,
+            public_news_sha256=digest if receipt is not None else None,
+        )
     handoff["team_event_candidates"] = [enrich(row, "TEAM_EVENT") for row in handoff.get("team_event_candidates", []) or [] if isinstance(row, dict)]
     handoff["prop_candidates"] = [enrich(row, "PROP") for row in handoff.get("prop_candidates", []) or [] if isinstance(row, dict)]
     out["model_handoff"] = handoff
+    # Count source-screened evidence only; a requested feature is not proof
+    # that current evidence exists or any fitted specialist consumed it.
+    statuses: dict[str, int] = {}
+    reviewed_rows = missing_critical_rows = quote_screened_rows = 0
+    for lane_key in ("team_event_candidates", "prop_candidates"):
+        for candidate in handoff.get(lane_key, []) or []:
+            audit = candidate.get("matchup_discovery")
+            if not isinstance(audit, dict) or audit.get("review_requested") is not True:
+                status = "MATCHUP_REVIEW_NOT_REQUESTED"
+            else:
+                status = str(audit.get("review_status") or "MATCHUP_REVIEW_STATUS_MISSING")
+                reviewed_rows += 1
+                missing_critical_rows += bool(audit.get("missing_critical_features"))
+                quote_screened_rows += "exact_current_quote" in (audit.get("screened_features") or [])
+            statuses[status] = statuses.get(status, 0) + 1
+    out["matchup_discovery_summary"] = {
+        "schema_version": "wow.v17.matchup_discovery_coverage.v1",
+        "team_event_candidates": len(handoff.get("team_event_candidates", []) or []),
+        "prop_candidates": len(handoff.get("prop_candidates", []) or []),
+        "review_requested_rows": reviewed_rows,
+        "review_status_counts": statuses,
+        "rows_with_missing_critical_evidence": missing_critical_rows,
+        "rows_with_screened_exact_quote": quote_screened_rows,
+        "model_rescore_verified": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
     out["sport_scout_registry"] = registry_payload()
     out["research_worker_registry"] = {
         "worker_ids": list(SUPPORTED_RESEARCH_WORKERS),
@@ -106,6 +166,12 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         "can_execute": False,
     })
     out["governance"] = governance
+    out["can_execute"] = False
+    # Attempt news-triggered fitted rescores only after research reconciliation.
+    # Default scorer binding is absent → MODEL_UNAVAILABLE typed receipt, never
+    # a synthetic probability. Callers may inject a real score_fn in tests or
+    # production runners.
+    out = dispatch_news_rescores_for_handoff(out)
     out["can_execute"] = False
     return promote_handoff(out)
 
@@ -205,6 +271,7 @@ def main() -> int:
     payload = json.loads(source.read_text(encoding="utf-8"))
     payload = _attach_sibling_snapshot(payload, source)
     payload = _attach_sibling_news(payload, source)
+    payload = attach_reviewed_facts_bundle(payload, source)
     enriched = enrich_handoff(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(enriched, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -219,10 +286,17 @@ def main() -> int:
         "snapshot_identity_policy": bridge.get("identity_policy", "NOT_PRESENT"),
         "snapshot_evidence_rows_attached": bridge.get("evidence_rows_attached", 0),
         "snapshot_candidates_touched": bridge.get("candidates_touched", 0),
+        "matchup_review_status_counts": enriched.get("matchup_discovery_summary", {}).get("review_status_counts", {}),
+        "matchup_rows_with_missing_critical_evidence": enriched.get("matchup_discovery_summary", {}).get("rows_with_missing_critical_evidence", 0),
+        "matchup_rows_with_screened_exact_quote": enriched.get("matchup_discovery_summary", {}).get("rows_with_screened_exact_quote", 0),
         "news_bridge_status": enriched.get("public_news_discovery_bridge", {}).get("status", "NOT_PRESENT"),
         "news_source_code": enriched.get("public_news_discovery_bridge", {}).get("source_code", "NOT_PRESENT"),
         "news_article_count": enriched.get("public_news_discovery_bridge", {}).get("article_count", 0),
         "news_candidates_touched": enriched.get("public_news_discovery_bridge", {}).get("candidates_touched", 0),
+        "news_reviewed_facts_bridge_status": enriched.get("news_reviewed_facts_bridge", {}).get("status", "NOT_PRESENT"),
+        "news_reviewed_facts_attached": enriched.get("news_reviewed_facts_bridge", {}).get("candidates_attached", 0),
+        "news_rescore_considered": enriched.get("news_fitted_rescore_summary", {}).get("candidates_considered", 0),
+        "news_rescore_verified": enriched.get("news_fitted_rescore_summary", {}).get("rescore_verified", 0),
         "can_execute": False,
     }))
     return 0

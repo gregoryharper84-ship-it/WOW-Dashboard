@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -44,8 +44,10 @@ from v17.daily_terminal_reduction import (
     classify_stage_status,
     reduce_row_terminal,
 )
+from v17.team_event_probability_preservation import _annotate_probability_visibility
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
+from v17.sep21_orchestration_integrity_repair import force_daily_prop_acquisition
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
 from v17.player_availability_gate import (
     PLAYER_AVAILABILITY_RECHECK_REQUIRED,
@@ -66,6 +68,11 @@ class DailySnapshotRequest(BaseModel):
     # COMPACT is the normal client contract: full per-row evidence is persisted
     # and read back through the paged retrieval route instead of being inlined.
     response_mode: Literal["COMPACT", "FULL"] = "COMPACT"
+
+
+def _render_deployed_sha() -> str | None:
+    sha = str(os.getenv("RENDER_GIT_COMMIT") or "").strip().lower()
+    return sha if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha) else None
 
 
 def _detail(exc: HTTPException) -> dict[str, Any]:
@@ -151,15 +158,23 @@ def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
             unclassified += 1
     rows_in = len(rows)
     terminal_total = sum(counts.values())
+    # Hard terminals (REJECTED/PURGED/INVALID) all count toward rows_rejected so
+    # the governed identity rows_in = completed + held + rejected remains true
+    # whenever every row has exactly one classified terminal.
+    rows_rejected = counts["REJECTED"] + counts["PURGED"] + counts["INVALID"]
     return {
         "rows_in": rows_in,
         "rows_completed": counts["COMPLETED"],
         "rows_held": counts["HELD"],
-        "rows_rejected": counts["REJECTED"],
+        "rows_rejected": rows_rejected,
         "rows_purged": counts["PURGED"],
         "rows_invalid": counts["INVALID"],
         "rows_unclassified": unclassified,
-        "balanced": unclassified == 0 and terminal_total == rows_in,
+        "balanced": (
+            unclassified == 0
+            and terminal_total == rows_in
+            and rows_in == counts["COMPLETED"] + counts["HELD"] + rows_rejected
+        ),
     }
 
 
@@ -174,6 +189,76 @@ def _row_sport(row: dict[str, Any]) -> str:
     return str(sport or "UNKNOWN").upper().strip()
 
 
+def _prop_outcome_rank_eligible(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    qualification = payload.get("probability_qualification")
+    qual = qualification if isinstance(qualification, dict) else {}
+    return bool(
+        payload.get("rank_eligible") is True
+        or payload.get("probability_rank_eligible") is True
+        or qual.get("rank_eligible") is True
+        or qual.get("probability_rank_eligible") is True
+    )
+
+
+def _prop_outcome_hydrated(payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("can_execute") is not False:
+        return False
+    traversal = payload.get("backend_traversal")
+    evidence = payload.get("evidence")
+    return bool(
+        isinstance(traversal, dict)
+        and traversal.get("supabase_evidence") == "PASS"
+        and isinstance(evidence, dict)
+        and evidence.get("ok") is True
+        and evidence.get("hydration_status") == "PASS"
+    )
+
+
+def _prop_outcome_evaluated(payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("can_execute") is not False:
+        return False
+    traversal = payload.get("backend_traversal")
+    model_ev = payload.get("model_evidence")
+    qual = payload.get("probability_qualification")
+    return bool(
+        isinstance(traversal, dict)
+        and traversal.get("governed_model") == "PASS"
+        and isinstance(model_ev, dict)
+        and model_ev.get("calibrated_probability") is not None
+        and isinstance(qual, dict)
+        and qual.get("model_evaluated") is True
+    )
+
+
+def _prop_outcome_certified(outcome: Any) -> bool:
+    if not isinstance(outcome, dict) or outcome.get("status") != "COMPLETED":
+        return False
+    payload = outcome.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    traversal = payload.get("backend_traversal")
+    qual = payload.get("probability_qualification")
+    prediction = payload.get("prediction")
+    return bool(
+        _prop_outcome_hydrated(payload)
+        and _prop_outcome_evaluated(payload)
+        and payload.get("probability_publishable") is True
+        and payload.get("pick_rejected") is False
+        and payload.get("can_execute") is False
+        and isinstance(traversal, dict)
+        and traversal.get("controlling_specialist") == "PASS"
+        and traversal.get("exact_route_artifact") == "PASS"
+        and traversal.get("prediction_ledger_write") == "PASS"
+        and isinstance(qual, dict)
+        and qual.get("rank_eligible") is True
+        and qual.get("pick_rejected") is False
+        and isinstance(prediction, dict)
+        and bool(str(prediction.get("prediction_id") or "").strip())
+    )
+
+
 def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
     """Count only verified consumed features, not absence of an input error.
 
@@ -182,9 +267,23 @@ def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
     """
     result = row.get("result") or {}
     code = str(result.get("code") or result.get("model_status") or result.get("terminal_status") or "")
-    blockers = [str(b) for b in (result.get("blockers") or [])]
+    blockers = [str(b) for b in (result.get("blockers") or []) if str(b).strip()]
     if not blockers and code:
         blockers = [code]
+    # Cross-sport discovery nests the controlling scorer package under detail.
+    # Harvest nested typed blockers for stage telemetry without promoting the row.
+    # Outer typed status stays when already captured; nested codes are additive.
+    inner = result.get("detail")
+    if isinstance(inner, dict):
+        if not code:
+            code = str(inner.get("code") or inner.get("model_status") or "")
+            if code and code not in blockers:
+                blockers.append(code)
+        inner_blockers = inner.get("blockers")
+        if isinstance(inner_blockers, (list, tuple)):
+            for item in inner_blockers:
+                if isinstance(item, str) and item.strip() and item not in blockers:
+                    blockers.append(item)
     input_failures = (
         "MODEL_INPUTS_INSUFFICIENT",
         "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT",
@@ -205,6 +304,14 @@ def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
         return False, blockers
     if result.get("hydration_status") not in (None, "", "PASS"):
         return False, blockers
+
+    if row.get("lane") == "PROPS":
+        outcomes = result.get("outcomes")
+        if isinstance(outcomes, list) and any(
+            isinstance(o, dict) and _prop_outcome_hydrated(o.get("payload"))
+            for o in outcomes
+        ):
+            return True, blockers
 
     receipt = result.get("feature_consumption_receipt")
     verified_consumption = (
@@ -251,7 +358,8 @@ def _is_row_model_evaluated(row: dict[str, Any], hydrated: bool) -> bool:
         return any(
             isinstance(o, dict)
             and (
-                o.get("payload", {}).get("model_invoked") is True
+                _prop_outcome_evaluated(o.get("payload"))
+                or o.get("payload", {}).get("model_invoked") is True
                 or o.get("payload", {}).get("specialist_invoked") is True
                 or o.get("payload", {}).get("probability") is not None
             )
@@ -269,6 +377,20 @@ def _is_row_certified(row: dict[str, Any], evaluated: bool) -> bool:
     if not evaluated or row.get("row_status") != "COMPLETED":
         return False
     result = row.get("result") or {}
+    if row.get("lane") == "PROPS":
+        if (
+            result.get("can_execute") is not False
+            or result.get("probability_publishable") is not True
+            or result.get("rank_eligible") is not True
+            or row.get("probability_publishable") is not True
+            or row.get("rank_eligible") is not True
+        ):
+            return False
+        outcomes = result.get("outcomes")
+        return bool(
+            isinstance(outcomes, list)
+            and any(_prop_outcome_certified(o) for o in outcomes)
+        )
     if (
         result.get("model_invoked") is not True
         or result.get("terminal_label") != "FINAL_APPROVED"
@@ -405,6 +527,25 @@ def _snapshot_captured_at(row: dict[str, Any]) -> datetime:
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _prop_manifest_requires_refresh(
+    manifest: list[dict[str, Any]], *, selected_limit: int,
+    now: datetime | None = None,
+) -> bool:
+    """Request fresh research evidence for selected stale NFL/MLB snapshots.
+
+    Source freshness is not a certification or terminal decision. Refreshing
+    only selected stale rows keeps Daily bounded while preventing a historical
+    PASS snapshot from suppressing pregame acquisition indefinitely.
+    """
+    if selected_limit <= 0 or not manifest:
+        return False
+    cutoff = (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(minutes=30)
+    return any(
+        datetime.min.replace(tzinfo=timezone.utc) < _snapshot_captured_at(row) < cutoff
+        for row in manifest[:selected_limit]
+    )
+
+
 def _read_side_availability_blocker(row: dict[str, Any]) -> str | None:
     """Re-evaluate persisted role_status so Daily does not trust blockers alone.
 
@@ -492,7 +633,7 @@ def _prop_manifest_rows(
     """
     selected = (
         "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,"
-        "stat_type,line,hydration_status,blockers,role_status"
+        "stat_type,line,hydration_status,blockers,role_status,source_timestamps"
     )
     manifest: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -764,17 +905,89 @@ def _settlement_basis(sport: str) -> str:
     }.get(sport, "FULL_GAME_OUTRIGHT")
 
 
+def _promote_cross_sport_scorer_result(row: dict[str, Any]) -> dict[str, Any]:
+    """Surface the controlling scorer package on the Daily row result.
+
+    Cross-sport discovery nests the actual scorer completion under ``detail``.
+    Daily reduction, stage telemetry, and compact moneyline transport read
+    top-level fields. Promoting the nested package preserves the real scorer
+    codes/probabilities/blockers without inventing probability or soft-holding
+    a hard rejection. Envelope ``rank_eligible`` / ``probability_publishable``
+    win over nested values so the publication-chain rank ceiling still demotes.
+    Visibility metadata is recomputed from those final eligibility flags so a
+    demoted row cannot keep a stale ``OFFICIAL_QUALIFIED`` label.
+    """
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    if not detail:
+        promoted = dict(row)
+    else:
+        promoted = {**row, **detail}
+        promoted["detail"] = detail
+        if "rank_eligible" in row:
+            promoted["rank_eligible"] = row.get("rank_eligible") is True
+        if "probability_publishable" in row:
+            promoted["probability_publishable"] = row.get("probability_publishable") is True
+        if "bucket" in row:
+            promoted["bucket"] = row.get("bucket")
+        if row.get("model_status") is not None:
+            promoted["model_status"] = row.get("model_status")
+
+    # Recompute presentation metadata from the final eligibility surface.
+    # Numerical probabilities are preserved; only the visibility label/flags
+    # are refreshed so rank-ceiling demotion cannot advertise OFFICIAL_QUALIFIED.
+    return _annotate_probability_visibility(promoted)
+
+
 def _cross_sport_stage_status(row: dict[str, Any]) -> str:
     """Native Daily stage terminal for one discovered cross-sport row.
 
-    ``bucket`` records the model outcome and is set before the full-board
-    overlay runs. The overlay may later withdraw ``rank_eligible`` when the
-    publication-chain audit proves a mandatory stage unproven; a row without
-    rank eligibility is not an approved stage. Pre-overlay, MODEL_COMPLETED
-    already implies rank_eligible, so this only ever lowers a row to HELD.
+    Hard terminals are read from the controlling scorer package (nested
+    ``detail`` or promoted surface) so ``pick_rejected`` / purge labels are
+    never soft-held as ``HELD``. ``bucket`` records the model outcome before
+    the full-board overlay runs. The overlay may later withdraw
+    ``rank_eligible`` when the publication-chain audit proves a mandatory
+    stage unproven; a row without rank eligibility is not an approved stage.
+    Pre-overlay, MODEL_COMPLETED already implies rank_eligible, so the
+    completed path only ever lowers a row to HELD.
     """
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    native = classify_stage_status(detail) if detail else classify_stage_status(row)
+    if native in ("INVALID", "PURGED", "REJECTED"):
+        return native
     completed = row.get("bucket") == discovery.MODEL_COMPLETED
     return "COMPLETED" if completed and row.get("rank_eligible") is True else "HELD"
+
+
+def _build_cross_sport_terminal_rows(
+    scan_rows: list[dict[str, Any]],
+    covered_event_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Shared Daily MONEYLINE terminal builder for base and installed paths."""
+    rows: list[dict[str, Any]] = []
+    for row in scan_rows:
+        if str(row.get("official_event_id") or "") in covered_event_ids:
+            continue
+        payload = _promote_cross_sport_scorer_result(row)
+        rows.append(
+            _terminal_row(
+                "MONEYLINE",
+                {
+                    key: row.get(key)
+                    for key in (
+                        "official_event_id",
+                        "commence_time_utc",
+                        "home_team",
+                        "away_team",
+                        "sport",
+                    )
+                },
+                payload,
+                assert_no_terminal_upgrade(
+                    reduce_row_terminal([_cross_sport_stage_status(row)])
+                ),
+            )
+        )
+    return rows
 
 
 def _cross_sport_moneyline_rows(
@@ -872,21 +1085,7 @@ def _cross_sport_moneyline_rows(
         # MLB-only even though the provider registry contained those events.
         include_regime_variants=True,
     )
-    rows = [
-        _terminal_row(
-            "MONEYLINE",
-            {
-                key: row.get(key)
-                for key in ("official_event_id", "commence_time_utc", "home_team", "away_team", "sport")
-            },
-            row,
-            assert_no_terminal_upgrade(
-                reduce_row_terminal([_cross_sport_stage_status(row)])
-            ),
-        )
-        for row in scan["rows"]
-        if str(row.get("official_event_id") or "") not in covered_event_ids
-    ]
+    rows = _build_cross_sport_terminal_rows(list(scan.get("rows") or []), covered_event_ids)
     return rows, scan
 
 
@@ -953,17 +1152,34 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             prop_rows = []
             prop_manifest = []
             blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
-        # Acquisition exists to fill an empty canonical lane. A zero-length page
-        # caused by max_props is not an empty lane, so it must not trigger a
-        # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
-        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        # A trusted orchestration context can require a fresh acquisition
+        # even when the canonical slate is populated. Keep the initial manifest
+        # to prioritize exact stale NFL identities; never infer market offers.
+        refresh_targets = [
+            {key: row.get(key) for key in
+             ("event_id", "event_start_time", "sport", "player", "stat_type", "line")}
+            for row in prop_manifest[:req.max_props]
+            if _prop_manifest_requires_refresh([row], selected_limit=1)
+        ]
+        # max_props=0 is an explicit no-acquisition request, not an empty slate.
+        if (
+            req.max_props > 0
+            and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
+            and (
+                not prop_manifest
+                or bool(refresh_targets)
+                or force_daily_prop_acquisition()
+            )
+        ):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
                 requested_timezone=req.requested_timezone,
                 max_candidates=max(req.max_props * 3, req.max_props),
+                include_nfl=True,
+                refresh_targets=refresh_targets,
             )
-            if prop_acquisition.get("status") == "DATA_UNOBTAINABLE":
+            if prop_acquisition.get("status") in {"DATA_UNOBTAINABLE", "COMPLETED_WITH_SOURCE_BLOCKERS"}:
                 blockers.extend(prop_acquisition.get("blockers") or [])
             elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
@@ -1006,15 +1222,50 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                     outcomes.append({"direction": direction, "status": classify_stage_status(detail), "payload": detail})
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
-            publishable = any(x["payload"].get("probability_publishable") is True and x["payload"].get("rank_eligible") is True for x in outcomes)
-            rows.append(
-                _terminal_row(
-                    "PROPS",
-                    identity,
-                    {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False},
-                    _props_row_reduction(outcomes),
-                )
+            publishable = any(
+                x.get("status") == "COMPLETED"
+                and x["payload"].get("probability_publishable") is True
+                and _prop_outcome_rank_eligible(x["payload"])
+                for x in outcomes
             )
+            # This table freezes sporting evidence, not an authenticated
+            # sportsbook offer (offer ID/book/period/quote timestamp/price).
+            # Even a successful fitted sporting model cannot authorize a
+            # market-value edge or a multi-leg betting card from this source.
+            # Keep calibrated sporting evidence and model evaluation intact.
+            source_times = row.get("source_timestamps")
+            source_times = source_times if isinstance(source_times, dict) else {}
+            discovery_line = any(key in source_times for key in (
+                "WOW_AUTONOMOUS_DISCOVERY_LINE",
+                "INPUT_CAPTURE_V17_DAILY_AUTONOMOUS_DISCOVERY",
+            ))
+            offer_receipt = {
+                "status": "MARKET_OFFER_NOT_ATTESTED",
+                "line_provenance": (
+                    "AUTONOMOUS_DISCOVERY_PRIOR10_HALF_POINT"
+                    if discovery_line else "UNVERIFIED_SOURCE_LINE"
+                ),
+                "exact_offer_verified": False,
+                "market_value_edge_eligible": False,
+                "market_card_eligible": False,
+                "can_execute": False,
+            }
+            terminal_row = _terminal_row(
+                "PROPS", identity,
+                {
+                    "outcomes": outcomes,
+                    "probability_publishable": publishable,
+                    "rank_eligible": publishable,
+                    "market_offer_verification": offer_receipt,
+                    "market_value_edge_eligible": False,
+                    "market_card_eligible": False,
+                    "can_execute": False,
+                },
+                _props_row_reduction(outcomes),
+            )
+            terminal_row["market_offer_verification"] = offer_receipt
+            terminal_row["market_card_eligible"] = False
+            rows.append(terminal_row)
 
     if "PROPS" in requested_lanes:
         scored_prop_rows = sum(1 for row in rows if row.get("lane") == "PROPS")
@@ -1180,6 +1431,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
 
     response = {
         "run_id": run_id,
+        "deployed_sha": _render_deployed_sha(),
         "terminal": True,
         "run_status": run_status,
         "scoring_run_status": scoring_run_status,

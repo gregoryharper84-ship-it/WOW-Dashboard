@@ -248,7 +248,7 @@ def _identity_conflicts(
     return sorted(conflicted)
 
 
-def _source_rights_approved(explicit: bool | None) -> bool:
+def nhl_source_rights_approved(explicit: bool | None = None) -> bool:
     """Return whether live NHL source persistence is rights-approved.
 
     Reachability of the public schedule API is not commercial training
@@ -264,6 +264,11 @@ def _source_rights_approved(explicit: bool | None) -> bool:
         "yes",
         "approved",
     }
+
+
+def _source_rights_approved(explicit: bool | None) -> bool:
+    """Compatibility alias for internal re-ingest call sites."""
+    return nhl_source_rights_approved(explicit)
 
 
 def run_nhl_source_reingest(
@@ -632,5 +637,6 @@ __all__ = [
     "build_reingest_rows",
     "default_season_id",
     "install_nhl_source_reingest_route",
+    "nhl_source_rights_approved",
     "run_nhl_source_reingest",
 ]

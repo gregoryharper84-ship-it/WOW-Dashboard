@@ -24,6 +24,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from v17 import memory_admission
 
 
+def _render_deployed_sha() -> str | None:
+    sha = str(os.getenv("RENDER_GIT_COMMIT") or "").strip().lower()
+    return sha if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha) else None
+
+
 LOGGER = logging.getLogger("wow.v17.daily_async")
 TABLE = "wow_v17_daily_async_runs"
 _WORKER_STATE_KEY = "wow_v17_daily_async_worker_installed"
@@ -418,8 +423,15 @@ def install_daily_async_routes(
                 status_code=404,
                 detail={"code": "DAILY_ASYNC_RUN_NOT_FOUND", "run_id": run_id, "can_execute": False},
             )
+        result_payload = row.get("result_payload")
+        deployed_sha = (
+            result_payload.get("deployed_sha")
+            if isinstance(result_payload, dict) and result_payload.get("deployed_sha")
+            else _render_deployed_sha()
+        )
         return {
             "run_id": row["run_id"],
+            "deployed_sha": deployed_sha,
             "run_status": row["run_status"],
             "terminal": row["run_status"] in {"COMPLETED", "FAILED"},
             "submitted_at": row.get("submitted_at"),
@@ -427,7 +439,7 @@ def install_daily_async_routes(
             "completed_at": row.get("completed_at"),
             "attempt_count": row.get("attempt_count"),
             "result_run_id": row.get("result_run_id"),
-            "result": row.get("result_payload"),
+            "result": result_payload,
             "last_error_code": row.get("last_error_code"),
             "can_execute": False,
         }

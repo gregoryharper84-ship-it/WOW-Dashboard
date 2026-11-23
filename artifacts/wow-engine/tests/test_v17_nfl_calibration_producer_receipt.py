@@ -204,9 +204,39 @@ class _CertifiedDb:
     def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None, *, verified_games=None, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V2", view_present=True):
         self.model = {
             "active": True, "promoted": True,
-            "probability_publishable": approved,
+            # Fitted model registry remains nonpublishing, even when the
+            # independent specialist's immutable certificate is approved.
+            "probability_publishable": False,
             "artifact_checksum": "sha256-fixture-model-bundle",
             "model_artifact_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
+            "model_family": "NFL_OUTRIGHT_WIN_LOGREG_V1",
+            "feature_schema_version": "NFL_EVENT_PREGAME_PRIOR_V1",
+            "calibrator_id": "eeeeeeee-eeee-4eee-eeee-eeeeeeeeeeee",
+        }
+        self.calibrator = {
+            "calibrator_id": self.model["calibrator_id"],
+            "calibration_method": "PLATT_TIME_SPLIT_V1",
+            "fit_metrics_json": {"calibration_artifact_sha256": "b" * 64},
+            "active": True, "promoted": True,
+            "validation_status": "PASS", "health_status": "PASS",
+        }
+        self.certificate = {
+            "ok": bool(approved),
+            "certification_status": "CERTIFIED" if approved else "REVOKED",
+            "independent_verification_status": "PASS",
+            "probability_publishable": bool(approved),
+            "can_execute": False,
+            "sport": "NFL", "league_scope": "NFL",
+            "controlling_specialist": "wow.nfl-game-win-probability-expert",
+            "model_family": self.model["model_family"],
+            "model_version": self.model["model_artifact_version"],
+            "artifact_id": "dddddddd-dddd-4ddd-dddd-dddddddddddd",
+            "artifact_sha256": self.model["artifact_checksum"],
+            "feature_schema_version": self.model["feature_schema_version"],
+            "calibration_artifact_id": self.calibrator["calibrator_id"],
+            "calibration_method": self.calibrator["calibration_method"],
+            "calibration_sha256": "b" * 64,
+            "certified_at": "2026-10-24T10:00:00+00:00",
         }
         self.health = {
             "schema_version": health_schema,
@@ -238,7 +268,14 @@ class _CertifiedDb:
             for i in range(count)
         ]
 
+    def rpc(self, name, args):
+        assert name == "wow_v17_active_team_event_certification"
+        assert args == {"p_sport": "NFL", "p_league_scope": "NFL"}
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.certificate))
+
     def table(self, name):
+        if name == "wow_calibrators":
+            return _Query([self.calibrator])
         if name == "wow_nfl_event_fitted_model_artifacts":
             return _Query([self.model])
         if name == "wow_nfl_forward_calibration_health":
@@ -275,3 +312,44 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
     assert _forward_certification_proven(
         _CertifiedDb(True, 100, unique_games=53), row
     ) is False
+
+def test_certificate_identity_and_immutable_model_time_cannot_be_borrowed():
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    _, row, _ = _bound_evidence()
+    for field, false_value in (
+        ("artifact_sha256", "c" * 64),
+        ("model_version", "ANOTHER_MODEL"),
+        ("calibration_artifact_id", "another-calibrator"),
+        ("calibration_sha256", "d" * 64),
+        ("feature_schema_version", "WRONG_FEATURES"),
+        ("independent_verification_status", "FAIL"),
+        ("can_execute", True),
+        ("certified_at", "2026-10-26T10:00:00+00:00"),
+    ):
+        db = _CertifiedDb(True, 100)
+        db.certificate[field] = false_value
+        assert _forward_certification_proven(db, row) is False, field
+
+    missing_digest = _CertifiedDb(True, 100)
+    missing_digest.calibrator["fit_metrics_json"] = {}
+    assert _forward_certification_proven(missing_digest, row) is False
+
+    forged_dataset_hash = _CertifiedDb(True, 100)
+    forged_dataset_hash.calibrator["fit_metrics_json"] = {
+        "calibration_artifact_sha256": None,
+        "source_data_hash": "b" * 64,
+    }
+    assert _forward_certification_proven(forged_dataset_hash, row) is False
+
+
+def test_no_rpc_certificate_and_missing_calibrator_always_hold():
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    _, row, _ = _bound_evidence()
+    db = _CertifiedDb(True, 100)
+    db.rpc = None
+    assert _forward_certification_proven(db, row) is False
+    db = _CertifiedDb(True, 100)
+    db.calibrator["health_status"] = "FAIL"
+    assert _forward_certification_proven(db, row) is False

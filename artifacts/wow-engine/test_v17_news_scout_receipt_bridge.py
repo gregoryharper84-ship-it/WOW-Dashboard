@@ -76,6 +76,13 @@ def test_public_gdelt_news_is_attached_but_cannot_promote_model(tmp_path):
     nba = result["model_handoff"]["team_event_candidates"][0]
     nfl = result["model_handoff"]["prop_candidates"][0]
     assert nba["news_research_handoff"]["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+    # Exact original artifact bytes are hashed by the sibling reader;
+    # parsed/canonical JSON is separately hashed and never misnamed as raw.
+    research = nba["news_research_handoff"]
+    assert research["source_receipt_sha256"] == bridge["source_sha256"]
+    assert len(research["discovery_canonical_sha256"]) == 64
+    assert research["source_receipt_sha256"] != research["discovery_canonical_sha256"]
+    assert research["event_start_utc"] == payload["model_handoff"]["team_event_candidates"][0]["event_start_utc"]
     assert nba["news_research_handoff"]["research_rescore_requested"] is False
     assert nba["news_research_handoff"]["model_rescore_verified"] is False
     assert nba["news_research_handoff"]["calibrated_probability"] is None

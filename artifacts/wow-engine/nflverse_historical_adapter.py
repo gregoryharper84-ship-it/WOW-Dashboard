@@ -301,14 +301,26 @@ def normalize_player_stats_corpus(
 ) -> tuple[NormalizedPlayerGameOutcome, ...]:
     index = build_schedule_index(schedule_rows)
     output: list[NormalizedPlayerGameOutcome] = []
+    seen: set[tuple[str, str, str]] = set()
     for row in player_rows:
-        output.extend(
-            normalize_player_stats_row(
-                row,
-                schedule_index=index,
-                source_retrieved_at=source_retrieved_at,
-                source_payload_hash=player_stats_payload_hash,
-                stat_types=stat_types,
-            )
+        outcomes = normalize_player_stats_row(
+            row,
+            schedule_index=index,
+            source_retrieved_at=source_retrieved_at,
+            source_payload_hash=player_stats_payload_hash,
+            stat_types=stat_types,
         )
+        for outcome in outcomes:
+            key = (
+                outcome.identity.event_id,
+                outcome.identity.participant_id,
+                outcome.stat_type,
+            )
+            if key in seen:
+                raise NFLVerseHistoricalAdapterError(
+                    "NFLVERSE_PLAYER_GAME_STAT_DUPLICATE",
+                    f"{key[0]}:{key[1]}:{key[2]}",
+                )
+            seen.add(key)
+            output.append(outcome)
     return tuple(output)

@@ -589,9 +589,40 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
             self.verified = verified
             self.health_version = health_version
 
+        def rpc(self, name, args):
+            assert name == "wow_v17_active_team_event_certification"
+            assert args == {"p_sport": "NFL", "p_league_scope": "NFL"}
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data={
+                "ok": True, "certification_status": "CERTIFIED",
+                "independent_verification_status": "PASS", "probability_publishable": True,
+                "can_execute": False, "sport": "NFL", "league_scope": "NFL",
+                "controlling_specialist": "wow.nfl-game-win-probability-expert",
+                "model_family": "NFL_EXACT_TEST_FAMILY", "model_version": "fitted-nfl-test",
+                "artifact_id": "fitted-test", "artifact_sha256": "test-checksum",
+                "feature_schema_version": "NFL_EVENT_PREGAME_PRIOR_V1",
+                "calibration_artifact_id": "calibrator-test",
+                "calibration_method": "PLATT_TIME_SPLIT_V1",
+                "calibration_sha256": "b" * 64,
+                "certified_at": "2025-12-01T00:00:00+00:00",
+            }))
+
         def table(self, name):
+            if name == "wow_calibrators":
+                return Query([{
+                    "calibrator_id": "calibrator-test",
+                    "calibration_method": "PLATT_TIME_SPLIT_V1",
+                    "fit_metrics_json": {"calibration_artifact_sha256": "b" * 64},
+                    "active": True, "promoted": True,
+                    "validation_status": "PASS", "health_status": "PASS",
+                }])
             if name == "wow_nfl_event_fitted_model_artifacts":
-                return Query([{"active": True, "promoted": True, "probability_publishable": True, "artifact_checksum": "test-checksum", "model_artifact_version": "fitted-nfl-test"}])
+                return Query([{
+                    "active": True, "promoted": True, "probability_publishable": False,
+                    "artifact_checksum": "test-checksum", "model_artifact_version": "fitted-nfl-test",
+                    "model_family": "NFL_EXACT_TEST_FAMILY",
+                    "feature_schema_version": "NFL_EVENT_PREGAME_PRIOR_V1",
+                    "calibrator_id": "calibrator-test",
+                }])
             if name == "wow_nfl_forward_calibration_health":
                 return Query([{
                     "schema_version": self.health_version,
@@ -613,7 +644,11 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
                               for g in grade_forward_predictions(predictions, outcomes)])
             raise AssertionError(name)
 
-    row = {"model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test", "model_output_snapshot": {"artifact_checksum": "test-checksum"}}
+    row = {
+        "model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test",
+        "model_timestamp": "2026-01-01T00:00:00+00:00",
+        "model_output_snapshot": {"artifact_checksum": "test-checksum"},
+    }
     assert not _forward_certification_proven(Db(99), row)
     assert not _forward_certification_proven(Db(100, "NFL_FORWARD_CALIBRATION_HEALTH_V1"), row)
     assert not _forward_certification_proven(Db(None), row)
