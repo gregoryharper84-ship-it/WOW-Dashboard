@@ -1286,7 +1286,7 @@ class TestContextChangeInvalidationAllMarkets(unittest.TestCase):
         self.assertEqual(gk["full_model_status"], STATUS_INVALIDATED)
         self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
         self.assertTrue(any("CONTEXT_STALE" in b for b in gk["blockers"]))
-        self.assertIs(row["can_execute"], False)
+        self.assertIs(gk["can_execute"], False)
 
     def test_material_context_newer_than_model_invalidates_without_other_flags(self):
         row = _base_row(
