@@ -138,5 +138,9 @@ def test_existing_slip_preflight_reports_niche_category_without_approving_entry(
         "NFL_1Q_TWO_KICKER_FG_OVER_0_5": 1,
         "NBA_LOW_VOLUME_UNDER": 1,
     }
+    combo_blockers = out["cards"][0]["legs"][0]["blockers"]
+    assert "NFL_KICKER_COMBO_SPECIALIST_NOT_DECLARED" in combo_blockers
+    assert "NFL_KICKER_COMBO_NOT_SINGLE_PLAYER_PROP" in combo_blockers
+    assert "NICHE_COMBO_OPPOSING_TEAM_BINDING_MISSING" in combo_blockers
     assert out["cards"][0]["legs"][0]["niche_prop_research"]["category"] == "NFL_1Q_TWO_KICKER_FG_OVER_0_5"
     assert out["joint_probability"] is None and not out["can_execute"]
