@@ -413,6 +413,7 @@ def test_robertson_style_common_game_hinge_across_three_cards_is_held():
         row["sport"] = "NHL"
         row["market_quote"]["sport"] = "NHL"
         row["player_roster_evidence"]["sport"] = "NHL"
+        row["opportunity_evidence"]["sport"] = "NHL"
         row["prop_matchup_evidence"]["sport"] = "NHL"
         row["official_fixture_evidence"]["sport"] = "NHL"
         row["news_evidence"]["sport"] = "NHL"
