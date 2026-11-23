@@ -38,6 +38,13 @@ def _valid_probability(value: Any, *, allow_zero: bool = False) -> float | None:
     return p if (0 <= p if allow_zero else 0 < p) else None
 
 
+
+def _valid_stat(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    number = float(value)
+    return number if isfinite(number) else None
+
 def capture_eligibility(
     prediction: Mapping[str, Any],
     settlement: Mapping[str, Any],
@@ -96,6 +103,10 @@ def capture_eligibility(
             return "PREGAME_SOURCE_SNAPSHOT_UNVERIFIED"
         if str(prediction.get("direction") or "").upper() not in {"MORE", "LESS"}:
             return "PROP_DIRECTION_UNRESOLVED"
+        if str(prediction.get("market_type") or "").upper() not in {
+            "PLAYER_PROP", "PROP_DISCRETE_PMF"
+        }:
+            return "SCALAR_PROP_MARKET_ROUTE_UNVERIFIED"
     if prediction.get("probability_publishable") is not True:
         return "MODEL_NOT_PUBLISHABLE_FOR_CALIBRATION"
 
@@ -112,10 +123,29 @@ def capture_eligibility(
     if kind == "PROP":
         if not result:
             return "OFFICIAL_SETTLEMENT_RESULT_MISSING"
-        if result.startswith("VOID_") or result in NON_BINARY_RESULTS:
+        if (settlement.get("void") is True or settlement.get("push") is True
+                or result.startswith("VOID_") or result in NON_BINARY_RESULTS):
             return "NONBINARY_SETTLEMENT_EXCLUDED_FROM_CALIBRATION"
         if result not in BINARY_RESULTS:
             return "OFFICIAL_SETTLEMENT_RESULT_UNSUPPORTED"
+        # Count/scalar contracts must settle the actual exact line and direction;
+        # a receipt string alone cannot establish that an observed HIT is correct.
+        line = prediction.get("line")
+        actual = settlement.get("actual_stat")
+        if _valid_stat(line) is None or _valid_stat(actual) is None:
+            return "EXACT_SCALAR_SETTLEMENT_VALUE_UNVERIFIED"
+        if float(actual) == float(line):
+            return "BINARY_RESULT_CONFLICTS_WITH_PUSH_LINE"
+        expected_hit = (
+            float(actual) > float(line)
+            if str(prediction["direction"]).upper() == "MORE"
+            else float(actual) < float(line)
+        )
+        if expected_hit != (result in {"HIT", "WIN"}):
+            return "BINARY_RESULT_CONFLICTS_WITH_EXACT_LINE"
+        settled_hit = settlement.get("hit")
+        if type(settled_hit) is bool and settled_hit != expected_hit:
+            return "RECORDED_HIT_FLAG_CONFLICTS_WITH_RESULT"
     else:
         if settlement.get("void") is True:
             return "NONBINARY_SETTLEMENT_EXCLUDED_FROM_CALIBRATION"
