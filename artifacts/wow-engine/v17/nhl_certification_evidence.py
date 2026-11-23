@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from math import isclose, isfinite
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from v17.candidate_certification_evidence import _all_rows, _hash, _identity, _iso
 from v17.model_source_entitlements import source_readiness
@@ -27,6 +27,8 @@ REQUIRED_CALIBRATION_ROWS = 1226
 REQUIRED_TEST_ROWS = 1226
 REQUIRED_CORPUS_ROWS = REQUIRED_TRAINING_ROWS + REQUIRED_CALIBRATION_ROWS + REQUIRED_TEST_ROWS
 IDENTITY_CALIBRATION_METHOD = "IDENTITY_RAW_PROBABILITY_V1"
+EMPIRICAL_CALIBRATION_METHOD = "EMPIRICAL_WILSON_BINS_V1"
+CERTIFICATION_CALIBRATOR_VERSION = "NHL_CERTIFICATION_BOUND_CALIBRATOR_V1"
 
 
 def expected_model_artifact_version(training_dataset_hash: str, training_code_sha: str) -> str:
@@ -34,6 +36,104 @@ def expected_model_artifact_version(training_dataset_hash: str, training_code_sh
     dataset = str(training_dataset_hash or "").strip().lower()
     code = str(training_code_sha or "").strip().lower()
     return f"{MODEL_ARTIFACT_VERSION_PREFIX}-{dataset[:16]}-{code[:12]}"
+
+
+def _is_certification_bound_wilson(calibrator: Mapping[str, Any] | None) -> bool:
+    """True when the persisted calibrator is the #2810 certification-bound Wilson artifact."""
+    if not isinstance(calibrator, Mapping):
+        return False
+    return (
+        str(calibrator.get("method") or "") == EMPIRICAL_CALIBRATION_METHOD
+        and str(calibrator.get("certification_calibrator_version") or "")
+        == CERTIFICATION_CALIBRATOR_VERSION
+    )
+
+
+def _calibration_block_raw_probabilities(
+    fitted: Any,
+    replay_rows: Sequence[Any],
+    feature_names: Sequence[str],
+) -> tuple[list[float], list[int], str]:
+    """Rebuild chronological calibration-block raw probs from the replayed artifact.
+
+    Uses the same vectorized NumPy path as G2/G3 Wilson attachment so the
+    bound-calibrator payload hashes bit-exactly under replay.
+    """
+    import numpy as np
+
+    artifact = fitted.artifact_payload if isinstance(fitted.artifact_payload, Mapping) else {}
+    train_end = artifact.get("train_end_index")
+    cal_end = artifact.get("calibration_end_index")
+    if type(train_end) is not int or type(cal_end) is not int or not (0 <= train_end < cal_end <= len(replay_rows)):
+        raise ValueError("NHL_REPLAY_CALIBRATION_SPLIT_INVALID")
+    names = [str(name) for name in feature_names]
+    ordered = sorted(replay_rows, key=lambda row: row.event_start_time)
+    if list(replay_rows) != ordered:
+        raise ValueError("NHL_REPLAY_ROWS_NOT_CHRONOLOGICAL")
+    means = artifact.get("scaler_mean")
+    scales = artifact.get("scaler_scale")
+    coefficients = artifact.get("coefficients")
+    intercept = artifact.get("intercept")
+    if (
+        not isinstance(means, list)
+        or not isinstance(scales, list)
+        or not isinstance(coefficients, list)
+        or len(means) != len(names)
+        or len(scales) != len(names)
+        or len(coefficients) != len(names)
+        or not isinstance(intercept, (int, float))
+        or isinstance(intercept, bool)
+    ):
+        raise ValueError("NHL_REPLAY_ARTIFACT_SCALER_INVALID")
+    mean = np.asarray(means, dtype=float)
+    scale = np.asarray(scales, dtype=float)
+    coef = np.asarray(coefficients, dtype=float)
+    if np.any(~np.isfinite(scale)) or np.any(scale == 0.0):
+        raise ValueError("NHL_REPLAY_ARTIFACT_SCALER_INVALID")
+    matrix = np.asarray(
+        [[float(row.features[name]) for name in names] for row in ordered],
+        dtype=float,
+    )
+    calibrated = (matrix[train_end:cal_end] - mean) / scale
+    logits = float(intercept) + calibrated @ coef
+    probabilities = (1.0 / (1.0 + np.exp(-logits))).tolist()
+    outcomes = [1 if row.positive_outcome else 0 for row in ordered[train_end:cal_end]]
+    fit_end = ordered[cal_end - 1].event_start_time
+    return [float(value) for value in probabilities], outcomes, fit_end
+
+
+def _replay_certification_bound_calibrator(
+    fitted: Any,
+    replay_rows: Sequence[Any],
+    feature_names: Sequence[str],
+    *,
+    fit_end_timestamp: Any,
+) -> Mapping[str, Any]:
+    """Refit the #2810 Wilson bound calibrator on the same chronological cal block."""
+    from v17.nhl_bound_calibrator import (
+        NHLBoundCalibratorError,
+        build_nhl_certification_bound_calibrator,
+    )
+
+    probabilities, outcomes, default_fit_end = _calibration_block_raw_probabilities(
+        fitted, replay_rows, feature_names
+    )
+    # Prefer the candidate's frozen fit-end so the payload hash is bit-exact.
+    fit_end = fit_end_timestamp if fit_end_timestamp is not None else default_fit_end
+    try:
+        bound = build_nhl_certification_bound_calibrator(
+            probabilities,
+            outcomes,
+            fit_end_timestamp=fit_end,
+        )
+    except NHLBoundCalibratorError as exc:
+        raise ValueError(exc.code) from exc
+    if not bound.get("certification_calibrator_ready"):
+        raise ValueError(str(bound.get("code") or "NHL_BOUND_CALIBRATOR_REPLAY_FAILED"))
+    payload = bound.get("calibrator_payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("NHL_BOUND_CALIBRATOR_REPLAY_FAILED")
+    return payload
 
 
 def _validated_row(
@@ -243,7 +343,20 @@ def verify_nhl_candidate_certification_evidence(db: Any, candidate_id: str) -> d
                 replay_blockers.append("REPLAY_DATASET_HASH_MISMATCH")
             if _hash(fitted.artifact_payload) != str(c.get("artifact_checksum") or "").lower():
                 replay_blockers.append("REPLAY_ARTIFACT_CHECKSUM_MISMATCH")
-            if _hash(fitted.calibrator_payload) != _hash(c.get("calibrator_payload") or {}):
+            # Certification-bound Wilson (#2810) is attached after research fit.
+            # Replay must refit that same bound calibrator on the chronological
+            # calibration block — never compare against train_binary_candidate's
+            # default research calibrator, and never skip/loosen the hash check.
+            if _is_certification_bound_wilson(calibrator):
+                replayed_calibrator = _replay_certification_bound_calibrator(
+                    fitted,
+                    replay_rows,
+                    feature_names,
+                    fit_end_timestamp=calibrator.get("fit_end_timestamp"),
+                )
+                if _hash(replayed_calibrator) != _hash(calibrator):
+                    replay_blockers.append("REPLAY_CALIBRATOR_MISMATCH")
+            elif _hash(fitted.calibrator_payload) != _hash(calibrator):
                 replay_blockers.append("REPLAY_CALIBRATOR_MISMATCH")
             recorded = c.get("validation_metrics") or {}
             for key, value in metrics.items():
@@ -339,7 +452,11 @@ __all__ = [
     "REQUIRED_CALIBRATION_ROWS",
     "REQUIRED_TEST_ROWS",
     "IDENTITY_CALIBRATION_METHOD",
+    "EMPIRICAL_CALIBRATION_METHOD",
+    "CERTIFICATION_CALIBRATOR_VERSION",
     "expected_model_artifact_version",
+    "_is_certification_bound_wilson",
+    "_replay_certification_bound_calibrator",
     "_validated_row",
     "verify_nhl_candidate_certification_evidence",
 ]
