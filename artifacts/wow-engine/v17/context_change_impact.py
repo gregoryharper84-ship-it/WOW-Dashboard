@@ -55,7 +55,8 @@ def candidate_event_start(candidate: Mapping[str, Any]) -> Any:
     """Preserve all supported Scout start formats, including nested requests."""
     nested = candidate.get("event_request")
     nested = nested if isinstance(nested, Mapping) else {}
-    return (candidate.get("event_start_utc")
+    return (candidate.get("canonical_identity_event_start_utc")
+            or candidate.get("event_start_utc")
             or candidate.get("commence_time")
             or candidate.get("event_start_time_utc")
             or nested.get("event_start_time_utc"))
