@@ -16,7 +16,7 @@ import {
   errorPayload,
   invokeV17Operation,
 } from "../src/v17_backend.js";
-import { createV17McpServer } from "../src/v17_server.js";
+import { createV17McpServer, getV17VisibleTools } from "../src/v17_server.js";
 
 const EXPECTED_TOOLS = [
   "getWowV17BackendHealth",
@@ -260,14 +260,10 @@ test("MCP server factory loads using the installed protocol SDK", () => {
 });
 
 
-test("health-only MCP candidate isolates all stateful tools before ChatGPT onboarding", async () => {
+test("health-only candidate exposes the safe single-tool surface; normal production registry stays unchanged", () => {
+  assert.deepEqual(getV17VisibleTools({ healthOnly: true }).map((entry) => entry.name), ["getWowV17BackendHealth"]);
+  assert.equal(getV17VisibleTools({ healthOnly: true })[0].annotations.readOnlyHint, true);
+  assert.deepEqual(getV17VisibleTools().map((entry) => entry.name), EXPECTED_TOOLS);
   const server = createV17McpServer({ healthOnly: true, backend: { backendKey: "test-only" } });
-  // Assert the server is built using the exact allowlisted surface; the default 16-tool registry is unchanged.
   assert.ok(server);
-  const source = await import("node:fs/promises");
-  const serverText = await source.readFile(new URL("../src/v17_server.js", import.meta.url), "utf8");
-  assert.match(serverText, /visibleNames\.has\(operationName\)/);
-  const httpText = await source.readFile(new URL("../src/v17_http.js", import.meta.url), "utf8");
-  assert.match(httpText, /WOW_MCP_HEALTH_ONLY/);
-  assert.match(httpText, /createV17McpServer\(\{ healthOnly: HEALTH_ONLY \}\)/);
 });
