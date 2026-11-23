@@ -101,7 +101,40 @@ def _event_date(value: Any, timezone_name: str = USER_TIMEZONE) -> str | None:
         return None
 
 
+def _nhl_identity_hold(candidate: dict[str, Any]) -> str | None:
+    """Preserve typed NHL source failures before any objective-model dispatch."""
+    if candidate.get("sport_key") != "icehockey_nhl":
+        return None
+    native = str(candidate.get("canonical_identity_blocker") or "").strip()
+    if native.startswith("NHL_"):
+        return native
+    official_id = candidate.get("official_event_id")
+    canonical_id = candidate.get("canonical_event_id")
+    digest = candidate.get("canonical_identity_match_sha256")
+    receipt = candidate.get("canonical_identity_receipt")
+    if (
+        candidate.get("official_event_identity_verified") is not True
+        or candidate.get("canonical_identity_status") != "CANONICAL_RESOLVED"
+        or not isinstance(official_id, str)
+        or len(official_id) != 10 or not official_id.isascii()
+        or not official_id.isdecimal()
+        or canonical_id != official_id
+        or not isinstance(digest, str) or len(digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in digest)
+        or not isinstance(receipt, dict)
+        or receipt.get("event_id") != official_id
+        or receipt.get("identity_match_sha256") != digest
+        or receipt.get("identity_provider") != "NHL_PUBLIC_WEB_API"
+        or receipt.get("can_execute") is not False
+    ):
+        return "NHL_EVENT_IDENTITY_UNVERIFIED"
+    return None
+
+
 def _prop_row(candidate: dict[str, Any], *, generated_at: str, index: int) -> tuple[dict[str, Any] | None, str | None]:
+    nhl_code = _nhl_identity_hold(candidate)
+    if nhl_code:
+        return None, nhl_code
     evidence = candidate.get("market_evidence")
     if not isinstance(evidence, dict):
         return None, "PROP_MARKET_EVIDENCE_MISSING"
@@ -158,6 +191,9 @@ def _prop_dedupe_key(row: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list[dict[str, Any]], str | None]:
+    nhl_code = _nhl_identity_hold(candidate)
+    if nhl_code:
+        return [], nhl_code
     event_id = str(candidate.get("official_event_id") or "").strip()
     sport, league = _sport_identity(str(candidate.get("sport_key") or ""))
     event_start = str(candidate.get("commence_time") or "").strip()
