@@ -45,7 +45,7 @@ def assemble():
     signed_payout = seal_capture_for_trusted_collector(payout, KEY)
     scenarios = {
         "joint_source_receipt_id": "synthetic-joint-scenarios",
-        "frozen_at_utc": "2026-11-23T19:54:00Z",
+        "frozen_at_utc": "2026-11-23T19:59:00Z",
         "source_snapshot_sha256": hashlib.sha256(b"synthetic-model-snapshot").hexdigest(),
         "model_artifact_digests": [hashlib.sha256(f"synthetic-fitted-artifact-{i}".encode()).hexdigest()
                                    for i in range(5)],
