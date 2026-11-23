@@ -62,9 +62,12 @@ def sealed_supabase_client_from_env() -> Any | None:
         return None
     try:
         from supabase import create_client
-    except ImportError:
+
+        return create_client(url, key)
+    except Exception:
+        # Import failures and client construction errors both fail closed so
+        # callers can emit PERSISTENCE_CLIENT_UNAVAILABLE instead of crashing.
         return None
-    return create_client(url, key)
 
 
 def _clean_id(value: Any) -> str:
@@ -131,18 +134,22 @@ def claimed_receipt_ids_from_async_summary(summary: Mapping[str, Any] | None) ->
         for job in jobs:
             if not isinstance(job, Mapping):
                 continue
+            durable = ""
             for field in ("request_id", "invocation_id", "persistence_run_id", "run_id"):
                 durable = _clean_id(job.get(field))
                 if durable:
                     found.append(durable)
                     break
-            payload = job.get("request_payload")
-            if isinstance(payload, Mapping):
-                for field in ("request_id", "invocation_id", "persistence_run_id", "run_id"):
-                    durable = _clean_id(payload.get(field))
-                    if durable:
-                        found.append(durable)
-                        break
+            # Payload is only a fallback when the job mapping itself has no
+            # durable ID; nested internal ids must not invent extra claims.
+            if not durable:
+                payload = job.get("request_payload")
+                if isinstance(payload, Mapping):
+                    for field in ("request_id", "invocation_id", "persistence_run_id", "run_id"):
+                        durable = _clean_id(payload.get(field))
+                        if durable:
+                            found.append(durable)
+                            break
     return list(dict.fromkeys(found))
 
 
@@ -265,6 +272,11 @@ def readback_durable_receipt_row(db: Any, receipt_id: str) -> dict[str, Any] | N
             ACTION_INVOCATION_TABLE,
             "request_id",
             "invocation_id,route,occurred_at,http_status,caller_class,request_id",
+        ),
+        (
+            PICK_REQUEST_RUN_TABLE,
+            "run_id",
+            "run_id,request_id,created_at,run_status",
         ),
         (
             PICK_REQUEST_RUN_TABLE,

@@ -232,7 +232,11 @@ def test_async_summary_claims_source_run_and_job_request_ids():
         {
             "source_run_id": "wow-scout-run-1",
             "jobs": [
-                {"request_id": "research-1:scout:abc", "can_execute": False},
+                {
+                    "request_id": "research-1:scout:abc",
+                    "request_payload": {"request_id": "nested-should-not-claim"},
+                    "can_execute": False,
+                },
                 {"request_id": "research-1:scout:abc", "can_execute": False},
                 {"request_payload": {"request_id": "payload-only"}, "can_execute": False},
             ],
@@ -243,6 +247,7 @@ def test_async_summary_claims_source_run_and_job_request_ids():
         "research-1:scout:abc",
         "payload-only",
     ]
+    assert "nested-should-not-claim" not in claimed
 
 
 class _FakeQuery:
@@ -277,7 +282,13 @@ def test_readback_durable_receipt_row_accepts_request_id_and_source_run():
             "wow_action_invocation_receipts": [
                 {"invocation_id": "inv-1", "request_id": "req-header-1", "route": "/score-prop"}
             ],
-            "wow_pick_request_runs": [],
+            "wow_pick_request_runs": [
+                {
+                    "run_id": "pick-run-uuid",
+                    "request_id": "research-1:props:1",
+                    "run_status": "COMPLETE",
+                }
+            ],
             "wow_scout_handoff_jobs": [
                 {
                     "job_id": "job-1",
@@ -291,9 +302,31 @@ def test_readback_durable_receipt_row_accepts_request_id_and_source_run():
         }
     )
     assert readback_durable_receipt_row(db, "req-header-1")["invocation_id"] == "inv-1"
+    assert readback_durable_receipt_row(db, "pick-run-uuid")["run_id"] == "pick-run-uuid"
+    assert readback_durable_receipt_row(db, "research-1:props:1")["request_id"] == "research-1:props:1"
     assert readback_durable_receipt_row(db, "research-1:scout:abc")["job_id"] == "job-1"
     assert readback_durable_receipt_row(db, "wow-scout-run-1")["source_run_id"] == "wow-scout-run-1"
     assert readback_durable_receipt_row(db, "missing") is None
+
+
+def test_sealed_client_construction_failure_fails_closed(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", SEALED_URL)
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-test-key")
+
+    import sys
+    import types
+
+    fake_mod = types.ModuleType("supabase")
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("client-init-failed")
+
+    fake_mod.create_client = _boom
+    monkeypatch.setitem(sys.modules, "supabase", fake_mod)
+
+    from v17.action_persistence_provenance import sealed_supabase_client_from_env
+
+    assert sealed_supabase_client_from_env() is None
 
 
 def test_require_persistence_readback_env_gate(monkeypatch):
