@@ -89,8 +89,9 @@ def capture_eligibility(
                 and prediction.get("model_family")
                 and prediction.get("model_artifact_version")):
             return "FITTED_ARTIFACT_PROVENANCE_MISSING"
-        if not prediction.get("evidence_source_kind"):
-            return "PREGAME_SOURCE_KIND_UNVERIFIED"
+        if not (prediction.get("evidence_source_kind")
+                or prediction.get("feature_snapshot_hash")):
+            return "PREGAME_SOURCE_SNAPSHOT_UNVERIFIED"
         if str(prediction.get("direction") or "").upper() not in {"MORE", "LESS"}:
             return "PROP_DIRECTION_UNRESOLVED"
     if prediction.get("probability_publishable") is not True:
