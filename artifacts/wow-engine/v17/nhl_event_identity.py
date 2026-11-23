@@ -3,9 +3,9 @@
 Provider discovery ids (for example ESPN ids) remain aliases. Canonical event
 identity is assigned only after an exact participant + start-time match against
 the NHL-owned club season schedule endpoint already used by WOW research. The
-response body is read once; those same bytes are hashed and parsed, so a
-resolved identity carries the SHA-256 of the exact feed bytes it was matched
-against and cannot be labelled with the digest of a different fetch.
+response body is read and parsed once. The identity fingerprint covers only
+the canonical matched-game identity fields. It is NOT a source-body snapshot
+digest or a substitute for a persisted, independently revalidated receipt.
 
 This module has no sporting-probability, market-price, calibration, ranking, or
 execution authority.
@@ -109,9 +109,9 @@ def _aware(value: Any) -> datetime:
 def _response_body(response: Any) -> bytes:
     """Return the raw body bytes, or fail closed.
 
-    The bytes are required: a parsed payload or a timestamp alone cannot be
-    re-checked later. A consumer holding the digest can re-fetch the same
-    schedule URL and prove it is reading the feed bytes that were verified.
+    Read once and parse these same bytes. This prevents competing .json()
+    and .content reads, but does not imply that season-feed bytes were
+    persisted or can be re-fetched unchanged after unrelated games finish.
     """
     body = getattr(response, "content", None)
     if not isinstance(body, (bytes, bytearray)) or not body:
@@ -165,7 +165,6 @@ def resolve_nhl_current_event_identity(
             f"NHL_OFFICIAL_SOURCE_HTTP_{getattr(response, 'status_code', 'UNKNOWN')}"
         )
     body = _response_body(response)
-    source_sha256 = hashlib.sha256(body).hexdigest()
     try:
         payload = json.loads(body)
     except ValueError as exc:
@@ -209,6 +208,21 @@ def resolve_nhl_current_event_identity(
     if len(matched_ids) != 1:
         raise NHLEventIdentityError("NHL_CANONICAL_EVENT_AMBIGUOUS")
 
+    # Canonicalize ONLY the actual matched game's six identity fields.
+    # Do not hash the mutable entire season schedule, whose other 80+ games
+    # change states, scores and times independently of this fixture.
+    identity_match = {
+        "id": str(match.get("id")),
+        "startTimeUTC": str(match.get("startTimeUTC")),
+        "homeTeam": {"abbrev": home},
+        "awayTeam": {"abbrev": away},
+        "gameType": match.get("gameType"),
+        "gameState": match.get("gameState"),
+    }
+    identity_match_sha256 = hashlib.sha256(
+        json.dumps(identity_match, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
     return {
         "event_id": next(iter(matched_ids)),
         "event_start_time": _aware(match.get("startTimeUTC")).isoformat(),
@@ -218,7 +232,8 @@ def resolve_nhl_current_event_identity(
         "game_state": match.get("gameState"),
         "identity_provider": SOURCE_PROVIDER,
         "identity_source": url,
-        "identity_source_sha256": source_sha256,
+        "identity_match_sha256": identity_match_sha256,
+        "identity_match": identity_match,
         "identity_verified_at": datetime.now(timezone.utc).isoformat(),
         "market_features_used": False,
         "prediction_authority": False,
