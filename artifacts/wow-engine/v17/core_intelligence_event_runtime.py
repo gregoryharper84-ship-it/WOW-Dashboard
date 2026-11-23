@@ -153,7 +153,7 @@ def capture_settled_event_observations(
             "calibration_version": source.get("calibration_version"),
             "calibrated_probability": source.get("calibrated_home_probability"),
             "calibrated_probability_lower_bound": source.get("calibrated_home_lower_bound"),
-}
+        }
         canonical_outcome = {
             "event_prediction_id": prediction_id,
             "official_result": official_result,
