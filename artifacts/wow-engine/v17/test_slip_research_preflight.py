@@ -451,3 +451,55 @@ def test_research_completeness_never_authenticates_post_news_fitted_consumption(
     assert out["cards"][0]["can_publish_as_certified"] is False
     assert out["cards"][0]["model_rescore_verified"] is False
     assert out["joint_probability"] is None
+
+
+@pytest.mark.parametrize("market,side,line", [
+    ("MONEYLINE", "HOME", None),
+    ("POINT_SPREAD", "AWAY", -4.5),
+    ("GAME_TOTAL", "UNDER", 215.5),
+    ("TEAM_TOTAL", "OVER", 110.5),
+    ("PLAYER_PROP", "UNDER", 8.5),
+])
+def test_explicit_peer_hold_survives_later_no_news_assessment(market, side, line):
+    held = leg("hart", "nba-nyk", market=market, side=side, line=line)
+    held["research_recommendation_status"] = "CONTEXT_STALE_RECALC_REQUIRED"
+    held["context_change_impact"] = {
+        "impact_status": "NO_MATERIAL_EVENT_RECEIPT",
+        "research_invalidation_requested": False,
+    }
+    report = audit_research_slips(
+        cards([held, leg("other", "nba-other")]), as_of_utc=AS_OF
+    )
+    assert "CONTEXT_STALE_RECALC_REQUIRED" in report["cards"][0]["blockers"]
+    assert report["cards"][0]["can_publish_as_certified"] is False
+    assert report["joint_probability"] is None
+
+
+def test_impact_status_hold_survives_recommendation_reset():
+    held = leg("hart", "nba-nyk")
+    held["research_recommendation_status"] = "NO_MATERIAL_EVENT_RECEIPT"
+    held["context_change_impact"] = {
+        "impact_status": "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "research_invalidation_requested": False,
+    }
+    report = audit_research_slips(
+        cards([held, leg("other", "nba-other")]), as_of_utc=AS_OF
+    )
+    assert "CONTEXT_STALE_RECALC_REQUIRED" in report["cards"][0]["blockers"]
+    assert report["cards"][0]["can_publish_as_certified"] is False
+
+
+def test_context_hold_remains_when_receipt_claim_is_supplied():
+    held = prop("hart", "nba-nyk", player="NBA-HART", line=8.5)
+    held["research_recommendation_status"] = "CONTEXT_STALE_RECALC_REQUIRED"
+    held["context_change_impact"] = {
+        "impact_status": "NO_MATERIAL_EVENT_RECEIPT",
+        "research_invalidation_requested": False,
+    }
+    held["news_evidence"]["new_model_receipt_id"] = "new-receipt"
+    held["news_evidence"]["new_model_receipt"] = post_news_receipt(held)
+    report = audit_research_slips(
+        cards([held, leg("other", "nba-other")]), as_of_utc=AS_OF
+    )
+    assert "CONTEXT_STALE_RECALC_REQUIRED" in report["cards"][0]["blockers"]
+    assert report["cards"][0]["can_publish_as_certified"] is False
