@@ -19,6 +19,7 @@ def assemble():
     for i in range(5):
         offer = {
             "kind": "PROP_OFFER", "platform": "PRIZEPICKS",
+            "sport": "NBA", "settlement_basis": "FULL_GAME_INCL_OT",
             "source_id": "synthetic-licensed-provider",
             "rights_receipt_id": "synthetic-permission",
             "source_snapshot_sha256": hashlib.sha256(f"synthetic-offer-{i}".encode()).hexdigest(),
