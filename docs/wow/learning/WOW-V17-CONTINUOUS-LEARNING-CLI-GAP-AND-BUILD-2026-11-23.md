@@ -27,7 +27,7 @@ No new orchestration service, worker, autonomous approval authority, vendor subs
 - Counted blockers for invalid pregame chronology, material refresh after model timestamp, duplicate prediction ID, exact event/player/market/period/offer/direction/settlement mismatch, nonofficial settlement, malformed PMFs, and impossible binary settlement.
 - A zero-model-mass realization still contributes to CRPS; it is excluded from PIT only, with its receipt ID retained.
 - Small cohorts return INSUFFICIENT_SAMPLE; all outputs remain diagnostic only.
-- Fourteen focused tests use synthetic fixtures and do not establish production source integrity or sport performance.
+- Sixteen focused tests use synthetic fixtures and do not establish production source integrity or sport performance.
 
 **Important:** the module validates supplied metadata; it does not cryptographically authenticate a receipt, query actual settled records, or establish independent source custody. Callers MUST perform those steps before the helpers consume data. The audit's local reason strings are research diagnostics, not new V17 backend failure codes. If later surfaced through production APIs, register them in the canonical failure-code registry in the same change.
 
@@ -70,3 +70,8 @@ DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
 terminal_authority=V17_TERMINAL_REDUCER
 No automatic fitted parameter, calibration, bounds, qualification, portfolio-policy, or wagering change.
 No certification without independently authenticated historical receipts, exact model/artifact version and genuine forward evidence.
+
+## Statistical references
+
+- Czado, Gneiting & Held (2009), *Predictive Model Assessment for Count Data*, Biometrics: https://doi.org/10.1111/j.1541-0420.2009.01191.x
+- Stephenson et al., *Two Extra Components in the Brier Score Decomposition*, on binning approximation and residual terms: https://doi.org/10.1175/2007WAF2006116.1
