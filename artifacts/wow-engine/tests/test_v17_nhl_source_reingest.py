@@ -295,6 +295,9 @@ class _Response:
     def __init__(self, body):
         self.status_code = 200
         self._body = body
+        # Identity is matched from these bytes and their SHA-256 is recorded, so
+        # a schedule fixture has to provide the body, not only a parsed payload.
+        self.content = json.dumps(body).encode()
 
     def json(self):
         return self._body
