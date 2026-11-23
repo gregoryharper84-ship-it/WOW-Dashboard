@@ -17,6 +17,8 @@ START = "2026-11-23T22:00:00Z"
 def offer(idx=1, *, combo=False):
     return {
         "kind": "PROP_OFFER", "platform": "PRIZEPICKS",
+        "sport": "NFL" if combo else "NBA",
+        "settlement_basis": "FIRST_QUARTER_OFFICIAL" if combo else "FULL_GAME_INCL_OT",
         "source_id": "licensed-synthetic-data-provider",
         "rights_receipt_id": "synthetic-permission-receipt",
         "source_snapshot_sha256": hashlib.sha256(f"source-{idx}".encode()).hexdigest(),
@@ -80,6 +82,12 @@ def test_tampered_receipt_unapproved_source_and_wrong_line_hold():
         verify(altered, expected=offer())
     with pytest.raises(CaptureHold, match="SIGNING_SECRET"):
         seal_capture_for_trusted_collector(offer(), b"short")
+    wrong_stat = dict(offer(), stat_type="POINTS")
+    with pytest.raises(CaptureHold, match="NICHE_ROUTE"):
+        verify(wrong_stat)
+    wrong_sport = dict(offer(), sport="NFL")
+    with pytest.raises(CaptureHold, match="NICHE_ROUTE"):
+        verify(wrong_sport)
 
 
 @pytest.mark.parametrize("field,value,code", [
