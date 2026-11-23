@@ -290,6 +290,7 @@ def cohort_key(observation: LearningObservation) -> str:
         observation.model_family or "UNKNOWN_MODEL",
         observation.model_artifact_version or "UNKNOWN_ARTIFACT",
         observation.calibration_version or "NO_CALIBRATOR",
+        observation.direction or "UNKNOWN_DIRECTION",
     )
     return "|".join(parts)
 
