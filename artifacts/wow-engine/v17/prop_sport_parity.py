@@ -34,10 +34,13 @@ _AUTOMATIC_ROW_HYDRATION = {
     "WNBA": "WNBA_OFFICIAL_STATS_CDN_INJURY_V1",
 }
 
-# Daily currently owns one truly autonomous candidate producer. Keeping this
+# Daily owns one autonomous candidate producer per entry below. Keeping this
 # explicit prevents a missing producer from silently looking like an empty slate.
+# NFL joined on the ESPN pregame-event/roster route map (the same certified
+# discovery the NFL evidence control plane uses); WNBA still needs a supplied row.
 _DAILY_AUTONOMOUS_DISCOVERY = {
     "MLB": "MLB_OFFICIAL_PROBABLE_PITCHERS",
+    "NFL": "NFL_ESPN_PREGAME_EVENT_ROSTER_POSITION",
 }
 
 

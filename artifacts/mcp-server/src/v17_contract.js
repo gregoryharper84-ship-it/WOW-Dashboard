@@ -293,13 +293,21 @@ export const V17_TOOLS = [
   tool({
     name: "recordWowV17Recommendations",
     title: "WOW V17 Record Recommendations",
-    description: "Persist governed recommendation records before display. This is stateful but never executes a wager or market order.",
+    description: "Persist governed recommendation records before display. This is stateful but never executes a wager or market order. research_run_id, host_identity, model_identity, source_type and at least one row are required; an empty body is never a valid invocation.",
     readOnly: false,
     inputSchema: {
       type: "object",
-      additionalProperties: true,
-      required: ["rows"],
-      properties: { rows: { type: "array", items: { type: "object", additionalProperties: true } } },
+      additionalProperties: false,
+      required: ["research_run_id", "host_identity", "model_identity", "source_type", "rows"],
+      properties: {
+        research_run_id: { type: "string", minLength: 1 },
+        request_id: { type: ["string", "null"] },
+        host_identity: { type: "string", minLength: 1 },
+        model_identity: { type: "string", minLength: 1 },
+        source_type: { type: "string", minLength: 1 },
+        source_conversation_ref: { type: ["string", "null"] },
+        rows: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", additionalProperties: true, required: ["row_key", "sport", "event_id", "event_start_time", "participant", "selection", "terminal_label"], properties: { row_key: { type: "string", minLength: 1 }, sport: { type: "string", minLength: 1 }, event_id: { type: "string", minLength: 1 }, event_start_time: { type: "string", format: "date-time" }, participant: { type: "string", minLength: 1 }, selection: { type: "string", minLength: 1 }, terminal_label: { type: "string", minLength: 1 } } } },
+      },
     },
   }),
   tool({

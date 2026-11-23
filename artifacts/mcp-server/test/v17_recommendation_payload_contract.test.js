@@ -9,7 +9,20 @@ const byName = Object.fromEntries(V17_TOOLS.map((entry) => [entry.name, entry]))
 for (const name of ["recordWowV17Recommendations", "settleWowV17Recommendations"]) {
   test(`${name} uses the canonical backend rows envelope`, async () => {
     const schema = byName[name].inputSchema;
-    assert.deepEqual(schema.required, ["rows"]);
+    if (name === "recordWowV17Recommendations") {
+      // The backend has always required this envelope; the tool contract now
+      // fails a malformed call before it reaches production.
+      assert.deepEqual(schema.required, [
+        "research_run_id",
+        "host_identity",
+        "model_identity",
+        "source_type",
+        "rows",
+      ]);
+      assert.equal(schema.properties.rows.minItems, 1);
+    } else {
+      assert.deepEqual(schema.required, ["rows"]);
+    }
     assert.ok(schema.properties.rows);
     assert.equal(Object.prototype.hasOwnProperty.call(schema.properties, "records"), false);
 

@@ -21,10 +21,11 @@ def install_daily_current_acquisition_repair() -> bool:
 
     The old flow could score persisted canonical rows while reporting zero current
     acquisition. A tempting repair is to keep only current producer receipts, but
-    that would incorrectly erase valid NFL/WNBA/user-board rows because today's
-    autonomous Daily producer is MLB-specific. Instead, force the producer once,
-    keep the full requested-date canonical manifest, and explicitly partition the
-    accounting into current-run receipt-backed rows vs preexisting canonical rows.
+    that would incorrectly erase valid WNBA/user-board rows because autonomous
+    Daily discovery still does not cover every sport (NFL and MLB are wired;
+    WNBA needs a supplied row). Instead, force the producer once, keep the full
+    requested-date canonical manifest, and explicitly partition the accounting
+    into current-run receipt-backed rows vs preexisting canonical rows.
     """
     from v17 import daily_snapshot_runtime as daily
     from v17.prop_sport_parity import prop_sport_parity_summary

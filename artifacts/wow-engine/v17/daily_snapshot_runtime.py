@@ -25,7 +25,7 @@ from v17 import free_core_source_policy as source_policy
 from v17 import memory_admission
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
-from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.daily_prop_discovery import acquire_daily_prop_snapshots
 from v17.daily_response_contract import (
     ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
     ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
@@ -250,6 +250,58 @@ def _prop_handoff_reconciliation(
         "prewrite_balanced": prewrite_balanced,
         "persisted_to_canonical_balanced": persisted_balanced and not missing_persisted_ids,
         "canonical_to_scored_balanced": len(canonical_manifest) == scored_rows + unscored,
+        "can_execute": False,
+    }
+
+
+def _discovery_accounting(
+    acquisition: dict[str, Any] | None,
+    canonical_manifest: list[dict[str, Any]],
+    requested_limit: int | None,
+) -> dict[str, Any]:
+    """Separate newly acquired candidates from reused canonical snapshots.
+
+    A reused canonical row is not evidence that autonomous discovery ran, and an
+    attempted-but-empty producer pass is not evidence that the slate is empty.
+    Both cases used to collapse into one unlabelled number.
+    """
+    acquisition = acquisition or {}
+    attempted_flag = bool(acquisition)
+    attempted = int(acquisition.get("attempted") or 0)
+    discovered = int(acquisition.get("discovered_candidates") or attempted)
+    new_candidates = int(
+        acquisition.get("new_candidates_acquired")
+        if acquisition.get("new_candidates_acquired") is not None
+        else acquisition.get("persisted") or 0
+    )
+    canonical_ids = canonical_source_snapshot_ids(canonical_manifest)
+    from_current_acquisition = len(_receipt_snapshot_ids(acquisition) & canonical_ids)
+    reused = max(len(canonical_manifest) - from_current_acquisition, 0)
+    if not attempted_flag:
+        reason = "AUTONOMOUS_DISCOVERY_NOT_ATTEMPTED"
+    elif new_candidates > 0 or from_current_acquisition > 0:
+        reason = None
+    elif discovered == 0 and attempted == 0:
+        reason = "NO_CANDIDATES_DISCOVERED"
+    elif reused > 0:
+        reason = "ALL_DISCOVERED_CANDIDATES_ALREADY_CAPTURED"
+    else:
+        reason = "NO_CANDIDATE_COULD_BE_HYDRATED"
+    return {
+        "autonomous_discovery_attempted": attempted_flag,
+        "discovered_candidates": discovered,
+        "new_candidates_acquired": new_candidates,
+        "reused_snapshot_rows": reused,
+        "canonical_slate_rows": len(canonical_manifest),
+        "canonical_rows_from_current_acquisition": from_current_acquisition,
+        "selected_row_limit": None if requested_limit is None else max(int(requested_limit), 0),
+        "selected_rows": (
+            len(canonical_manifest) if requested_limit is None
+            else min(len(canonical_manifest), max(int(requested_limit), 0))
+        ),
+        "zero_new_candidates_reason": reason,
+        "candidate_sources": acquisition.get("candidate_sources") or {},
+        "sports_attempted": acquisition.get("sports_attempted") or [],
         "can_execute": False,
     }
 
@@ -501,6 +553,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     requested_lanes = set(req.lanes)
     prop_acquisition: dict[str, Any] | None = None
     prop_manifest: list[dict[str, Any]] = []
+    prop_discovery_accounting: dict[str, Any] | None = None
 
     if "PROPS" in requested_lanes:
         try:
@@ -560,6 +613,11 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                     _props_row_reduction(outcomes),
                 )
             )
+
+    if "PROPS" in requested_lanes:
+        prop_discovery_accounting = _discovery_accounting(
+            prop_acquisition, prop_manifest, req.max_props
+        )
 
     cross_sport_audit: dict[str, Any] | None = None
     if "MONEYLINE" in requested_lanes:
@@ -697,6 +755,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         "lane_reconciliation": lane_reconciliation,
         "cross_sport_discovery_audit": cross_sport_audit,
         "prop_acquisition": prop_acquisition,
+        "prop_discovery_accounting": prop_discovery_accounting,
         "row_detail_persistence": detail_persistence,
         "blockers": list(dict.fromkeys(blockers)),
         "can_execute": False,
