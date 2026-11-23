@@ -135,3 +135,65 @@ def test_unbounded_actual_count_cannot_create_unbounded_crps_loop():
     r = discrete_prop_distribution_audit([(pre, post)])
     assert r['rows_graded'] == 0
     assert r['blockers'][0]['reason'] == 'ACTUAL_COUNT_INVALID'
+
+from v17.learning_distribution_diagnostics import multiclass_event_distribution_audit
+
+
+def soccer_pair(pid="m1", result="DRAW", dist=None):
+    ident = dict(sport="SOCCER", official_event_id="soccer-1", market_family="SOCCER_1X2",
+                 period="FULL_TIME", settlement_basis="REGULATION")
+    before = dict(ident, prediction_id=pid, model_timestamp_utc="2026-11-23T01:00:00Z",
+                  latest_material_update_at_utc="2026-11-23T00:20:00Z",
+                  event_start_utc="2026-11-23T03:00:00Z", immutable_pregame=True,
+                  model_artifact_digest="artifact", source_snapshot_id="snapshot",
+                  controlling_specialist="SOCCER_MODEL",
+                  outcome_probabilities=dist if dist is not None else
+                      {"HOME": 0.4, "DRAW": 0.2, "AWAY": 0.4})
+    after = dict(ident, settlement_outcome=result, settled_at_utc="2026-11-23T06:00:00Z",
+                 source_type="INDEPENDENT_OFFICIAL", settlement_source_id="official")
+    return before, after
+
+
+def test_soccer_three_way_draw_graded_as_one_multiclass_observation():
+    r = multiclass_event_distribution_audit([soccer_pair()], min_n=1)
+    assert r["rows_graded"] == 1 and r["reconciled"]
+    assert r["cohorts"][0]["mean_multiclass_brier"] == pytest.approx(.96)
+    assert r["cohorts"][0]["mean_multiclass_log_loss"] == pytest.approx(-math.log(.2))
+    assert r["can_execute"] is False
+
+
+def test_missing_soccer_draw_cannot_be_graded_as_two_way():
+    r = multiclass_event_distribution_audit([soccer_pair(result="HOME", dist={"HOME": .6, "AWAY": .4})])
+    assert r["rows_graded"] == 0
+    assert r["blockers"][0]["reason"] == "EXACT_OUTCOME_SPACE_OR_SETTLEMENT_INVALID"
+
+
+def test_multiclass_non_normalized_probability_blocked():
+    r = multiclass_event_distribution_audit([soccer_pair(dist={"HOME": .6, "DRAW": .2, "AWAY": .4})])
+    assert r["blockers"][0]["reason"] == "FROZEN_MULTICLASS_DISTRIBUTION_INVALID"
+
+
+def test_multiclass_outcome_identity_and_timing_must_match():
+    before, after = soccer_pair()
+    after["official_event_id"] = "another-event"
+    assert multiclass_event_distribution_audit([(before, after)])["rows_graded"] == 0
+    before, after = soccer_pair()
+    before["model_timestamp_utc"] = "2026-11-23T04:00:00Z"
+    assert multiclass_event_distribution_audit([(before, after)])["rows_graded"] == 0
+
+
+def test_multiclass_voids_and_duplicate_receipts_reconciled_without_score():
+    pairs = [soccer_pair(), soccer_pair(pid="other", result="VOID"), soccer_pair()]
+    r = multiclass_event_distribution_audit(pairs, min_n=1)
+    assert r["rows_received"] == 3 and r["rows_graded"] == 1
+    assert r["rows_blocked"] == 2 and r["reconciled"]
+    assert {x["reason"] for x in r["blockers"]} == {"NON_SCOREABLE_SETTLEMENT", "PREDICTION_ID_MISSING_OR_DUPLICATE"}
+
+
+def test_multiclass_zero_probability_finite_log_score_never_changes_distribution():
+    before, after = soccer_pair(dist={"HOME": .5, "DRAW": 0., "AWAY": .5})
+    copy = dict(before["outcome_probabilities"])
+    r = multiclass_event_distribution_audit([(before, after)], min_n=1)
+    assert r["rows_graded"] == 1
+    assert math.isfinite(r["cohorts"][0]["mean_multiclass_log_loss"])
+    assert before["outcome_probabilities"] == copy
