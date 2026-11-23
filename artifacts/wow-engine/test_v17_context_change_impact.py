@@ -3,7 +3,7 @@
 These tests cover the research handoff only. Terminal rejection and fresh fitted
 rescore require their own downstream acceptance and must not be inferred here.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -147,8 +147,14 @@ def test_after_tipoff_cannot_recreate_pregame_receipt():
 
 def test_scout_candidate_attaches_request_and_never_claims_fitted_rescore(monkeypatch):
     from v17 import sport_scout_enrichment as scout
-    monkeypatch.setattr(scout, "reconcile_news_handoff", lambda *_a, **_kw: material_handoff())
+    start = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    reviewed = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    news = material_handoff()
+    news["event_start_utc"] = start
+    news["news_context"][0]["independently_reviewed_at_utc"] = reviewed
+    monkeypatch.setattr(scout, "reconcile_news_handoff", lambda *_a, **_kw: news)
     candidate = event()
+    candidate["commence_time"] = start
     candidate["news_discovery_receipt"] = {"source_code": "fixture"}
     output = enrich_candidate(candidate, "PROP")
     assert output["research_recommendation_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
@@ -203,3 +209,66 @@ def test_chronology_ok_is_not_a_proof_of_actual_feature_consumption():
     assert result["probability_publishable"] is False
     assert result["rank_eligible"] is False
     assert result["can_execute"] is False
+
+
+def test_material_news_from_one_role_quarantines_all_same_event_candidate_positions(monkeypatch):
+    from v17 import sport_scout_enrichment as scout
+    start = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    another_start = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+    news = material_handoff()
+    news["event_start_utc"] = start
+    news["news_context"][0]["independently_reviewed_at_utc"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=5)
+    ).isoformat()
+    monkeypatch.setattr(scout, "reconcile_news_handoff", lambda *_a, **_kw: news)
+    trigger = event()
+    trigger.update(commence_time=start, candidate_id="KAT", news_discovery_receipt={"source_code": "fixture"})
+    teammate = event()
+    teammate.update(commence_time=start, candidate_id="HART", official_player_id="NBA-HART")
+    opponent = event()
+    opponent.update(commence_time=start, candidate_id="OPPONENT", official_player_id="OPP-WING")
+    unrelated = event()
+    unrelated.update(official_event_id="elsewhere", commence_time=start, candidate_id="UNRELATED")
+    other_sport = event("americanfootball_nfl")
+    other_sport.update(commence_time=start, candidate_id="SAME-ID-OTHER-SPORT")
+    other_start = event()
+    other_start.update(commence_time=another_start, candidate_id="SAME-ID-OTHER-DATE")
+    out = scout.enrich_handoff({
+        "can_execute": False,
+        "model_handoff": {"team_event_candidates": [trigger],
+                          "prop_candidates": [teammate, opponent, unrelated, other_sport, other_start]},
+    })
+    teams = out["model_handoff"]["team_event_candidates"]
+    props = out["model_handoff"]["prop_candidates"]
+    assert teams[0]["research_recommendation_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert all(p["research_recommendation_status"] == "CONTEXT_STALE_RECALC_REQUIRED" for p in props[:2])
+    assert all(p["context_change_impact"]["propagated_from_event_peer"] is True for p in props[:2])
+    assert all(p["context_change_impact"]["no_position_exclusions"] is True for p in props[:2])
+    assert props[2]["context_change_impact"]["research_invalidation_requested"] is False
+    assert props[3]["context_change_impact"]["research_invalidation_requested"] is False
+    assert props[4]["context_change_impact"]["research_invalidation_requested"] is False
+    assert out["context_impact_summary"]["same_event_peer_rows_quarantined"] == 2
+    assert out["can_execute"] is False
+
+
+def test_mismatched_context_receipt_does_not_poison_peer_event(monkeypatch):
+    from v17 import sport_scout_enrichment as scout
+    start = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    news = material_handoff()
+    news["event_start_utc"] = start
+    news["official_event_id"] = "wrong-event"
+    monkeypatch.setattr(scout, "reconcile_news_handoff", lambda *_a, **_kw: news)
+    trigger = event()
+    trigger.update(commence_time=start, news_discovery_receipt={"source_code": "fixture"})
+    peer = event()
+    peer["commence_time"] = start
+    out = scout.enrich_handoff({
+        "can_execute": False, "model_handoff": {
+            "team_event_candidates": [trigger], "prop_candidates": [peer]
+        },
+    })
+    assert out["model_handoff"]["team_event_candidates"][0][
+        "context_change_impact"]["impact_status"] == "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH"
+    assert out["model_handoff"]["prop_candidates"][0][
+        "context_change_impact"]["research_invalidation_requested"] is False
+    assert out["context_impact_summary"]["same_event_peer_rows_quarantined"] == 0
