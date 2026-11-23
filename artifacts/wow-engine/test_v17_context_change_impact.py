@@ -11,6 +11,7 @@ from v17.context_change_impact import (
     ALL_MARKET_FAMILIES,
     ALL_POSITION_SCOPE,
     assess_context_change_impact,
+    hold_scored_after_material_change,
 )
 from v17.sport_scout_enrichment import enrich_candidate
 
@@ -156,3 +157,49 @@ def test_scout_candidate_attaches_request_and_never_claims_fitted_rescore(monkey
     )
     assert output["context_change_impact"]["fitted_specialist_rescore_verified"] is False
     assert output["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", SPORTS_13)
+@pytest.mark.parametrize("market_family", ALL_MARKET_FAMILIES)
+def test_all_sport_market_scores_cannot_keep_approval_with_newer_material_context(sport, market_family):
+    scored = {
+        "sport_key": sport, "official_event_id": "evt-10",
+        "market_family": market_family, "market_period": "FULL_GAME",
+        "immutable_model_timestamp": "2026-11-19T16:00:00Z",
+        "calibrated_probability": 0.72, "calibrated_lower_bound": 0.61,
+        "rank_eligible": True, "probability_publishable": True,
+    }
+    result = hold_scored_after_material_change(
+        scored, latest_material_update_timestamp="2026-11-19T17:00:00Z"
+    )
+    assert result["material_context_chronology_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["calibrated_probability"] == 0.72
+    assert result["calibrated_lower_bound"] == 0.61
+    assert result["can_execute"] is False
+    assert scored["probability_publishable"] is True  # pure/non-mutating
+
+
+@pytest.mark.parametrize("update", ["not-a-date", "2026-11-19T17:00:00"])
+def test_invalid_material_timestamp_cannot_clear_a_scoring_hold(update):
+    scored = {"probability_publishable": True, "rank_eligible": True,
+              "immutable_model_timestamp": "2026-11-19T18:00:00Z"}
+    result = hold_scored_after_material_change(
+        scored, latest_material_update_timestamp=update
+    )
+    assert result["material_context_chronology_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert result["probability_publishable"] is False
+
+
+def test_chronology_ok_is_not_a_proof_of_actual_feature_consumption():
+    scored = {"probability_publishable": False, "rank_eligible": False,
+              "model_timestamp": "2026-11-19T18:00:00Z",
+              "calibrated_probability": 0.72}
+    result = hold_scored_after_material_change(
+        scored, latest_material_update_timestamp="2026-11-19T17:00:00Z"
+    )
+    assert result["material_context_chronology_status"] == "CHRONOLOGY_OK_CONSUMPTION_NOT_PROVEN"
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
