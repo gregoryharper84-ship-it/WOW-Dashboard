@@ -209,6 +209,41 @@ def test_unknown_recommendation_cannot_be_settled():
     assert response.json()["detail"]["code"] == "RECOMMENDATION_RECORD_NOT_FOUND"
 
 
+def test_empty_recommendation_envelope_is_rejected_before_write():
+    client, db = app_client()
+    response = client.post("/record-recommendations", json={})
+    assert response.status_code == 422
+    assert db.tables["wow_recommendation_records"].rows == []
+
+
+def test_blank_envelope_identity_is_rejected_by_name():
+    client, db = app_client()
+    payload = recommendation_payload()
+    payload["research_run_id"] = "   "
+    payload["host_identity"] = ""
+    response = client.post("/record-recommendations", json=payload)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    message = " ".join(
+        str(item.get("msg") or "") for item in detail if isinstance(item, dict)
+    )
+    assert "research_run_id" in message
+    assert "host_identity" in message
+    assert db.tables["wow_recommendation_records"].rows == []
+
+
+def test_publishable_row_under_blocked_terminal_is_rejected():
+    client, db = app_client()
+    payload = recommendation_payload()
+    row = payload["rows"][0]
+    row["terminal_label"] = "NO_PLAY"
+    row["probability_publishable"] = True
+    row["governed_prediction_id"] = "00000000-0000-0000-0000-000000000002"
+    response = client.post("/record-recommendations", json=payload)
+    assert response.status_code == 422
+    assert db.tables["wow_recommendation_records"].rows == []
+
+
 def test_settlement_rejects_mixed_or_mismatched_position_economics():
     client, _ = app_client()
     recorded = client.post(

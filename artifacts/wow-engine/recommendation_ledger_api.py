@@ -68,12 +68,37 @@ class RecommendationRow(BaseModel):
             value = getattr(self, name)
             if value is not None and not 0 < value < 1:
                 raise ValueError(f"{name} must satisfy 0<p<1")
+        if not str(self.row_key or "").strip() or not str(self.selection or "").strip():
+            raise ValueError("recommendation rows require row_key and selection")
         if self.probability_publishable and not self.governed_prediction_id:
             raise ValueError("publishable recommendation requires governed_prediction_id")
         for value in (self.governed_prediction_id, self.source_snapshot_id):
             if value:
                 uuid.UUID(value)
         return self
+
+
+# The envelope an Action caller must supply. A malformed call (for example an
+# empty body) is rejected here with a typed, field-naming error instead of a
+# downstream side effect.
+_REQUIRED_ENVELOPE_FIELDS = (
+    "research_run_id",
+    "host_identity",
+    "model_identity",
+    "source_type",
+)
+
+# A row may not claim publication eligibility under a hard-stopped terminal.
+_PUBLICATION_BLOCKED_TERMINALS = {
+    "NO_PLAY",
+    "RESEARCH_INTEREST",
+    "SOURCE_CONFLICT",
+    "SLATE_PURGE",
+    "DUPLICATE_EXPOSURE_BLOCK",
+    "REJECT_NO_EDGE",
+    "REJECT_BAD_STRUCTURE",
+    "REJECT_DATA_QUALITY",
+}
 
 
 class RecommendationBatch(BaseModel):
@@ -86,6 +111,31 @@ class RecommendationBatch(BaseModel):
     source_type: str
     source_conversation_ref: Optional[str] = None
     rows: list[RecommendationRow] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_required_envelope(self):
+        missing = [
+            name
+            for name in _REQUIRED_ENVELOPE_FIELDS
+            if not str(getattr(self, name) or "").strip()
+        ]
+        if missing:
+            raise ValueError(
+                "recommendation envelope requires non-empty " + ", ".join(missing)
+            )
+        blocked = [
+            row.row_key
+            for row in self.rows
+            if row.probability_publishable
+            and str(row.terminal_label or "").strip().upper()
+            in _PUBLICATION_BLOCKED_TERMINALS
+        ]
+        if blocked:
+            raise ValueError(
+                "probability_publishable is not allowed for a blocked terminal on "
+                + ", ".join(blocked)
+            )
+        return self
 
 
 class SettlementRow(BaseModel):
