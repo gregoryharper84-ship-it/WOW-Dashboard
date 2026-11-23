@@ -379,3 +379,39 @@ def test_auto_advance_complete_requires_persistence_readback_when_gate_supplied(
     assert green["status"] == "AUTO_ADVANCE_COMPLETE"
     assert green["persistence_provenance"]["persistence_readback_pass"] is True
     assert green["can_execute"] is False
+
+
+def test_post_json_stamps_request_id_headers_for_action_telemetry(monkeypatch):
+    from v17.multiscout_auto_advance import _post_json
+
+    captured = {}
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"can_execute":false}'
+
+    def fake_urlopen(request, timeout=120):
+        captured["headers"] = dict(request.headers)
+        return _Resp()
+
+    monkeypatch.setattr("v17.multiscout_auto_advance.urlopen", fake_urlopen)
+    receipt = _post_json(
+        "https://example.invalid",
+        "/score-pick-request",
+        "token",
+        {"request_id": "wow-scout-test-1:props:1", "rows": []},
+    )
+    assert receipt["ok"] is True
+    # urllib.Request title-cases header names; compare case-insensitively.
+    lowered = {str(key).lower(): value for key, value in captured["headers"].items()}
+    assert lowered.get("x-wow-request-id") == "wow-scout-test-1:props:1"
+    assert lowered.get("x-request-id") == "wow-scout-test-1:props:1"
+    assert receipt["can_execute"] is False

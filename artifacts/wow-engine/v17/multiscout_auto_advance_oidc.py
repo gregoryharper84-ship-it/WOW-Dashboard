@@ -485,11 +485,36 @@ def main() -> int:
             print(json.dumps({"status": receipt["status"], "code": receipt["code"], "can_execute": False}))
             return 3
 
-    if _async_handoff_enabled():
+    from v17.action_persistence_provenance import (
+        configured_supabase_url_from_env,
+        persistence_readback_by_id_from_env,
+        require_persistence_readback,
+    )
+
+    readback = persistence_readback_by_id_from_env()
+    if require_persistence_readback() and readback is None:
+        receipt = {
+            "schema_version": "wow.v17.multiscout.auto-advance.v1",
+            "status": "BLOCKED_BACKEND_HANDOFF",
+            "code": "PERSISTENCE_CLIENT_UNAVAILABLE",
+            "source_run_id": dispatch_handoff.get("run_id") or handoff.get("run_id"),
+            "research_run_id": dispatch_handoff.get("research_run_id") or handoff.get("research_run_id"),
+            "can_execute": False,
+        }
+    elif _async_handoff_enabled():
+        # Live Nightly uses durable async enqueue; sealed-destination proof is
+        # enforced by scout_handoff_terminal_acceptance after COMPLETE.
         compact_handoff = _compact_async_handoff(dispatch_handoff)
         receipt = _execute_async_handoff(compact_handoff, token, origin=ACTION_ORIGIN)
     elif static_token:
-        receipt = execute_auto_advance(dispatch_handoff, token=token, origin=ACTION_ORIGIN, progress_fn=progress_fn)
+        receipt = execute_auto_advance(
+            dispatch_handoff,
+            token=token,
+            origin=ACTION_ORIGIN,
+            progress_fn=progress_fn,
+            persistence_readback_by_id=readback,
+            configured_supabase_url=configured_supabase_url_from_env() or None,
+        )
     else:
         with _oidc_batch_bounds():
             receipt = execute_auto_advance(
@@ -499,6 +524,8 @@ def main() -> int:
                 post_fn=_refreshing_oidc_post(token),
                 max_in_flight=OIDC_MAX_IN_FLIGHT,
                 progress_fn=progress_fn,
+                persistence_readback_by_id=readback,
+                configured_supabase_url=configured_supabase_url_from_env() or None,
             )
     if dispatch_handoff is not handoff:
         receipt["source_acquisition_status"] = handoff.get("status")

@@ -301,14 +301,21 @@ def build_dispatch(handoff: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_json(origin: str, path: str, token: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    # Action invocation telemetry correlates via x-wow-request-id / x-request-id.
+    # Body-only request_id is not sufficient for sealed-destination receipt proof.
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    request_id = str((payload or {}).get("request_id") or "").strip()
+    if request_id:
+        headers["x-wow-request-id"] = request_id[:256]
+        headers["x-request-id"] = request_id[:256]
     request = Request(
         f"{origin.rstrip('/')}{path}",
         data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -561,11 +568,30 @@ def main() -> int:
     args = parser.parse_args()
 
     handoff = json.loads(Path(args.input).read_text(encoding="utf-8"))
-    receipt = execute_auto_advance(
-        handoff,
-        token=os.environ.get("WOW_ACTION_API_KEY"),
-        origin=ACTION_ORIGIN,
+    from v17.action_persistence_provenance import (
+        configured_supabase_url_from_env,
+        persistence_readback_by_id_from_env,
+        require_persistence_readback,
     )
+
+    readback = persistence_readback_by_id_from_env()
+    if require_persistence_readback() and readback is None:
+        receipt = {
+            "schema_version": "wow.v17.multiscout.auto-advance.v1",
+            "status": "BLOCKED_BACKEND_HANDOFF",
+            "code": "PERSISTENCE_CLIENT_UNAVAILABLE",
+            "source_run_id": handoff.get("run_id"),
+            "research_run_id": handoff.get("research_run_id"),
+            "can_execute": False,
+        }
+    else:
+        receipt = execute_auto_advance(
+            handoff,
+            token=os.environ.get("WOW_ACTION_API_KEY"),
+            origin=ACTION_ORIGIN,
+            persistence_readback_by_id=readback,
+            configured_supabase_url=configured_supabase_url_from_env() or None,
+        )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
