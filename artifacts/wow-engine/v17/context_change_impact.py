@@ -51,6 +51,16 @@ def _digest(value: Any) -> bool:
     return isinstance(value, str) and _VALID_DIGEST.fullmatch(value) is not None
 
 
+def candidate_event_start(candidate: Mapping[str, Any]) -> Any:
+    """Preserve all supported Scout start formats, including nested requests."""
+    nested = candidate.get("event_request")
+    nested = nested if isinstance(nested, Mapping) else {}
+    return (candidate.get("event_start_utc")
+            or candidate.get("commence_time")
+            or candidate.get("event_start_time_utc")
+            or nested.get("event_start_time_utc"))
+
+
 def assess_context_change_impact(
     candidate: Mapping[str, Any],
     news_research_handoff: Mapping[str, Any] | None = None,
@@ -70,9 +80,7 @@ def assess_context_change_impact(
     now = now.astimezone(timezone.utc)
     sport = str(candidate.get("sport_key") or candidate.get("sport") or "")
     event_id = str(candidate.get("official_event_id") or "")
-    event_start = _utc(candidate.get("event_start_utc")
-                       or candidate.get("commence_time")
-                       or candidate.get("event_start_time_utc"))
+    event_start = _utc(candidate_event_start(candidate))
     handoff = news_research_handoff if isinstance(news_research_handoff, Mapping) else {}
     status = "NO_MATERIAL_EVENT_RECEIPT"
     material = []
