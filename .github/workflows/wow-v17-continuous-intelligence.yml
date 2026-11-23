@@ -125,10 +125,6 @@ jobs:
           (Path(os.environ["RUNNER_TEMP"]) / "wow-v17-learning-receipt.json").write_text(
               json.dumps(safe, indent=2, sort_keys=True) + "\n"
           )
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
-              out.write(f"## V17 Advisory Learning\n\nStatus: {safe['status']}\n\n")
-              out.write(f"Completed: {result.get('completed_stages')}/4\n\n")
-              out.write("No model-parameter changes, automatic promotion or wager execution.\n")
           if not valid:
               blocked("LEARNING_STAGE_RECEIPT_FAILED")
           capture_n = sum(
@@ -137,6 +133,11 @@ jobs:
           )
           if capture_n == 0:
               blocked("LEARNING_ZERO_CAPTURE_NOT_VERIFIED")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("## V17 Advisory Learning\n\nStatus: PASS_WITH_CAPTURE\n\n")
+              out.write(f"Completed: {result.get('completed_stages')}/4\n\n")
+              out.write(f"Observed source rows this cycle: {capture_n}\n\n")
+              out.write("No model-parameter changes, automatic promotion or wager execution.\n")
           print("LEARNING_CYCLE_VERIFIED")
       - name: Upload aggregate research receipt
         continue-on-error: true
