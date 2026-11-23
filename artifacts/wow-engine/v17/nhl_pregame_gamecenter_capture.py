@@ -76,8 +76,11 @@ def capture_nhl_pregame_gamecenter(
     if not isinstance(resolved_identity, Mapping):
         return _held("NHL_CANONICAL_IDENTITY_RECEIPT_MISSING", event_id=event_id)
     source = resolved_identity.get("identity_source")
+    match_sha = resolved_identity.get("identity_match_sha256")
     if (
-        str(resolved_identity.get("event_id") or "") != event_id
+        not isinstance(match_sha, str)
+        or re.fullmatch(r"[0-9a-f]{64}", match_sha, flags=re.ASCII) is None
+        or str(resolved_identity.get("event_id") or "") != event_id
         or resolved_identity.get("identity_provider") != "NHL_PUBLIC_WEB_API"
         or not isinstance(source, str)
         or _SCHEDULE_URL.fullmatch(source) is None
@@ -183,6 +186,7 @@ def capture_nhl_pregame_gamecenter(
         source_snapshot_id=snapshot_id,
         source_persistence_status=persistence,
         source_url=url,
+        identity_match_sha256=match_sha,
         source_content_sha256=sha,
         source_byte_count=len(raw),
         retrieved_at_utc=now.isoformat(),
