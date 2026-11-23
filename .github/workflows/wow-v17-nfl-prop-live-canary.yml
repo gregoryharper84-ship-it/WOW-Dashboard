@@ -37,6 +37,21 @@ jobs:
         working-directory: artifacts/wow-engine
         run: python v17/multisport_prop_live_canary.py self-test
 
-      - name: Run governed NFL MLB WNBA live canaries and stress
+      - name: Check future-dated fixture eligibility
+        id: fixture-check
+        shell: bash
+        working-directory: artifacts/wow-engine
+        run: |
+          if python v17/multisport_prop_live_canary.py check-live-fixtures; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Live canary coverage not run::Static NFL/MLB/WNBA fixtures are historical; do not submit stale events."
+            echo "### LIVE_CANARY_NOT_RUN_STALE_STATIC_FIXTURES" >> "$GITHUB_STEP_SUMMARY"
+            echo "No authenticated live model canary was performed. Current pregame fixture acquisition is still required." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Run future-dated governed live canaries and stress
+        if: steps.fixture-check.outputs.eligible == 'true'
         working-directory: artifacts/wow-engine
         run: python v17/multisport_prop_live_canary.py all

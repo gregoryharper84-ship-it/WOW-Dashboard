@@ -354,4 +354,53 @@ def discover_matchup(candidate: dict[str, Any], *, now: datetime | None = None) 
     }
 
 
-__all__ = ["discover_matchup", "feature_requirements", "profile_for"]
+def matchup_consumption_audit(
+    audit: dict[str, Any] | None,
+    consumed_feature_ids: Any = None,
+    *,
+    controlling_specialist: str | None = None,
+) -> dict[str, Any]:
+    """Report whether a fitted specialist proved use of screened matchup evidence.
+
+    A screened matchup feature is evidence that a source was observed, never
+    proof that a model consumed it. Only the controlling scorer's explicit
+    ``consumed_feature_ids`` can establish consumption, so a specialist whose
+    certified vector does not name a matchup feature reports
+    NOT_DECLARED_BY_FITTED_VECTOR. This function never infers consumption from
+    research prose, request presence or sportsbook availability.
+    """
+    source = audit if isinstance(audit, dict) else {}
+    screened = [str(value) for value in (source.get("screened_features") or [])
+                if str(value or "").strip()]
+    consumed = (
+        tuple(dict.fromkeys(
+            str(value).strip()
+            for value in consumed_feature_ids
+            if str(value or "").strip()
+        ))
+        if isinstance(consumed_feature_ids, (list, tuple, set, frozenset))
+        else ()
+    )
+    matched = [feature for feature in screened if feature in consumed]
+    if not screened:
+        state = "NO_SCREENED_MATCHUP_EVIDENCE"
+    elif matched:
+        state = "CONSUMED"
+    else:
+        state = "NOT_DECLARED_BY_FITTED_VECTOR"
+    return {
+        "schema_version": "wow.v17.matchup_consumption_audit.v1",
+        "official_event_id": source.get("official_event_id"),
+        "sport_key": source.get("sport_key"),
+        "controlling_specialist": str(controlling_specialist or "").strip() or None,
+        "review_status": source.get("review_status"),
+        "screened_features": screened,
+        "consumed_feature_ids": list(consumed),
+        "consumed_matchup_features": matched,
+        "specialist_consumption_state": state,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+
+__all__ = ["discover_matchup", "feature_requirements", "matchup_consumption_audit", "profile_for"]

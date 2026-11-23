@@ -443,3 +443,33 @@ def test_reused_nfl_prediction_holds_if_current_artifact_is_not_publishable(monk
     assert db.predictions.rows[0]["model_probability_publishable"] is True
     assert len(db.predictions.rows) == 1
     assert reused["can_execute"] is False
+
+
+def test_held_nfl_champion_never_reports_certified_model_reason(monkeypatch):
+    """A publication-held champion must not label fresh or reused rows CERTIFIED."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=False)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+
+    assert reused["prediction_reused"] is True
+    for record in (first, reused):
+        assert record["probability_publishable"] is False
+        assert "CERTIFIED" not in record["model_reason"]
+        assert record["model_reason"] == "NFL_P2_FITTED_MODEL_PUBLICATION_HELD"
+        assert record["can_execute"] is False
+
+
+def test_publishable_nfl_champion_keeps_certified_model_reason(monkeypatch):
+    """Positive counterexample: a publishable champion keeps its existing label."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=True)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+
+    for record in (first, reused):
+        assert record["probability_publishable"] is True
+        assert record["model_reason"] == "CERTIFIED_NFL_P2_FITTED_MODEL"
+        assert record["can_execute"] is False
