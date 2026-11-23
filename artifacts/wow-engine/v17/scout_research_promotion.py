@@ -386,10 +386,23 @@ def promote_handoff(payload: dict[str, Any], *, now: datetime | None = None) -> 
             candidate = dict(row)
             evaluation = evaluate_candidate(candidate, now=now)
             candidate.update(evaluation)
+            impact = candidate.get("context_change_impact")
+            # Existing evidence-quality research interest cannot override an
+            # event-wide material-context invalidation, including peer roles.
+            # This is a research gate, NOT the governing fitted-score reducer.
+            if (isinstance(impact, dict)
+                    and impact.get("research_invalidation_requested") is True):
+                candidate["research_status"] = "QUARANTINED"
+                candidate["research_context_gate"] = "CONTEXT_STALE_RECALC_REQUIRED"
+                prior = candidate.get("research_blockers")
+                prior = list(prior) if isinstance(prior, list) else []
+                candidate["research_blockers"] = list(dict.fromkeys([
+                    *prior, "CONTEXT_STALE_RECALC_REQUIRED",
+                ]))
             candidate["research_ceiling"] = "RESEARCH_INTEREST"
             candidate["probability_authority"] = False
             candidate["can_execute"] = False
-            counts[evaluation["research_status"]] += 1
+            counts[candidate["research_status"]] += 1
             updated.append(candidate)
         handoff[lane] = updated
     out["model_handoff"] = handoff
