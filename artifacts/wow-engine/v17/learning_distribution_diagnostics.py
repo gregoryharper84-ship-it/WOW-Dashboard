@@ -157,9 +157,18 @@ def discrete_prop_distribution_audit(
             reason = "FROZEN_COUNT_PMF_UNAVAILABLE"
         probs = []
         if not reason:
-            probs = [_num(p, 0, 1) for p in pmf]
-            if any(p is None for p in probs) or abs(sum(probs) - 1.0) > 1e-6:
+            raw_probs = [_num(p, 0, 1) for p in pmf]
+            if any(p is None for p in raw_probs):
                 reason = "FROZEN_COUNT_PMF_INVALID"
+            else:
+                mass = sum(raw_probs)
+                if not mass > 0 or abs(mass - 1.0) > 1e-6:
+                    reason = "FROZEN_COUNT_PMF_INVALID"
+                else:
+                    # Normalize only numerical rounding in a frozen PMF; this
+                    # creates no new fitted model or adjusted probability.
+                    # Prevent CDF>1 from silently losing integrated PIT mass.
+                    probs = [p / mass for p in raw_probs]
         if not reason:
             line = prediction["exact_offer"]
             # Exact settlement is independently declared. Check the numerical
