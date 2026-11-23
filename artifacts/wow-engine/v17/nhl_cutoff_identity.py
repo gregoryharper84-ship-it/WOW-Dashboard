@@ -8,6 +8,7 @@ No scheduling, source write, model ownership, odds or wager execution here.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Any, Callable, Mapping
 
 from v17.nhl_event_identity import (
@@ -85,8 +86,14 @@ def verify_nhl_identity_at_scoring(
         raise NHLCutoffIdentityError("NHL_EVENT_NOT_PREGAME")
     if resolution.get("game_type") != 2:
         raise NHLCutoffIdentityError("NHL_CUTOFF_GAME_TYPE_UNVERIFIED")
+    source_url = resolution.get("identity_source")
     if (
         resolution.get("identity_provider") != "NHL_PUBLIC_WEB_API"
+        or not isinstance(source_url, str)
+        or re.fullmatch(
+            r"https://api-web\.nhle\.com/v1/club-schedule-season/[A-Z]{3}/[0-9]{8}",
+            source_url, flags=re.ASCII
+        ) is None
         or resolution.get("market_features_used") is not False
         or resolution.get("prediction_authority") is not False
         or resolution.get("can_execute") is not False
