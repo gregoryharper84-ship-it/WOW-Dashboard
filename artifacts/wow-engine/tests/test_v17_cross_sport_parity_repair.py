@@ -504,6 +504,7 @@ def test_nhl_daily_discovery_alias_rewrites_only_after_first_party_match(monkeyp
         return {
             "event_id": "2026020041",
             "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_match_sha256": "a" * 64,
             "identity_verified_at": "2026-10-07T13:00:00+00:00",
             "market_features_used": False,
             "can_execute": False,
@@ -518,6 +519,7 @@ def test_nhl_daily_discovery_alias_rewrites_only_after_first_party_match(monkeyp
     assert out.raw["provider_event_id"] == "401900777"
     assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
     assert out.raw["canonical_identity_source"] == "NHL_PUBLIC_WEB_API"
+    assert out.raw["canonical_identity_match_sha256"] == "a" * 64
     assert out.raw["canonical_identity_market_features_used"] is False
     assert out.raw["prediction_authority"] is False
 
