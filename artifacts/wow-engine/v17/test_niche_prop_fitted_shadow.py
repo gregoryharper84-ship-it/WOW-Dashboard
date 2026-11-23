@@ -124,3 +124,37 @@ def test_no_shortcut_small_training_and_label_cherry_pick():
         item["actual_stat"] = item["exact_line"]-1
     with pytest.raises(NicheShadowHold, match="CLASS_DIVERSITY"):
         fit_niche_shadow(a,b,c)
+
+
+@pytest.mark.parametrize("route,stat", [
+    ("NFL_1Q_TWO_KICKER_FG_OVER_0_5", "FIELD_GOALS_MADE_COMBO"),
+    ("NFL_1Q_QB_PASS_ATTEMPTS_OVER", "PASS_ATTEMPTS"),
+    ("NFL_1Q_QB_FANTASY_SCORE_OVER", "FANTASY_SCORE"),
+])
+def test_all_nfl_niche_specialists_fit_distinct_research_shadows(route, stat):
+    def football(r):
+        x = dict(r)
+        x["sport"], x["category"], x["stat_type"] = "NFL", route, stat
+        x["market_period"], x["side"] = "FIRST_QUARTER", "MORE"
+        x["features"] = {key: (1.0 + (int(x["row_id"].rsplit("-", 1)[1]) % 7) * 0.1)
+                         for key in FEATURE_KEYS[route]}
+        if route == "NFL_1Q_TWO_KICKER_FG_OVER_0_5":
+            x["exact_line"] = 0.5
+            x["combo_participant_ids"] = ["synthetic-kicker-home", "synthetic-kicker-away"]
+            x["combo_team_ids"] = ["HOME", "AWAY"]
+            x["home_team_id"], x["away_team_id"] = "HOME", "AWAY"
+        else:
+            x["official_player_position"] = "QB"
+        x["actual_stat"] = (x["exact_line"] + 1 if x["settled_result"] == "WIN"
+                            else max(0, x["exact_line"] - 1))
+        return x
+
+    a,b,c = cohorts()
+    trained = fit_niche_shadow(
+        [football(x) for x in a],
+        [football(x) for x in b],
+        [football(x) for x in c],
+    )
+    assert trained["artifact"]["category"] == route
+    assert trained["holdout_metrics"]["sample_count"] == len(c)
+    assert trained["artifact"]["publication_allowed"] is False
