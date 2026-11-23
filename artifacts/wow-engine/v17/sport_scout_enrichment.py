@@ -15,7 +15,7 @@ from typing import Any
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
     from v17.matchup_discovery import discover_matchup
-    from v17.context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact
+    from v17.context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact, candidate_event_start
     from v17.news_event_research_handoff import reconcile_news_handoff
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
@@ -23,7 +23,7 @@ try:  # package import under pytest/backend runtime
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
     from matchup_discovery import discover_matchup
-    from context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact
+    from context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact, candidate_event_start
     from news_event_research_handoff import reconcile_news_handoff
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
@@ -70,11 +70,7 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
                 "provider_event_source": row.get("provider_event_source"),
                 "official_event_identity_verified": row.get("official_event_identity_verified"),
                 "canonical_identity_status": row.get("canonical_identity_status"),
-                "event_start_utc": (
-                    row.get("event_start_utc")
-                    or row.get("commence_time")
-                    or (row.get("event_request") or {}).get("event_start_time_utc")
-                ),
+                "event_start_utc": candidate_event_start(row),
             },
             facts if isinstance(facts, list) else [],
             source_receipt_sha256=(
@@ -102,7 +98,7 @@ def _verified_event_key(row: dict[str, Any]) -> tuple[str, str, str] | None:
     """Exactly bind peers by sport, event ID and timezone-aware start time."""
     sport = str(row.get("sport_key") or "").strip()
     event_id = str(row.get("official_event_id") or "").strip()
-    raw = row.get("event_start_utc") or row.get("commence_time") or row.get("event_start_time_utc")
+    raw = candidate_event_start(row)
     if not sport or not event_id or not isinstance(raw, str):
         return None
     try:
