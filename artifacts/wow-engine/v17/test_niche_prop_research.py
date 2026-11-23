@@ -25,6 +25,8 @@ def test_nfl_field_goals_one_combo_one_market_needs_two_distinct_kickers():
     source = example(
         "fg-a", "NFL", "FG Made (Combo)", "1Q", "OVER", 0.5, "WIN",
         combo_participant_ids=["fixture-home-k", "fixture-away-k"],
+        combo_team_ids=["HOME", "AWAY"],
+        home_team_id="HOME", away_team_id="AWAY",
     )
     frozen = deepcopy(source)
     result = classify_niche_prop(source)
@@ -40,6 +42,8 @@ def test_nfl_field_goals_one_combo_one_market_needs_two_distinct_kickers():
     assert "TWO_DISTINCT_OFFICIAL_KICKER_IDS_MISSING" in classify_niche_prop(broken)["identity_gaps"]
     broken["combo_participant_ids"] = ["fixture-home-k"]
     assert "TWO_DISTINCT_OFFICIAL_KICKER_IDS_MISSING" in classify_niche_prop(broken)["identity_gaps"]
+    wrong_team = dict(source, combo_team_ids=["HOME", "HOME"])
+    assert "COMBO_OPPOSING_TEAM_BINDING_MISSING" in classify_niche_prop(wrong_team)["identity_gaps"]
 
 
 def test_fgs_other_period_threshold_and_side_do_not_inherit_the_study_category():
@@ -70,6 +74,9 @@ def test_nfl_qb_pass_attempts_and_fantasy_score_are_separate_categories():
     b = example("qb-b", "NFL", "FANTASY_SCORE", "Q1", "OVER", 1.9, "LOSS")
     assert classify_niche_prop(a)["category"] == "NFL_1Q_QB_PASS_ATTEMPTS_OVER"
     assert classify_niche_prop(b)["category"] == "NFL_1Q_QB_FANTASY_SCORE_OVER"
+    assert "QB_POSITION_UNVERIFIED" in classify_niche_prop(a)["identity_gaps"]
+    assert "QB_POSITION_UNVERIFIED" not in classify_niche_prop(
+        dict(a, official_player_position="QB"))["identity_gaps"]
 
 
 def test_non_random_screenshot_shaped_sample_descriptive_only_not_calibration():
