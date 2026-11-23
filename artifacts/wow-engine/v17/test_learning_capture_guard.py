@@ -19,13 +19,14 @@ def prop():
         "source_snapshot_id": "source-1", "model_artifact_checksum": "sha256-test",
         "feature_snapshot_hash": "feature-test",
         "model_family": "NBA_PTS", "model_artifact_version": "v1",
-        "direction": "MORE", "line": 20.5,
+        "direction": "MORE", "line": 20.5, "market_type": "PLAYER_PROP",
         "probability_publishable": True,
         "calibrated_probability": .68, "calibrated_probability_lower_bound": .58,
     }
     o = {
         "prediction_id": "prop-1", "settlement_timestamp": "2026-11-21T22:00:00Z",
         "settlement_source": "official boxscore", "official_result": "HIT",
+        "actual_stat": 23, "hit": True, "push": False, "void": False,
     }
     return p, o
 
@@ -175,3 +176,33 @@ def test_zero_calibrated_lower_bound_is_valid_not_an_arbitrary_haircut(kind, fac
     key = "calibrated_probability_lower_bound" if kind == "PROP" else "calibrated_home_lower_bound"
     p[key] = 0.0
     assert capture_eligibility(p, o, kind=kind) is None
+
+
+def test_exact_line_outcome_contradiction_is_never_learning_grade():
+    p, o = prop()
+    o["actual_stat"] = 19
+    assert capture_eligibility(p, o, kind="PROP") == "BINARY_RESULT_CONFLICTS_WITH_EXACT_LINE"
+
+
+def test_binary_result_may_not_conceal_push_or_void():
+    p, o = prop()
+    o["push"] = True
+    assert capture_eligibility(p, o, kind="PROP") == "NONBINARY_SETTLEMENT_EXCLUDED_FROM_CALIBRATION"
+    o["push"] = False
+    o["void"] = True
+    assert capture_eligibility(p, o, kind="PROP") == "NONBINARY_SETTLEMENT_EXCLUDED_FROM_CALIBRATION"
+    o["void"] = False
+    o["actual_stat"] = p["line"]
+    assert capture_eligibility(p, o, kind="PROP") == "BINARY_RESULT_CONFLICTS_WITH_PUSH_LINE"
+
+
+def test_hit_boolean_must_agree_with_realized_outcome():
+    p, o = prop()
+    o["hit"] = False
+    assert capture_eligibility(p, o, kind="PROP") == "RECORDED_HIT_FLAG_CONFLICTS_WITH_RESULT"
+
+
+def test_unrecognized_scalar_prop_market_cannot_borrow_player_prop_grade():
+    p, o = prop()
+    p["market_type"] = "FANTASY_SCORE_CANDIDATE"
+    assert capture_eligibility(p, o, kind="PROP") == "SCALAR_PROP_MARKET_ROUTE_UNVERIFIED"
