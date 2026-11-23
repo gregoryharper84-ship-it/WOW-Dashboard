@@ -20,31 +20,64 @@ def candidate(**overrides):
 
 
 def receipt():
+    """Structurally realistic local runner receipt; fabricated facts are test-only."""
+    from datetime import timedelta
+    event = candidate()
+    run_id = "f" * 20
+    fact = {
+        "feature": "opponent_adjusted_strength",
+        "value": "private-source-only-value",
+        "official_event_id": event["official_event_id"],
+        "source_id": "permitted-source",
+        "source_class": "ESTABLISHED_STATS_PROVIDER",
+        "source_rights_status": "CLEARED_FOR_RESEARCH",
+        "captured_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+    }
+    workers = [{
+        "run_id": run_id,
+        "sport_key": event["sport_key"],
+        "official_event_id": event["official_event_id"],
+        "worker_id": worker_id,
+        "research_ceiling": "RESEARCH_INTEREST",
+        "can_execute": False,
+        "facts": [deepcopy(fact)] if index == 3 else [],
+        "missing_evidence": ["availability_and_lineups:NOT_SCREENED"],
+        "conflicts": [],
+    } for index, worker_id in enumerate(native.WORKERS)]
+    waves = []
+    for i in range(3):
+        segment = workers[i * 2:i * 2 + 2]
+        waves.append({
+            "wave": i + 1, "all_structurally_valid": True,
+            "workers_checked": [worker["worker_id"] for worker in segment],
+            "verdicts": [{
+                "valid_report": True, "research_only": True,
+                "may_publish": False, "can_execute": False,
+                "facts_screened_structurally": len(worker["facts"]),
+            } for worker in segment],
+        })
     return {
         "schema_version": "wow.v17.native_swarm.research.v1",
         "status": "RESEARCH_ONLY_HOLD",
         "receipt_sha256": "a" * 64,
+        "run_id": run_id, "event": event,
+        "max_parallel": 2, "waves_completed": 3,
         "policy": {"can_execute": False},
         "external_llm_calls": 0,
         "paid_provider_calls": 0,
         "network_calls": 0,
         "persisted_to_supabase": False,
         "production_verified": False,
-        "worker_reports": [{"worker_id": str(i)} for i in range(5)],
-        "wave_reviews": [{"all_structurally_valid": True}],
+        "worker_reports": workers,
+        "wave_reviews": waves,
         "handoff": {
             "can_execute": False, "may_publish_or_qualify": False,
             "probability_authority": False, "specialist_rescore_verified": False,
-            "source_screened_research_facts": [{
-                "feature": "opponent_adjusted_strength",
-                "value": "private-source-only-value",
-                "source_id": "permitted-source",
-            }],
+            "source_screened_research_facts": [deepcopy(fact)],
             "missing_evidence": ["availability_and_lineups:NOT_SCREENED"],
             "conflicts": [],
         },
     }
-
 
 def test_default_existing_candidate_does_not_launch_swarm(monkeypatch):
     def should_not_launch(*args, **kwargs):
@@ -123,6 +156,12 @@ def test_unexpected_local_worker_failure_is_hold_not_model_unavailable(monkeypat
     {"worker_reports": [{}]},
     {"wave_reviews": [{"all_structurally_valid": False}]},
     {"handoff": {"specialist_rescore_verified": True}},
+    {"receipt_sha256": {"source_payload": "secret-in-digest"}},
+    {"receipt_sha256": "q" * 64},
+    {"receipt_sha256": "a" * 63},
+    {"worker_reports": [None] * 5},
+    {"worker_reports": [{}] * 5},
+    {"wave_reviews": [{"all_structurally_valid": True}]},
 ])
 def test_forged_or_malformed_native_receipts_cannot_claim_authority(monkeypatch, bad):
     fake = receipt()
@@ -192,3 +231,39 @@ def test_real_opt_in_handoff_preserves_non_opted_candidate_and_terminal_authorit
     assert out["governance"]["v17_terminal_reducer_is_terminal_authority"] is True
     assert out["can_execute"] is False
     assert out["model_handoff"]["team_event_candidates"][0]["can_execute"] is False
+
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda r: r["worker_reports"][1].update(worker_id=r["worker_reports"][0]["worker_id"]),
+    lambda r: r["worker_reports"][1].update(run_id="0" * 20),
+    lambda r: r["worker_reports"][0].update(official_event_id="other-game"),
+    lambda r: r["worker_reports"][0].update(can_execute=True),
+    lambda r: r["worker_reports"][0].update(probability_authority=True),
+    lambda r: r["worker_reports"][3]["facts"][0].update(source_rights_status="REVIEW_REQUIRED"),
+    lambda r: r["wave_reviews"][0].update(workers_checked=[native.WORKERS[2], native.WORKERS[3]]),
+    lambda r: r["wave_reviews"][0]["verdicts"][0].update(valid_report=False),
+    lambda r: r["wave_reviews"][1]["verdicts"][0].update(may_publish=True),
+    lambda r: r["handoff"].update(source_screened_research_facts=[]),
+])
+def test_native_worker_and_wave_attestation_rejects_forgery(monkeypatch, mutation):
+    fake = receipt()
+    mutation(fake)
+    monkeypatch.setattr(native, "run_swarm", lambda *args, **kwargs: fake)
+    summary = _native_swarm_summary(candidate())
+    assert summary["status"] == "RESEARCH_ONLY_HOLD"
+    assert summary["reason_code"] == "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"
+    assert summary["workers_completed"] == 0
+    assert summary["research_facts_screened"] == 0
+    assert summary["receipt_sha256"] is None
+    assert "private-source-only-value" not in str(summary)
+
+
+def test_malformed_digest_object_never_leaks_secret(monkeypatch):
+    fake = receipt()
+    fake["receipt_sha256"] = {"source_payload": "extremely-secret-value"}
+    monkeypatch.setattr(native, "run_swarm", lambda *args, **kwargs: fake)
+    summary = _native_swarm_summary(candidate())
+    assert summary["reason_code"] == "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"
+    assert summary["receipt_sha256"] is None
+    assert "extremely-secret-value" not in str(summary)
