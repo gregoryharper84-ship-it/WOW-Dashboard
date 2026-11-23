@@ -44,8 +44,10 @@ to a current 5-pick slate without quote verification.
 - `v17/niche_prop_research.py` is a deterministic **taxonomy and retrospective
   description** library with no scoring or bankroll path.
 - `v17/slip_research_preflight.py` adds `niche_prop_research` to each valid
-  research leg and `niche_category_counts` to each card, **without changing
-  existing HOLD criteria or authorization**.
+  research leg and `niche_category_counts` to each card, while preserving
+  existing HOLD criteria and adding an explicit HOLD for an NFL two-kicker
+  combo with no dedicated registered fitted route. It cannot be disguised as
+  an individual player prop. No execution or certification authority is added.
 - Existing exact quote, role/opportunity, material news, stale-line, market
   identity, payout and cross-slip concentration checks remain controlling.
   Taxonomy coverage is not market availability. A provided reference is still
