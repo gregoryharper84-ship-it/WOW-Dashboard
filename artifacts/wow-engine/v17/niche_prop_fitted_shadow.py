@@ -106,6 +106,14 @@ def _validate(row: Mapping[str, Any], *, settled: bool) -> dict[str, Any]:
     line = _finite(category_data["exact_line"], lower=0, upper=10000)
     selected = {
         "row_id": row["row_id"], "official_event_id": row["official_event_id"],
+        # Bind the immutable forecast to the exact player or two kicker IDs.
+        # A source hash and event ID alone are not an exact player-market ID.
+        "official_player_id": row.get("official_player_id"),
+        "official_player_position": row.get("official_player_position"),
+        "combo_participant_ids": row.get("combo_participant_ids"),
+        "combo_team_ids": row.get("combo_team_ids"),
+        "home_team_id": row.get("home_team_id"),
+        "away_team_id": row.get("away_team_id"),
         "category": category, "sport": row.get("sport"),
         "stat_type": stat, "side": category_data["side"],
         "period": category_data["period"], "exact_line": line,
