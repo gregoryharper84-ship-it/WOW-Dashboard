@@ -242,3 +242,28 @@ def test_core_observation_does_not_drop_valid_zero_lower_bound():
                  "settlement_source": "official", "settlement_timestamp": o["settlement_timestamp"]}
     )
     assert row.calibrated_lower_bound == 0.0
+
+
+def test_event_role_ambiguous_cohort_cannot_start_calibration_challenger():
+    from v17.core_intelligence import (
+        build_learning_observation, summarize_cohort, detect_learning_hypotheses
+    )
+    rows = []
+    for i in range(40):
+        forecast = {
+            "event_prediction_id": f"evt-{i}", "sport": "NHL", "league": "NHL",
+            "market_family": "OUTRIGHT_WINNER", "direction": "HOME",
+            "model_family": "NHL_MODEL", "model_version": "V1",
+            "calibration_version": "c1", "calibrated_probability": .75,
+            "calibrated_probability_lower_bound": .60,
+        }
+        outcome = {
+            "event_prediction_id": f"evt-{i}", "official_result": "WIN" if i < 20 else "LOSS",
+            "settlement_source": "official",
+            "settlement_timestamp": "2026-11-21T23:00:00Z",
+        }
+        rows.append(build_learning_observation(forecast, outcome, source_prediction_kind="EVENT"))
+    report = summarize_cohort(rows, min_samples=30)
+    assert report.sample_n == 40
+    assert report.ready_for_hypothesis is False
+    assert detect_learning_hypotheses(report) == ()
