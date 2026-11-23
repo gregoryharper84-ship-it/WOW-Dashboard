@@ -74,15 +74,20 @@ def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(receipt, dict):
         return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
     handoff = receipt.get("handoff")
+    policy = receipt.get("policy")
     workers, reviews = receipt.get("worker_reports"), receipt.get("wave_reviews")
     if (receipt.get("status") not in ("RESEARCH_ONLY_HOLD", "RESEARCH_ONLY_SCREENED")
-            or receipt.get("policy", {}).get("can_execute") is not False
+            or not isinstance(policy, dict) or policy.get("can_execute") is not False
             or receipt.get("external_llm_calls") != 0
             or receipt.get("paid_provider_calls") != 0
+            or receipt.get("network_calls") != 0
+            or receipt.get("persisted_to_supabase") is not False
+            or receipt.get("production_verified") is not False
             or not isinstance(handoff, dict)
             or handoff.get("can_execute") is not False
             or handoff.get("may_publish_or_qualify") is not False
             or handoff.get("probability_authority") is not False
+            or handoff.get("specialist_rescore_verified") is not False
             or not isinstance(workers, list) or len(workers) != 5
             or not isinstance(reviews, list) or len(reviews) < 1
             or not all(isinstance(v, dict) and v.get("all_structurally_valid") is True for v in reviews)
