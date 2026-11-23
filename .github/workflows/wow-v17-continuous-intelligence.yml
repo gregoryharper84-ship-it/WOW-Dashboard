@@ -32,7 +32,7 @@ jobs:
       - name: Test learning contracts
         env:
           PYTHONPATH: artifacts/wow-engine
-        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py artifacts/wow-engine/tests/test_v17_learning_observer_receipt_contract.py
   learn:
     name: Refresh settled forecasts and advisory hypotheses
     needs: verify
