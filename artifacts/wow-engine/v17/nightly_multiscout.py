@@ -599,6 +599,14 @@ def compact_news_slate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
                         if row.get("official_event_identity_verified") is True else None
                     ),
                     "official_event_identity_verified": row.get("official_event_identity_verified") is True,
+                    "canonical_identity_match_sha256": (
+                        row.get("canonical_identity_match_sha256")
+                        if row.get("official_event_identity_verified") is True else None
+                    ),
+                    "canonical_identity_receipt": (
+                        row.get("canonical_identity_receipt")
+                        if row.get("official_event_identity_verified") is True else None
+                    ),
                     "commence_time": row.get("commence_time"),
                     "event_start_utc": row.get("event_start_utc"),
                 })
