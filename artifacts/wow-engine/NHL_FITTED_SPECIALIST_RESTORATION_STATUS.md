@@ -64,13 +64,36 @@ Findings before this change:
 NHL data belongs in the **existing shared governed tables**, not in new
 NHL-named tables.
 
-Evidence from `wow-engine-validation` (`iczfhsmjrrafhvcpmqhr`):
+Evidence from `wow-engine-validation` (`iczfhsmjrrafhvcpmqhr`). The
+2026-11-07 audit recorded:
 
-| Table | NHL rows |
+| Table | NHL rows at 2026-11-07 audit |
 | --- | --- |
 | `public.wow_d1_source_events` | 11,991 |
 | `public.wow_d1_training_rows` | 12,328 (6,128 distinct events) |
 | `public.wow_d1_candidate_artifacts` | 36 |
+
+A read-only recheck on 2026-11-23 shows the source ledger has grown:
+
+```text
+source_events_total        = 18,928   (all NHL)
+legacy_rows                = 11,991   (the 2026-11-07 baseline)
+v2_rows                    = 6,937    (NHL_SOURCE_PROVENANCE_V2)
+v2_seasons                 = 2021-22..2025-26 (1,312 events each), 2026-27 (377)
+v2_identities_per_event    = 1        (0 events with conflicting V2 hashes)
+events_with_legacy_and_v2  = 6,560
+v2_only_events             = 377      (2026-27)
+```
+
+Those 6,937 V2 rows were written on 2026-11-23 at 16:01:50–16:02:58 UTC with
+`outcome_json.ingest_code_sha = 64261b25f152a341cfd65b2a16eb309b77f7b38b`.
+That commit is not this PR's head (`6f99f40c9`) and is not an ancestor of this
+branch. It is a later `main`-lineage commit (2026-11-23) whose history contains
+the branch, so the write came from a build at or after the branch was
+superseded by the requeue branch. Its authorization and provenance are
+unverified here and are recorded for review to attribute. This branch performed
+no database write — every validation-database access from this session was
+read-only — and no row was mutated or deleted.
 
 There are no `*nhl*` table names. Creating arbitrary per-sport tables would fork
 the governed lifecycle, provenance, immutability and grant model. The shared
