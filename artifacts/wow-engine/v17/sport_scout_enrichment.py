@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,93 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
+
+
+
+def request_one_verified_native_swarm_pilot(
+    payload: dict[str, Any], *, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Explicit CLI-only admission: one canonical future event, research-only.
+
+    The scheduled caller opts in at the CLI boundary. No provider event ID is
+    promoted to an official identity, no source rights are inferred, and no
+    existing candidate is silently removed from the normal Scout handoff.
+    """
+    if not isinstance(payload, dict) or payload.get("can_execute") is not False:
+        raise ValueError("SCOUT_HANDOFF_CAN_EXECUTE_MUST_BE_FALSE")
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("NATIVE_SWARM_PILOT_TIME_MUST_BE_AWARE")
+    now = now.astimezone(timezone.utc)
+    handoff = payload.get("model_handoff")
+    handoff = handoff if isinstance(handoff, dict) else {}
+    lanes = ("team_event_candidates", "prop_candidates")
+    existing = sum(
+        row.get("native_swarm_requested") is True
+        for lane in lanes for row in (handoff.get(lane) or [])
+        if isinstance(row, dict)
+    )
+    base = {
+        "schema_version": "wow.v17.native_swarm_pilot_admission.v1",
+        "mode": "ONE_CANONICAL_PREGAME_EVENT",
+        "requested_count": 0,
+        "paid_provider_calls": 0,
+        "may_publish_or_qualify": False,
+        "can_execute": False,
+    }
+    if existing:
+        return {**payload, "native_swarm_pilot": {
+            **base, "status": "EXPLICIT_CANDIDATE_OPT_IN_ALREADY_PRESENT",
+            "requested_count": existing,
+        }}
+    eligible: list[tuple[datetime, str, str, int]] = []
+    for lane in lanes:
+        rows = handoff.get(lane)
+        if not isinstance(rows, list):
+            continue
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict) or row.get("can_execute") is not False:
+                continue
+            official_id = row.get("official_event_id")
+            if (row.get("official_event_identity_verified") is not True
+                    or row.get("canonical_identity_status") != "CANONICAL_RESOLVED"
+                    or not isinstance(official_id, str) or not (0 < len(official_id) <= 160)
+                    or row.get("canonical_event_id") != official_id
+                    or not isinstance(row.get("sport_key"), str)
+                    or not row["sport_key"].strip()):
+                continue
+            try:
+                value = row.get("commence_time")
+                if not isinstance(value, str):
+                    continue
+                start = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if start.utcoffset() is None:
+                    continue
+                start = start.astimezone(timezone.utc)
+            except ValueError:
+                continue
+            # Never launch an asynchronous pregame pilot at the event boundary.
+            if start > now + timedelta(minutes=20):
+                eligible.append((start, official_id, lane, index))
+    if not eligible:
+        return {**payload, "native_swarm_pilot": {
+            **base, "status": "NO_VERIFIED_FUTURE_EVENT",
+        }}
+    _, event_id, lane, index = min(eligible)
+    updated_handoff = dict(handoff)
+    updated_rows = list(handoff[lane])
+    updated_rows[index] = {**updated_rows[index], "native_swarm_requested": True}
+    updated_handoff[lane] = updated_rows
+    return {
+        **payload,
+        "model_handoff": updated_handoff,
+        "native_swarm_pilot": {
+            **base, "status": "VERIFIED_EVENT_OPTED_IN",
+            "requested_count": 1,
+            "official_event_id": event_id,
+            "sport_key": updated_rows[index]["sport_key"],
+        },
+    }
 
 
 def _native_swarm_receipt_valid(
@@ -437,6 +525,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--native-swarm-verified-pilot", action="store_true",
+                        help="explicitly opt in exactly one verified future research-only event")
     args = parser.parse_args()
     source = Path(args.input)
     target = Path(args.output)
@@ -444,6 +534,8 @@ def main() -> int:
     payload = _attach_sibling_snapshot(payload, source)
     payload = _attach_sibling_news(payload, source)
     payload = attach_reviewed_facts_bundle(payload, source)
+    if args.native_swarm_verified_pilot:
+        payload = request_one_verified_native_swarm_pilot(payload)
     enriched = enrich_handoff(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(enriched, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -451,6 +543,8 @@ def main() -> int:
     print(json.dumps({
         "status": "SPORT_SCOUT_ENRICHMENT_COMPLETE",
         "team_event_candidates": len(enriched.get("model_handoff", {}).get("team_event_candidates", [])),
+        "native_swarm_pilot_status": enriched.get("native_swarm_pilot", {}).get("status", "NOT_REQUESTED"),
+        "native_swarm_pilot_requested": enriched.get("native_swarm_pilot", {}).get("requested_count", 0),
         "prop_candidates": len(enriched.get("model_handoff", {}).get("prop_candidates", [])),
         "research_workers": len(SUPPORTED_RESEARCH_WORKERS),
         "research_status_counts": enriched.get("research_promotion", {}).get("status_counts", {}),
