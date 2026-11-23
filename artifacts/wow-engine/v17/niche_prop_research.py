@@ -123,6 +123,18 @@ def classify_niche_prop(leg: Mapping[str, Any]) -> dict[str, Any]:
                 gaps.append("TWO_DISTINCT_OFFICIAL_KICKER_IDS_MISSING")
             if not isinstance(leg.get("official_event_id"), str) or not leg["official_event_id"].strip():
                 gaps.append("OFFICIAL_EVENT_ID_MISSING")
+            # Two names alone do not prove the combination spans opposing
+            # teams in the same official game; this remains source-claimed.
+            team_ids = leg.get("combo_team_ids")
+            home, away = leg.get("home_team_id"), leg.get("away_team_id")
+            if (not isinstance(team_ids, (list, tuple)) or len(team_ids) != 2
+                    or any(not isinstance(x, str) or not x.strip() for x in team_ids)
+                    or not isinstance(home, str) or not home.strip()
+                    or not isinstance(away, str) or not away.strip()
+                    or home.strip().casefold() == away.strip().casefold()
+                    or {str(x).strip().casefold() for x in team_ids}
+                       != {home.strip().casefold(), away.strip().casefold()}):
+                gaps.append("COMBO_OPPOSING_TEAM_BINDING_MISSING")
         elif stat == "PASS_ATTEMPTS":
             category = "NFL_1Q_QB_PASS_ATTEMPTS_OVER"
         elif stat == "FANTASY_SCORE":
@@ -133,6 +145,9 @@ def classify_niche_prop(leg: Mapping[str, Any]) -> dict[str, Any]:
     if category in STUDY_CATEGORIES and category != "NFL_1Q_TWO_KICKER_FG_OVER_0_5":
         if not isinstance(leg.get("official_player_id"), str) or not leg["official_player_id"].strip():
             gaps.append("OFFICIAL_PLAYER_ID_MISSING")
+    if category in {"NFL_1Q_QB_PASS_ATTEMPTS_OVER", "NFL_1Q_QB_FANTASY_SCORE_OVER"}:
+        if _token(leg.get("official_player_position")) != "QB":
+            gaps.append("QB_POSITION_UNVERIFIED")
     if category in STUDY_CATEGORIES and line is None:
         gaps.append("EXACT_LINE_INVALID")
 
