@@ -11,6 +11,7 @@ probability, and never grant execution. ``can_execute`` stays false.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Mapping, Sequence
 
 from v17.production_release_admission import (
@@ -22,12 +23,48 @@ from v17.production_release_admission import (
 CAN_EXECUTE = False
 ACTION_INVOCATION_TABLE = "wow_action_invocation_receipts"
 PICK_REQUEST_RUN_TABLE = "wow_pick_request_runs"
+SCOUT_HANDOFF_JOB_TABLE = "wow_scout_handoff_jobs"
 
 PERSISTENCE_READBACK_MISSING = "PERSISTENCE_READBACK_MISSING"
 PERSISTENCE_DESTINATION_MISMATCH = "PERSISTENCE_DESTINATION_MISMATCH"
 PERSISTENCE_DESTINATION_UNREADABLE = "PERSISTENCE_DESTINATION_UNREADABLE"
 PERSISTENCE_CLAIMED_RECEIPT_IDS_MISSING = "PERSISTENCE_CLAIMED_RECEIPT_IDS_MISSING"
 PERSISTENCE_READBACK_VERIFIED = "PERSISTENCE_READBACK_VERIFIED"
+PERSISTENCE_CLIENT_UNAVAILABLE = "PERSISTENCE_CLIENT_UNAVAILABLE"
+
+
+def require_persistence_readback() -> bool:
+    """True when schedule/CLI callers must fail closed without sealed readback."""
+    return str(os.environ.get("WOW_REQUIRE_PERSISTENCE_READBACK") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def configured_supabase_url_from_env() -> str:
+    return str(os.environ.get("SUPABASE_URL") or "").strip()
+
+
+def sealed_supabase_client_from_env() -> Any | None:
+    """Build a service-role client for the configured sealed destination only.
+
+    Returns ``None`` when URL/key/client import are unavailable. Callers that
+    require provenance must treat that as fail-closed configuration evidence.
+    """
+    url = configured_supabase_url_from_env()
+    key = (
+        str(os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        or str(os.environ.get("SUPABASE_SERVICE_KEY") or "").strip()
+    )
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+    except ImportError:
+        return None
+    return create_client(url, key)
 
 
 def _clean_id(value: Any) -> str:
@@ -74,6 +111,38 @@ def claimed_receipt_ids_from_auto_advance(receipt: Mapping[str, Any] | None) -> 
             if durable:
                 found.append(durable)
     # Preserve order while dropping duplicates.
+    return list(dict.fromkeys(found))
+
+
+def claimed_receipt_ids_from_async_summary(summary: Mapping[str, Any] | None) -> list[str]:
+    """Extract durable Scout handoff / Action IDs from an async COMPLETE summary.
+
+    Prefers job ``request_id`` values and the run ``source_run_id``. Workflow
+    artifact names alone are never durable identity.
+    """
+    if not isinstance(summary, Mapping):
+        return []
+    found: list[str] = []
+    source_run_id = _clean_id(summary.get("source_run_id"))
+    if source_run_id:
+        found.append(source_run_id)
+    jobs = summary.get("jobs")
+    if isinstance(jobs, list):
+        for job in jobs:
+            if not isinstance(job, Mapping):
+                continue
+            for field in ("request_id", "invocation_id", "persistence_run_id", "run_id"):
+                durable = _clean_id(job.get(field))
+                if durable:
+                    found.append(durable)
+                    break
+            payload = job.get("request_payload")
+            if isinstance(payload, Mapping):
+                for field in ("request_id", "invocation_id", "persistence_run_id", "run_id"):
+                    durable = _clean_id(payload.get(field))
+                    if durable:
+                        found.append(durable)
+                        break
     return list(dict.fromkeys(found))
 
 
@@ -146,16 +215,12 @@ def verify_action_persistence_provenance(
     }
 
 
-def readback_action_invocation_row(db: Any, invocation_id: str) -> dict[str, Any] | None:
-    """Independent primary-key readback of one Action invocation receipt."""
-    value = _clean_id(invocation_id)
-    if not value:
-        return None
+def _first_row(db: Any, table: str, column: str, value: str, columns: str) -> dict[str, Any] | None:
     try:
         rows = (
-            db.table(ACTION_INVOCATION_TABLE)
-            .select("invocation_id,route,occurred_at,http_status,caller_class,request_id")
-            .eq("invocation_id", value)
+            db.table(table)
+            .select(columns)
+            .eq(column, value)
             .limit(1)
             .execute()
             .data
@@ -164,3 +229,72 @@ def readback_action_invocation_row(db: Any, invocation_id: str) -> dict[str, Any
     except Exception:
         return None
     return dict(rows[0]) if rows else None
+
+
+def readback_action_invocation_row(db: Any, invocation_id: str) -> dict[str, Any] | None:
+    """Independent primary-key readback of one Action invocation receipt."""
+    value = _clean_id(invocation_id)
+    if not value:
+        return None
+    return _first_row(
+        db,
+        ACTION_INVOCATION_TABLE,
+        "invocation_id",
+        value,
+        "invocation_id,route,occurred_at,http_status,caller_class,request_id",
+    )
+
+
+def readback_durable_receipt_row(db: Any, receipt_id: str) -> dict[str, Any] | None:
+    """Independent sealed-destination readback for one claimed durable ID.
+
+    Accepts Action invocation primary keys, Action ``request_id`` correlation,
+    pick-request run identity, or Scout handoff job/run identity. First match
+    wins; absence remains fail-closed for the caller.
+    """
+    value = _clean_id(receipt_id)
+    if not value:
+        return None
+    for table, column, columns in (
+        (
+            ACTION_INVOCATION_TABLE,
+            "invocation_id",
+            "invocation_id,route,occurred_at,http_status,caller_class,request_id",
+        ),
+        (
+            ACTION_INVOCATION_TABLE,
+            "request_id",
+            "invocation_id,route,occurred_at,http_status,caller_class,request_id",
+        ),
+        (
+            PICK_REQUEST_RUN_TABLE,
+            "request_id",
+            "request_id,created_at,status",
+        ),
+        (
+            SCOUT_HANDOFF_JOB_TABLE,
+            "request_id",
+            "job_id,source_run_id,request_id,target_route,current_state,terminal",
+        ),
+        (
+            SCOUT_HANDOFF_JOB_TABLE,
+            "source_run_id",
+            "job_id,source_run_id,request_id,target_route,current_state,terminal",
+        ),
+    ):
+        row = _first_row(db, table, column, value, columns)
+        if row:
+            return row
+    return None
+
+
+def persistence_readback_by_id_from_env() -> Callable[[str], Mapping[str, Any] | None] | None:
+    """Return a sealed-destination readback callable, or ``None`` if unavailable."""
+    client = sealed_supabase_client_from_env()
+    if client is None:
+        return None
+
+    def _readback(receipt_id: str) -> Mapping[str, Any] | None:
+        return readback_durable_receipt_row(client, receipt_id)
+
+    return _readback

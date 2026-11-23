@@ -48,6 +48,60 @@ def test_terminal_summary_accepts_reconciled_completed_and_typed_rejected_rows()
     assert result["can_execute"] is False
 
 
+def test_terminal_summary_require_persistence_readback_fails_closed_without_client(monkeypatch):
+    monkeypatch.setenv("WOW_REQUIRE_PERSISTENCE_READBACK", "true")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+
+    result = terminal.validate_terminal_summary(_complete_summary())
+
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "PERSISTENCE_CLIENT_UNAVAILABLE" in result["blockers"]
+    assert result["can_execute"] is False
+
+
+def test_terminal_summary_require_persistence_readback_red_to_green(monkeypatch):
+    sealed = "https://iczfhsmjrrafhvcpmqhr.supabase.co"
+    summary = _complete_summary()
+    summary["jobs"][0]["request_id"] = "research-1:scout:a"
+    summary["jobs"][1]["request_id"] = "research-1:scout:b"
+    store = {
+        "run-1": {"source_run_id": "run-1"},
+        "research-1:scout:a": {"request_id": "research-1:scout:a"},
+        "research-1:scout:b": {"request_id": "research-1:scout:b"},
+    }
+
+    monkeypatch.setenv("WOW_REQUIRE_PERSISTENCE_READBACK", "true")
+    monkeypatch.setenv("SUPABASE_URL", sealed)
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-test-key")
+
+    import v17.action_persistence_provenance as provenance
+
+    monkeypatch.setattr(provenance, "configured_supabase_url_from_env", lambda: sealed)
+
+    red_store = dict(store)
+    red_store.pop("research-1:scout:b")
+    monkeypatch.setattr(
+        provenance,
+        "persistence_readback_by_id_from_env",
+        lambda: (lambda receipt_id: red_store.get(receipt_id)),
+    )
+    red = terminal.validate_terminal_summary(summary)
+    assert red["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "PERSISTENCE_READBACK_MISSING" in red["blockers"]
+
+    monkeypatch.setattr(
+        provenance,
+        "persistence_readback_by_id_from_env",
+        lambda: (lambda receipt_id: store.get(receipt_id)),
+    )
+    green = terminal.validate_terminal_summary(summary)
+    assert green["status"] == "PASS"
+    assert green["persistence_provenance"]["persistence_readback_pass"] is True
+    assert green["can_execute"] is False
+
+
 def test_terminal_summary_rejects_probability_authority_payload_and_execution_drift():
     summary = _complete_summary()
     summary["jobs"][0]["request_payload"]["model_probability"] = 0.9

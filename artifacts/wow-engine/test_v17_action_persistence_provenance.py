@@ -9,7 +9,10 @@ from v17.action_persistence_provenance import (
     PERSISTENCE_DESTINATION_UNREADABLE,
     PERSISTENCE_READBACK_MISSING,
     PERSISTENCE_READBACK_VERIFIED,
+    claimed_receipt_ids_from_async_summary,
     claimed_receipt_ids_from_auto_advance,
+    readback_durable_receipt_row,
+    require_persistence_readback,
     verify_action_persistence_provenance,
 )
 from v17.production_release_admission import COMMITTED_APPLICATION_DATABASE_PROJECT_REF
@@ -222,3 +225,79 @@ def test_green_counterexample_regresses_to_typed_red(mutate, code):
     assert result["passed"] is False
     assert result["code"] == code
     assert result["can_execute"] is False
+
+
+def test_async_summary_claims_source_run_and_job_request_ids():
+    claimed = claimed_receipt_ids_from_async_summary(
+        {
+            "source_run_id": "wow-scout-run-1",
+            "jobs": [
+                {"request_id": "research-1:scout:abc", "can_execute": False},
+                {"request_id": "research-1:scout:abc", "can_execute": False},
+                {"request_payload": {"request_id": "payload-only"}, "can_execute": False},
+            ],
+        }
+    )
+    assert claimed == [
+        "wow-scout-run-1",
+        "research-1:scout:abc",
+        "payload-only",
+    ]
+
+
+class _FakeQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self._rows = [row for row in self._rows if row.get(column) == value]
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        return type("Result", (), {"data": list(self._rows)})()
+
+
+class _FakeDB:
+    def __init__(self, tables):
+        self._tables = tables
+
+    def table(self, name):
+        return _FakeQuery(list(self._tables.get(name) or []))
+
+
+def test_readback_durable_receipt_row_accepts_request_id_and_source_run():
+    db = _FakeDB(
+        {
+            "wow_action_invocation_receipts": [
+                {"invocation_id": "inv-1", "request_id": "req-header-1", "route": "/score-prop"}
+            ],
+            "wow_pick_request_runs": [],
+            "wow_scout_handoff_jobs": [
+                {
+                    "job_id": "job-1",
+                    "source_run_id": "wow-scout-run-1",
+                    "request_id": "research-1:scout:abc",
+                    "target_route": "/score-pick-request",
+                    "current_state": "MODEL_EVALUATED",
+                    "terminal": True,
+                }
+            ],
+        }
+    )
+    assert readback_durable_receipt_row(db, "req-header-1")["invocation_id"] == "inv-1"
+    assert readback_durable_receipt_row(db, "research-1:scout:abc")["job_id"] == "job-1"
+    assert readback_durable_receipt_row(db, "wow-scout-run-1")["source_run_id"] == "wow-scout-run-1"
+    assert readback_durable_receipt_row(db, "missing") is None
+
+
+def test_require_persistence_readback_env_gate(monkeypatch):
+    monkeypatch.delenv("WOW_REQUIRE_PERSISTENCE_READBACK", raising=False)
+    assert require_persistence_readback() is False
+    monkeypatch.setenv("WOW_REQUIRE_PERSISTENCE_READBACK", "true")
+    assert require_persistence_readback() is True
