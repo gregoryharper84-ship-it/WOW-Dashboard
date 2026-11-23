@@ -491,6 +491,21 @@ def build_postmortem_payload(
         lane_acc[key][bucket] += 1
     lane_summary = dict(lane_acc)
 
+    # Post-event exposure is descriptive. Match only exact observed selection
+    # fields across positions; never infer a certified event identity, pregame
+    # sporting probability, actual entry, or independent joint probability.
+    selection_positions: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    for leg in normalized_legs:
+        identity = (
+            _norm(leg["sport"]), _norm(leg["league"]), _norm(leg["event_id"]),
+            _norm(leg["participant"]), _norm(leg["market"]), _norm(leg["side"]),
+            leg["exact_line"], _norm(leg["selection"]),
+        )
+        selection_positions[identity].add(leg["position_reference"])
+    reused_position_counts = [
+        len(positions) for positions in selection_positions.values() if len(positions) > 1
+    ]
+
     summary = {
         "legs": len(normalized_legs),
         "wins": wins,
@@ -499,6 +514,12 @@ def build_postmortem_payload(
         "voids": voids,
         "leg_hit_rate": wins / (wins + losses) if (wins + losses) else None,
         "positions": len(normalized_positions),
+        "all_leg_clear_positions": sum(1 for pos in normalized_positions if pos["all_legs_hit"]),
+        "distinct_selections": len(selection_positions),
+        "reused_selection_groups": len(reused_position_counts),
+        "reused_selection_extra_positions": sum(n - 1 for n in reused_position_counts),
+        "max_selection_position_exposure": max((len(p) for p in selection_positions.values()), default=0),
+        "cross_position_exposure_basis": "EXACT_OBSERVED_FIELDS_ONLY_NOT_CERTIFIED_IDENTITY",
         "profitable_positions": sum(1 for pos in normalized_positions if pos["net_profit"] > 0),
         "non_losing_positions": sum(1 for pos in normalized_positions if pos["net_profit"] >= 0),
         "total_entry": total_entry,

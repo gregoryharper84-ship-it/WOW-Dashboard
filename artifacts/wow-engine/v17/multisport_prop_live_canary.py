@@ -62,6 +62,26 @@ CONFIGS: dict[str, list[dict[str, Any]]] = {
 }
 
 
+def future_fixture_sports(now: datetime | None = None) -> tuple[str, ...]:
+    """Select future-dated static fixtures; never send historical IDs to production.
+
+    A future timestamp does not certify player availability or the offer.
+    The backend still owns exact event/route/settlement/terminal checks.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.utcoffset() is None:
+        raise ValueError("CANARY_CLOCK_MUST_BE_TIMEZONE_AWARE")
+    selected: list[str] = []
+    for sport, rows in CONFIGS.items():
+        starts = [
+            datetime.fromisoformat(str(row["event_start_time"]).replace("Z", "+00:00"))
+            for row in rows
+        ]
+        if all(start.utcoffset() is not None and start > now for start in starts):
+            selected.append(sport)
+    return tuple(selected)
+
+
 def _fresh_oidc() -> str:
     url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
     sep = "&" if "?" in url else "?"
@@ -198,9 +218,9 @@ def _request_for(sport: str, request_id: str) -> dict[str, Any]:
     return {"request_id": request_id, "response_mode": "COMPACT", "rows": deepcopy(CONFIGS[sport])}
 
 
-def run_primary() -> list[dict[str, Any]]:
+def run_primary(*, sports: tuple[str, ...]) -> list[dict[str, Any]]:
     outputs = []
-    for sport in ("NFL", "MLB", "WNBA"):
+    for sport in sports:
         request_id = f"{BASE_RUN}-{sport.lower()}-primary"
         outputs.append(
             _validate(
@@ -212,9 +232,9 @@ def run_primary() -> list[dict[str, Any]]:
     return outputs
 
 
-def run_stress() -> dict[str, Any]:
+def run_stress(*, sports: tuple[str, ...]) -> dict[str, Any]:
     jobs: list[tuple[str, str]] = []
-    for sport in ("NFL", "MLB", "WNBA"):
+    for sport in sports:
         for n in (1, 2):
             jobs.append((sport, f"{BASE_RUN}-{sport.lower()}-stress-{n}"))
     results: list[dict[str, Any]] = []
@@ -233,7 +253,7 @@ def run_stress() -> dict[str, Any]:
             results.append(future.result())
 
     replay_results = []
-    for sport in ("NFL", "MLB", "WNBA"):
+    for sport in sports:
         rid = f"{BASE_RUN}-{sport.lower()}-stress-1"
         replay_results.append(
             _validate(
@@ -255,8 +275,8 @@ def run_stress() -> dict[str, Any]:
 
 
 def self_test() -> None:
+    """Validate fixture shape, not historical timestamps as live eligibility."""
     assert set(CONFIGS) == {"NFL", "MLB", "WNBA"}
-    now = datetime.now(timezone.utc)
     for sport, rows in CONFIGS.items():
         assert len(rows) == 4, (sport, len(rows))
         assert len({row["row_key"] for row in rows}) == 4
@@ -265,11 +285,15 @@ def self_test() -> None:
         assert all(row["platform"] == "WOW_PRODUCTION_CANARY" for row in rows)
         for row in rows:
             start = datetime.fromisoformat(str(row["event_start_time"]).replace("Z", "+00:00"))
-            if start <= now:
-                raise AssertionError(
-                    f"{sport}:STALE_CANARY_EVENT:{row['event_id']}:{row['event_start_time']}"
-                )
-    print(json.dumps({"status": "SELF_TEST_PASS", "sports": sorted(CONFIGS), "rows": 12, "can_execute": False}))
+            assert start.utcoffset() is not None, (sport, row["event_id"])
+    print(json.dumps({
+        "status": "SELF_TEST_PASS",
+        "sports": sorted(CONFIGS),
+        "rows": 12,
+        "future_fixture_sports": list(future_fixture_sports()),
+        "live_coverage_certified": False,
+        "can_execute": False,
+    }))
 
 
 def main() -> int:
@@ -277,11 +301,37 @@ def main() -> int:
     if mode == "self-test":
         self_test()
         return 0
-    output: dict[str, Any] = {"can_execute": False}
+    sports = future_fixture_sports()
+    if mode == "check-live-fixtures":
+        print(json.dumps({
+            "status": "FUTURE_STATIC_FIXTURES_PRESENT" if sports else "LIVE_CANARY_NOT_RUN_STALE_STATIC_FIXTURES",
+            "future_fixture_sports": list(sports),
+            "live_coverage_certified": False,
+            "can_execute": False,
+        }))
+        return 0 if sports else 78
+    if mode not in {"primary", "stress", "all"}:
+        print(json.dumps({"status": "UNKNOWN_CANARY_MODE", "can_execute": False}))
+        return 2
+    if not sports:
+        # Direct CLI calls fail closed instead of silently reporting live success.
+        # The workflow separately records a skipped live step when this occurs.
+        print(json.dumps({
+            "status": "LIVE_CANARY_NOT_RUN_STALE_STATIC_FIXTURES",
+            "future_fixture_sports": [],
+            "live_coverage_certified": False,
+            "can_execute": False,
+        }))
+        return 78
+    output: dict[str, Any] = {
+        "can_execute": False,
+        "future_fixture_sports": list(sports),
+        "live_coverage_certified": False,
+    }
     if mode in {"primary", "all"}:
-        output["primary"] = run_primary()
+        output["primary"] = run_primary(sports=sports)
     if mode in {"stress", "all"}:
-        output["stress"] = run_stress()
+        output["stress"] = run_stress(sports=sports)
     print(json.dumps(output, sort_keys=True))
     return 0
 

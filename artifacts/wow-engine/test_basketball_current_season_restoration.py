@@ -26,8 +26,12 @@ class Query:
         self.store, self.filters, self.orders = store, [], []
         self.maximum = self.window = self.incoming = None
         self.ignore_duplicates = False
+        self.exact_count = False
 
-    def select(self, _fields):
+    def select(self, _fields, *, count=None):
+        # Mirror PostgREST: count="exact" returns the untruncated match total.
+        assert count in (None, "exact")
+        self.exact_count = count == "exact"
         return self
 
     def eq(self, key, value):
@@ -77,10 +81,13 @@ class Query:
         rows = [row for row in self.store.rows if all(check(row) for check in self.filters)]
         for key, desc in reversed(self.orders):
             rows.sort(key=lambda row: row[key], reverse=desc)
+        total = len(rows)
         if self.window is not None:
             rows = rows[self.window[0]:self.window[1] + 1]
         if self.maximum is not None:
             rows = rows[:self.maximum]
+        if self.exact_count:
+            return SimpleNamespace(data=rows, count=total)
         return SimpleNamespace(data=rows)
 
 

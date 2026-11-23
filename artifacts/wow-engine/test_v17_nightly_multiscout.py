@@ -138,7 +138,12 @@ def test_market_inventory_failure_preserves_team_event_candidate(monkeypatch):
     assert len(payload["model_handoff"]["team_event_candidates"]) == 1
     assert payload["model_handoff"]["prop_candidates"] == []
     candidate = payload["model_handoff"]["team_event_candidates"][0]
-    assert candidate["official_event_id"] == "event-1"
+    assert candidate["official_event_id"] == "event-1"  # legacy alias only
+    assert candidate["provider_event_id"] == "event-1"
+    assert candidate["provider_event_source"] == "ODDS_API"
+    assert candidate["canonical_event_id"] is None
+    assert candidate["canonical_identity_status"] == "PROVIDER_EVENT_ID_UNVERIFIED"
+    assert candidate["official_event_identity_verified"] is False
     assert candidate["route"] == "LLP_TEAM_BETTING_ENGINE"
     assert candidate["market_evidence"] == []
     assert candidate["market_evidence_status"] == "SOURCE_BLOCKED"
@@ -211,3 +216,73 @@ def test_scout_governance_never_promotes_sportsbook_probability():
     assert '"route": "WOW_PROP_LANE"' in source
     assert '"sportsbook_implied_probability_is_model_probability": False' in source
     assert '"can_execute": False' in source
+
+def test_compact_news_slate_preserves_every_candidate_without_market_payload():
+    from v17.news_active_slate import select_active_slate
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    at = (now + timedelta(hours=4)).isoformat()
+    event = {
+        "sport_key": "americanfootball_nfl",
+        "official_event_id": "odds-event-1",  # a legacy provider alias
+        "provider_event_id": "odds-event-1",
+        "official_event_identity_verified": False,
+        "commence_time": at,
+        "market_evidence": [{"secret": "unneeded-full-market-payload"}],
+    }
+    payload = {
+        "run_id": "one-research-run",
+        "model_handoff": {
+            "team_event_candidates": [event, {**event, "provider_event_id": "odds-event-2"}],
+            "prop_candidates": [event],
+        },
+    }
+    compact = scout.compact_news_slate_manifest(payload)
+    assert compact["schema_version"] == "wow.v17.news_slate_selection.v1"
+    assert compact["source_run_id"] == "one-research-run"
+    assert compact["candidate_rows_total"] == 3
+    assert len(compact["model_handoff"]["team_event_candidates"]) == 2
+    assert len(compact["model_handoff"]["prop_candidates"]) == 1
+    assert "unneeded-full-market-payload" not in json.dumps(compact)
+    assert compact["model_feature_eligible"] is False
+    assert compact["can_execute"] is False
+    selected, counts = select_active_slate(
+        compact, now, ("americanfootball_nfl", "basketball_nba"),
+    )
+    assert selected == "americanfootball_nfl"
+    assert counts == {"americanfootball_nfl": 2}
+
+
+
+def test_compact_nhl_slate_preserves_matched_game_receipt_and_excludes_price():
+    receipt = {
+        "event_id": "2026020381",
+        "identity_match_sha256": "a" * 64,
+        "identity_match": {
+            "id": "2026020381", "startTimeUTC": "2026-11-24T00:30:00Z",
+            "homeTeam": {"abbrev": "NYI"}, "awayTeam": {"abbrev": "TOR"},
+            "gameType": 2, "gameState": "FUT",
+        },
+        "identity_verified_at": "2026-11-22T22:29:57Z",
+        "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/NYI/20262027",
+        "can_execute": False,
+    }
+    row = {
+        "sport_key": "icehockey_nhl", "official_event_id": "2026020381",
+        "provider_event_id": "espn-401999999", "official_event_identity_verified": True,
+        "canonical_identity_match_sha256": "a" * 64,
+        "canonical_identity_receipt": receipt,
+        "commence_time": "2026-11-24T00:30:00Z",
+        "market_evidence": [{"price": -120, "bookmaker": "irrelevant"}],
+    }
+    source = {"model_handoff": {"team_event_candidates": [row], "prop_candidates": [row]}}
+    manifest = scout.compact_news_slate_manifest(source)
+    for lane in ("team_event_candidates", "prop_candidates"):
+        stored = manifest["model_handoff"][lane][0]
+        assert stored["provider_event_id"] == "espn-401999999"
+        assert stored["official_event_id"] == "2026020381"
+        assert stored["canonical_identity_match_sha256"] == "a" * 64
+        assert stored["canonical_identity_receipt"] == receipt
+        assert "market_evidence" not in stored
+    assert manifest["candidate_rows_total"] == 2
+    assert manifest["can_execute"] is False

@@ -618,6 +618,16 @@ def canonicalize_nhl_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_blocker"] = "NHL_CANONICAL_EVENT_ID_MISSING"
         return replace(event, official_event_id=None, raw=raw)
 
+    match_sha = resolution.get("identity_match_sha256")
+    if (
+        not isinstance(match_sha, str)
+        or len(match_sha) != 64
+        or any(ch not in "0123456789abcdef" for ch in match_sha)
+    ):
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "NHL_IDENTITY_MATCH_DIGEST_INVALID"
+        return replace(event, official_event_id=None, raw=raw)
+
     if provider_event_id:
         raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
@@ -626,6 +636,8 @@ def canonicalize_nhl_discovery_identity(event: Any) -> Any:
     )
     raw["canonical_identity_resolution"] = "OFFICIAL_NHL_SCHEDULE_EXACT_MATCH"
     raw["canonical_identity_verified_at"] = resolution.get("identity_verified_at")
+    raw["canonical_identity_match_sha256"] = match_sha
+    raw["canonical_identity_match"] = resolution.get("identity_match")
     raw["canonical_identity_market_features_used"] = False
     return replace(event, official_event_id=canonical_event_id, raw=raw)
 
@@ -888,33 +900,13 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             scan.get("rows"),
             requested_model_budget=int(getattr(req, "max_team_events", 0) or 0),
         )
-        rows = [
-            daily._terminal_row(
-                "MONEYLINE",
-                {
-                    key: row.get(key)
-                    for key in (
-                        "official_event_id",
-                        "commence_time_utc",
-                        "home_team",
-                        "away_team",
-                        "sport",
-                    )
-                },
-                row,
-                daily.assert_no_terminal_upgrade(
-                    daily.reduce_row_terminal(
-                        [
-                            "COMPLETED"
-                            if row.get("bucket") == daily.discovery.MODEL_COMPLETED
-                            else "HELD"
-                        ]
-                    )
-                ),
-            )
-            for row in scan["rows"]
-            if str(row.get("official_event_id") or "") not in covered_event_ids
-        ]
+        # Share promotion + hard-terminal classification with the base Daily
+        # builder. Soft-holding every non-completed bucket here would undo the
+        # scorer-continuity repair after production installers replace the
+        # function pointer.
+        rows = daily._build_cross_sport_terminal_rows(
+            list(scan.get("rows") or []), covered_event_ids
+        )
         return rows, scan
 
     daily._cross_sport_moneyline_rows = repaired_cross_sport_moneyline_rows

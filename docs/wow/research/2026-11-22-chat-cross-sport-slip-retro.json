@@ -1,0 +1,168 @@
+{
+  "schema_version": "WOW_CHAT_RETRO_FIXTURE_V1",
+  "research_run_id": "CHAT_RESEARCH_NOV22_2026_A_B_C",
+  "slate_date": "2026-11-22",
+  "status": "POST_EVENT_HYPOTHETICAL_CHAT_SLIPS_NOT_USER_ENTRIES",
+  "immutability_note": "Git versioned post-event fixture; not an immutable pregame receipt; no fitted model link, stake, executable quote, or claim of submission.",
+  "verified_picks": {
+    "tate": {
+      "sport": "NFL",
+      "league": "NFL",
+      "event_id": null,
+      "participant": "Carnell Tate",
+      "opponent": "Dallas Cowboys",
+      "market": "LONGEST_RECEPTION_YARDS",
+      "side": "UNDER",
+      "selection": "Carnell Tate UNDER 23.5 longest reception",
+      "exact_line": 23.5,
+      "actual_stat": 59,
+      "settled_result": "LOSS",
+      "settlement_source": "NFL GAMEBOOK PLAY-BY-PLAY",
+      "settlement_evidence_ref": "https://static.www.nfl.com/image/upload/v1795381834/gamecenter/ab99929a-4feb-11f1-abca-2c54536568a9.pdf",
+      "official_result": null
+    },
+    "wagner": {
+      "sport": "NBA",
+      "league": "NBA",
+      "event_id": null,
+      "participant": "Franz Wagner",
+      "opponent": "Washington Wizards",
+      "market": "ASSISTS",
+      "side": "OVER",
+      "selection": "Franz Wagner OVER 6.5 assists",
+      "exact_line": 6.5,
+      "actual_stat": 6,
+      "settled_result": "LOSS",
+      "settlement_source": "NBA OFFICIAL BOXSCORE",
+      "settlement_evidence_ref": "https://www.nba.com/game/orl-vs-was-0022600282/box-score",
+      "official_result": null
+    },
+    "kucherov": {
+      "sport": "NHL",
+      "league": "NHL",
+      "event_id": null,
+      "participant": "Nikita Kucherov",
+      "opponent": "Buffalo Sabres",
+      "market": "SHOTS_ON_GOAL",
+      "side": "OVER",
+      "selection": "Nikita Kucherov OVER 2.5 shots on goal",
+      "exact_line": 2.5,
+      "actual_stat": 4,
+      "settled_result": "WIN",
+      "settlement_source": "CBS NHL BOXSCORE",
+      "settlement_evidence_ref": "https://www.cbssports.com/nhl/gametracker/recap/NHL_20261122_BUF%40TB/",
+      "official_result": null
+    },
+    "cook": {
+      "sport": "NFL",
+      "league": "NFL",
+      "event_id": null,
+      "participant": "James Cook",
+      "opponent": "Miami Dolphins",
+      "market": "RUSHING_YARDS",
+      "side": "OVER",
+      "selection": "James Cook OVER 92.5 rushing yards",
+      "exact_line": 92.5,
+      "actual_stat": 89,
+      "settled_result": "LOSS",
+      "settlement_source": "NFL GAMEBOOK",
+      "settlement_evidence_ref": "https://static.www.nfl.com/image/upload/v1795381954/gamecenter/ab998769-4feb-11f1-abca-2c54536568a9.pdf",
+      "official_result": null
+    },
+    "dallas": {
+      "sport": "NHL",
+      "league": "NHL",
+      "event_id": null,
+      "participant": "Dallas Stars",
+      "opponent": "Pittsburgh Penguins",
+      "market": "FULL_GAME_MONEYLINE",
+      "side": "WIN",
+      "selection": "Dallas Stars full-game moneyline",
+      "exact_line": null,
+      "actual_stat": null,
+      "settled_result": "WIN",
+      "settlement_source": "NHL GAME RECAP",
+      "settlement_evidence_ref": "https://www.nhl.com/news/pittsburgh-penguins-dallas-stars-game-recap-november-22-2026",
+      "official_result": "Dallas 1, Pittsburgh 0"
+    },
+    "denver": {
+      "sport": "NBA",
+      "league": "NBA",
+      "event_id": null,
+      "participant": "Denver Nuggets",
+      "opponent": "Chicago Bulls",
+      "market": "FULL_GAME_MONEYLINE",
+      "side": "WIN",
+      "selection": "Denver Nuggets full-game moneyline including OT",
+      "exact_line": null,
+      "actual_stat": null,
+      "settled_result": "WIN",
+      "settlement_source": "NBA OFFICIAL RECAP",
+      "settlement_evidence_ref": "https://www.nba.com/game/den-vs-chi-0022600283/blueprint",
+      "official_result": "Denver 151, Chicago 145 (OT)"
+    },
+    "nashville": {
+      "sport": "SOCCER",
+      "league": "SOCCER",
+      "event_id": null,
+      "participant": "Nashville SC",
+      "opponent": "FC Cincinnati",
+      "market": "REGULATION_90_MIN_MONEYLINE",
+      "side": "WIN",
+      "selection": "Nashville SC 90-minute moneyline",
+      "exact_line": null,
+      "actual_stat": null,
+      "settled_result": "LOSS",
+      "settlement_source": "NASHVILLE SC OFFICIAL RECAP",
+      "settlement_evidence_ref": "https://www.nashvillesc.com/news/renasant-recap-nashville-soccer-club-falls-1-0-to-fc-cincinnati-in-game-1",
+      "official_result": "Nashville 0, Cincinnati 1 (90 minutes)"
+    },
+    "samford": {
+      "sport": "NCAAB",
+      "league": "NCAAB",
+      "event_id": null,
+      "participant": "Samford",
+      "opponent": "UNC Asheville",
+      "market": "FULL_GAME_MONEYLINE",
+      "side": "WIN",
+      "selection": "Samford full-game moneyline",
+      "exact_line": null,
+      "actual_stat": null,
+      "settled_result": "WIN",
+      "settlement_source": "SAMFORD ATHLETICS OFFICIAL RECAP",
+      "settlement_evidence_ref": "https://samfordsports.com/news/2026/11/22/mens-basketball-samford-takes-home-gritty-win-over-unc-asheville",
+      "official_result": "Samford 80, UNC Asheville 77"
+    }
+  },
+  "hypothetical_slips": {
+    "A": [
+      "tate",
+      "wagner",
+      "kucherov"
+    ],
+    "B": [
+      "tate",
+      "cook",
+      "wagner",
+      "kucherov"
+    ],
+    "C": [
+      "tate",
+      "dallas",
+      "denver",
+      "nashville",
+      "samford"
+    ]
+  },
+  "not_in_slips": {
+    "tampa_bay_moneyline": "Discussed as additional candidate; lost 2-6 to Buffalo; excluded from eight unique slip selections."
+  },
+  "evidence_boundaries": {
+    "verified_submission": false,
+    "verified_live_executable_prices": false,
+    "verified_wow_pregame_model_receipt": false,
+    "verified_user_stake": false,
+    "recordable_to_governed_calibration": false,
+    "can_execute": false
+  }
+}
