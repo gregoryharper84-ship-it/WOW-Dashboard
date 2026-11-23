@@ -27,7 +27,7 @@ No new orchestration service, worker, autonomous approval authority, vendor subs
 - Counted blockers for invalid pregame chronology, material refresh after model timestamp, duplicate prediction ID, exact event/player/market/period/offer/direction/settlement mismatch, nonofficial settlement, malformed PMFs, and impossible binary settlement.
 - A zero-model-mass realization still contributes to CRPS; it is excluded from PIT only, with its receipt ID retained.
 - Small cohorts return INSUFFICIENT_SAMPLE; all outputs remain diagnostic only.
-- Sixteen focused tests use synthetic fixtures and do not establish production source integrity or sport performance.
+- The expanded focused tests cover source-to-ledger capture, 1X2 multiclass, exact-line settlements, direction pooling, zero lower bounds, optional workflow failure receipts and TestDriver's PMF mass-conservation finding. All fixtures are synthetic and do not establish production source integrity or sport performance.
 
 **Important:** the module validates supplied metadata; it does not cryptographically authenticate a receipt, query actual settled records, or establish independent source custody. Callers MUST perform those steps before the helpers consume data. The audit's local reason strings are research diagnostics, not new V17 backend failure codes. If later surfaced through production APIs, register them in the canonical failure-code registry in the same change.
 
@@ -49,6 +49,17 @@ No new orchestration service, worker, autonomous approval authority, vendor subs
 14. Supabase hybrid memory needs verified tenant isolation/RLS, dedup, source licensing, retention, embedding provenance, and a measured lexical-search insufficiency before adopting pgvector or paid embedding calls.
 15. Always preserve all existing authorized failure codes, the original prediction ledger and the independent exact-head release path. A green test or job status is not accepted production learning.
 16. Datadog is retired and is not a source, dependency, acceptance gate or repair target. Reuse GitHub + Render + Supabase, within $0 incremental spend.
+
+## November 23 implementation continuation: capture/observer safety
+
+- `learning_capture_guard.py` now validates actual PROP/EVENT source-table columns against exact prediction IDs, chronology, immutable pregame locking where available, material updates, artifact/source snapshot, publishability, calibrated point and bound, exact numeric line and realized outcome for binary scalar props, and official winner/score agreement for binary events. Failed rows remain in original source ledgers; internal descriptive skip reasons are counted instead of backfilled or silently omitted.
+- Both existing capture adapters use the guard, with no raw probability fallback. Direction-specific cohorts prevent MORE/LESS mixing. The home-only EVENT adapter **still lacks frozen favorite/underdog market-role classification**, so its aggregate accuracy is descriptive only; event recalibration/challenger hypotheses are suppressed until exact-role schema is implemented and independently verified. The separately stratified LLP postmortem grader remains available.
+- Frozen PMFs within 1e-6 mass tolerance are normalized for PIT/CRPS computational conservation without changing stored model packages; larger errors remain blocked. This resolves TestDriver's verified review observation.
+- `.github/workflows/wow-v17-continuous-intelligence.yml` writes a durable typed BLOCKED artifact if its authorized secret is missing, the backend fails, stage data are invalid or the capture is zero. The optional observer still cannot fail main's deployment checks. The absence of the credential has NOT been repaired.
+- **Source verification (validation DB only, not established production):** settled outcomes=4,149 props and 1,440 events; intelligence observations=0. Only 89/1,440 event outcomes meet preliminary publishability/chronology/artifact/source/material-update predicates; record-by-record acceptance can be narrower. The prior scheduled research job (Actions run 45052727082) emitted `LEARNING_CREDENTIAL_NOT_CONFIGURED` despite the overall green optional workflow.
+- The existing 4-stage coordinator, source tables, repo gates, and terminal reducer are reused. No independent cryptographic source verification, production destination readback, second successful unattended cycle, model certification, live merge or deployment is asserted.
+
+**Critical acceptance hold:** obtain an owner-managed authorized learning workflow credential or independently approved narrowly scoped OIDC; complete exact-head CI/SIRT/QA/Release; run real nonzero capture and readback with every source and settlement receipt checked; prove two unattended successful cycles and model/destination parity. DO NOT call `COMPLETE` until these conditions are evidenced. `can_execute=false`.
 
 ## Canonical next integration sequence and acceptance
 
