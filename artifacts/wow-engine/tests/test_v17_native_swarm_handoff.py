@@ -71,6 +71,7 @@ def receipt():
         "production_verified": False,
         "worker_reports": workers,
         "wave_reviews": waves,
+        "matchup_discovery": {"missing_critical_features": ["availability_and_lineups"]},
         "handoff": {
             "can_execute": False, "may_publish_or_qualify": False,
             "probability_authority": False, "specialist_rescore_verified": False,
@@ -162,6 +163,8 @@ def test_unexpected_local_worker_failure_is_hold_not_model_unavailable(monkeypat
     {"receipt_sha256": "a" * 63},
     {"worker_reports": [None] * 5},
     {"worker_reports": [{}] * 5},
+    {"matchup_discovery": None},
+    {"matchup_discovery": {"missing_critical_features": []}},
     {"wave_reviews": [{"all_structurally_valid": True}]},
 ])
 def test_forged_or_malformed_native_receipts_cannot_claim_authority(monkeypatch, bad):
