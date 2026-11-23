@@ -460,3 +460,53 @@ def test_duplicate_card_id_cannot_launder_repeated_exposure_as_one_card():
     result = audit_research_slips(duplicated, as_of_utc=AS_OF)
     assert "RESEARCH_CARD_ID_DUPLICATE" in result["cards"][1]["blockers"]
     assert result["can_execute"] is False
+
+
+def test_research_value_cannot_launder_other_player_or_stat_into_price_edge():
+    gordon = prop("gordon", "nuggets-bulls", player="NBA-GORDON")
+    gordon["value_claim"] = "STRONG_VALUE"
+    gordon["research_value_evidence"] = dict(
+        source_id="synthetic-player-estimate",
+        observed_at_utc="2026-11-19T23:45:00Z",
+        sport="NBA", official_event_id="nuggets-bulls",
+        market_family="PLAYER_PROP", market_period="FULL_GAME",
+        side="UNDER", exact_line=24.5,
+        official_player_id="NBA-JOKIC", stat_type="REBOUNDS",
+        estimated_selection_probability=0.80,
+    )
+    unrelated = leg("other", "nba-other")
+    result = audit_research_slips(cards([gordon, unrelated]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_PLAYER_STAT_MISMATCH" in result["cards"][0]["blockers"]
+    gordon["research_value_evidence"]["official_player_id"] = "NBA-GORDON"
+    result = audit_research_slips(cards([gordon, unrelated]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_PLAYER_STAT_MISMATCH" in result["cards"][0]["blockers"]
+    gordon["research_value_evidence"]["stat_type"] = "POINTS"
+    result = audit_research_slips(cards([gordon, unrelated]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_PLAYER_STAT_MISMATCH" not in result["cards"][0]["blockers"]
+    assert result["cards"][0]["can_publish_as_certified"] is False
+    assert result["cards"][0]["joint_probability"] is None
+
+
+def test_research_value_team_total_must_match_exact_selected_team():
+    g = total("home-team-total", "nba-1", side="UNDER", line=115.5)
+    g["market_family"] = "TEAM_TOTAL"
+    g["selected_team_id"] = "HOME"
+    g["market_quote"]["market_family"] = "TEAM_TOTAL"
+    g["market_quote"]["selected_team_id"] = "HOME"
+    g["total_evidence"]["selected_team_id"] = "HOME"
+    g["total_evidence"]["fitted_total_distribution_receipt"]["selected_team_id"] = "HOME"
+    g["value_claim"] = "STRONG_VALUE"
+    g["research_value_evidence"] = dict(
+        source_id="synthetic-team-estimate",
+        observed_at_utc="2026-11-19T23:45:00Z",
+        sport="NBA", official_event_id="nba-1",
+        market_family="TEAM_TOTAL", market_period="FULL_GAME",
+        side="UNDER", exact_line=115.5,
+        selected_team_id="AWAY", estimated_selection_probability=0.80,
+    )
+    result = audit_research_slips(cards([g, leg("other", "nba-2")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_TEAM_MISMATCH" in result["cards"][0]["blockers"]
+    g["research_value_evidence"]["selected_team_id"] = "HOME"
+    result = audit_research_slips(cards([g, leg("other", "nba-2")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_TEAM_MISMATCH" not in result["cards"][0]["blockers"]
+    assert result["cards"][0]["can_publish_as_certified"] is False
