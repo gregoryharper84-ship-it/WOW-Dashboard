@@ -1,6 +1,6 @@
 import math
 import pytest
-from learning_distribution_diagnostics import (
+from v17.learning_distribution_diagnostics import (
     binary_murphy_diagnostics, discrete_prop_distribution_audit,
 )
 
