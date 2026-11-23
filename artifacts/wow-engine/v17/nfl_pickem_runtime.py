@@ -20,7 +20,7 @@ market information.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime, timezone
 import os
 from typing import Any, Mapping
 from uuid import uuid4
@@ -114,6 +114,19 @@ def _pregame_schedule_row(row: Mapping[str, Any]) -> bool:
     return _score_missing(row.get("home_score")) and _score_missing(row.get("away_score"))
 
 
+def _snapshot_as_of(snapshot: Mapping[str, Any]) -> datetime | None:
+    raw = str(snapshot.get("fetched_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
 def _canonical_inventory(
     db: Any,
     *,
@@ -123,6 +136,7 @@ def _canonical_inventory(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Read canonical NFL schedule truth and return requested regular-season rows."""
     snapshot, schedule_rows = _load_latest_schedule_snapshot(db)
+    as_of = _snapshot_as_of(snapshot)
     requested = set(requested_dates)
     events: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
@@ -187,6 +201,30 @@ def _canonical_inventory(
                 "away_team": away,
                 "code": "MODEL_INPUTS_INSUFFICIENT",
                 "blockers": [str(exc)],
+                "can_execute": False,
+            })
+            continue
+
+        if as_of is None:
+            blocked.append({
+                "official_event_id": event_id,
+                "gameday": gameday,
+                "home_team": home,
+                "away_team": away,
+                "code": "MODEL_INPUTS_INSUFFICIENT",
+                "blockers": ["PICKEM_SCHEDULE_SNAPSHOT_AS_OF_UNAVAILABLE"],
+                "can_execute": False,
+            })
+            continue
+        if kickoff <= as_of:
+            # Source scores can lag after kickoff; a started game is never a
+            # pregame candidate regardless of missing scores.
+            blocked.append({
+                "official_event_id": event_id,
+                "gameday": gameday,
+                "home_team": home,
+                "away_team": away,
+                "code": "PICKEM_EVENT_ALREADY_STARTED_OR_COMPLETED",
                 "can_execute": False,
             })
             continue
