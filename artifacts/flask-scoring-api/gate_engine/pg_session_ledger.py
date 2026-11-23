@@ -19,7 +19,11 @@ exposure. The gate result includes "db_error" so callers can audit.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
+import threading
+import time
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -27,6 +31,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 def _archetype(prop_type: str) -> str:
+    """Map a prop label to its stable exposure-limit family."""
     pt = prop_type.lower()
     if "point" in pt:                                  return "scoring"
     if "rebound" in pt:                                return "rebound"
@@ -52,13 +57,211 @@ CREATE TABLE IF NOT EXISTS wow_session_exposure (
 CREATE INDEX IF NOT EXISTS idx_wse_expires ON wow_session_exposure (expires_at);
 """
 
+# DNS resolution is separate from libpq's connect_timeout on some platforms.
+# Bound it before connecting, then pass the resolved address as hostaddr while
+# retaining the original host name for TLS verification and diagnostics.
+DNS_RESOLUTION_TIMEOUT_SECONDS = 2.0
+MAX_DNS_HOSTS = 8
+# A DNS batch may outlive its request-thread deadline. Permit only one
+# bounded batch (at most MAX_DNS_HOSTS daemon resolvers) in flight per process,
+# so repeated warmups cannot leak unbounded blocked threads.
+_DNS_RESOLUTION_SLOT = threading.BoundedSemaphore(1)
+
+
+def _resolve_hostaddr(conn_string: str, driver: Any) -> dict[str, str] | None:
+    """Build bounded libpq host overrides while preserving ordered failover."""
+    try:
+        parsed = driver.extensions.parse_dsn(conn_string)
+    except Exception:
+        raise ValueError("SESSION_LEDGER_DSN_INVALID") from None
+
+    raw_host = parsed.get("host")
+    if not raw_host:
+        # A hostaddr-only DSN or libpq's default local socket needs no DNS.
+        return None
+    hosts = [item.strip() for item in str(raw_host).split(",")]
+    if not hosts or len(hosts) > MAX_DNS_HOSTS:
+        raise ValueError("SESSION_LEDGER_DSN_HOST_COUNT_INVALID")
+
+    raw_port = parsed.get("port")
+    port_parts = [item.strip() for item in str(raw_port).split(",")] if raw_port else []
+    if not port_parts:
+        ports = ["5432"] * len(hosts)
+    elif len(port_parts) == 1:
+        ports = port_parts * len(hosts)
+    elif len(port_parts) == len(hosts):
+        ports = port_parts
+    else:
+        raise ValueError("SESSION_LEDGER_DSN_PORT_INVALID")
+    port_numbers: list[int] = []
+    for value in ports:
+        try:
+            number = int(value or 5432)
+        except (TypeError, ValueError):
+            raise ValueError("SESSION_LEDGER_DSN_PORT_INVALID") from None
+        if not 1 <= number <= 65535:
+            raise ValueError("SESSION_LEDGER_DSN_PORT_INVALID")
+        port_numbers.append(number)
+
+    raw_hostaddr = parsed.get("hostaddr")
+    if raw_hostaddr:
+        hostaddrs: list[str | None] = [
+            item.strip() for item in str(raw_hostaddr).split(",")
+        ]
+        if len(hostaddrs) != len(hosts):
+            raise ValueError("SESSION_LEDGER_DSN_HOSTADDR_INVALID")
+    else:
+        hostaddrs = [None] * len(hosts)
+
+    def is_local_socket(host: str) -> bool:
+        """Recognize libpq Unix-domain and abstract socket host forms."""
+        return (
+            not host
+            or host.startswith(("/", "\\", "@"))
+            or (len(host) > 2 and host[1] == ":" and host[2] in ("/", "\\"))
+        )
+
+    # Each input host maps to one or more addresses. Repeating its hostname
+    # alongside each address lets libpq try every address before advancing
+    # to the next input host, matching its native ordered failover behavior.
+    resolved_by_index: dict[int, list[str]] = {}
+    dns_indices: list[int] = []
+    needs_hostaddr = False
+    for index, host in enumerate(hosts):
+        supplied = hostaddrs[index]
+        if supplied:
+            continue
+        if is_local_socket(host):
+            continue
+        try:
+            address = str(ipaddress.ip_address(host))
+        except ValueError:
+            dns_indices.append(index)
+        else:
+            resolved_by_index[index] = [address]
+            needs_hostaddr = True
+
+    if raw_hostaddr and all(value for value in hostaddrs):
+        # A complete explicit hostaddr list already prevents libpq DNS lookup.
+        return None
+
+    if dns_indices:
+        needs_hostaddr = True
+        deadline = time.monotonic() + DNS_RESOLUTION_TIMEOUT_SECONDS
+        slot_wait = max(0.0, deadline - time.monotonic())
+        if not _DNS_RESOLUTION_SLOT.acquire(timeout=slot_wait):
+            raise TimeoutError("SESSION_LEDGER_DNS_BUSY")
+
+        # Resolve each hostname concurrently under one process-wide single-
+        # flight slot and one absolute deadline. A slow/unresolvable host does
+        # not prevent a later usable host from being attempted.
+        outcomes: dict[int, list[str]] = {}
+        outcome_lock = threading.Lock()
+        remaining = [len(dns_indices)]
+        completed = threading.Event()
+
+        def finish(index: int, addresses: list[str]) -> None:
+            """Publish one host result and release the slot after the batch."""
+            with outcome_lock:
+                outcomes[index] = addresses
+                remaining[0] -= 1
+                if remaining[0] == 0:
+                    _DNS_RESOLUTION_SLOT.release()
+                    completed.set()
+
+        def resolve_one(index: int) -> None:
+            """Resolve one host without blocking the warmup request thread."""
+            try:
+                records = socket.getaddrinfo(
+                    hosts[index], port_numbers[index], type=socket.SOCK_STREAM
+                )
+                addresses: list[str] = []
+                for record in records:
+                    candidate = str(record[4][0])
+                    try:
+                        candidate = str(ipaddress.ip_address(candidate))
+                    except ValueError:
+                        continue
+                    if candidate not in addresses:
+                        addresses.append(candidate)
+                # Retain every distinct address, preferring IPv4 as before.
+                ipv4 = [
+                    item for item in addresses
+                    if ipaddress.ip_address(item).version == 4
+                ]
+                ordered = ipv4 + [item for item in addresses if item not in ipv4]
+            except Exception:
+                ordered = []
+            finish(index, ordered)
+
+        for index in dns_indices:
+            try:
+                worker = threading.Thread(
+                    target=resolve_one,
+                    args=(index,),
+                    name="pg-session-ledger-dns",
+                    daemon=True,
+                )
+                worker.start()
+            except Exception:
+                finish(index, [])
+
+        remaining_wait = max(0.0, deadline - time.monotonic())
+        completed.wait(remaining_wait)
+        with outcome_lock:
+            snapshot = dict(outcomes)
+            pending = {
+                index for index in dns_indices if index not in outcomes
+            }
+        resolved_by_index.update(snapshot)
+    else:
+        pending = set()
+
+    selected_hosts: list[str] = []
+    selected_hostaddrs: list[str] = []
+    selected_ports: list[str] = []
+    for index, host in enumerate(hosts):
+        supplied = hostaddrs[index]
+        addresses = [supplied] if supplied else resolved_by_index.get(index)
+        if addresses is None and is_local_socket(host):
+            addresses = [""]
+        if not addresses:
+            # An unresolvable host is omitted; the remaining resolved hosts
+            # retain their original relative order and libpq failover order.
+            continue
+        for address in addresses:
+            selected_hosts.append(host)
+            selected_hostaddrs.append(address)
+            selected_ports.append(ports[index])
+
+    if not selected_hosts:
+        if pending:
+            raise TimeoutError("SESSION_LEDGER_DNS_TIMEOUT")
+        raise OSError("SESSION_LEDGER_DNS_FAILED")
+    if not needs_hostaddr:
+        return None
+
+    overrides = {"hostaddr": ",".join(selected_hostaddrs)}
+    if selected_hosts != hosts:
+        overrides["host"] = ",".join(selected_hosts)
+    if len(port_parts) > 1 and selected_ports != port_parts:
+        overrides["port"] = ",".join(selected_ports)
+    return overrides
+
 
 def ensure_table_exists(conn_string: str | None = None) -> None:
     """Create the wow_session_exposure table if it doesn't exist."""
     import psycopg2
     url = conn_string or os.environ.get("DATABASE_URL", "")
-    with psycopg2.connect(url) as conn:
+    host_overrides = _resolve_hostaddr(url, psycopg2)
+    connect_kwargs: dict[str, Any] = {"connect_timeout": 5}
+    if host_overrides is not None:
+        connect_kwargs.update(host_overrides)
+    # DNS, TCP connection and DDL lock/statement waits have separate bounds.
+    with psycopg2.connect(url, **connect_kwargs) as conn:
         with conn.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '3000ms'")
+            cur.execute("SET LOCAL statement_timeout = '10000ms'")
             cur.execute(_DDL)
         conn.commit()
 
@@ -96,6 +299,7 @@ class PgSessionLedger:
         max_archetype: int = MAX_ARCHETYPE,
         ttl_hours: int     = SESSION_TTL_HOURS,
     ) -> None:
+        """Bind the ledger to one session and its configured exposure limits."""
         self.session_id    = session_id
         self._conn_string  = conn_string or os.environ.get("DATABASE_URL", "")
         self.max_player    = max_player
