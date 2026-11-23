@@ -5,7 +5,7 @@ import TestDriver from "testdriverai/vitest";
 // unrelated node:test suites from this monorepo. Metered runs are manual only.
 export default defineConfig({
   test: {
-    include: ["tests/dashboard.test.js", "tests/production.test.js"],
+    include: ["tests/dashboard.test.mjs", "tests/production.test.mjs"],
     testTimeout: 660000,
     hookTimeout: 660000,
     reporters: ["default", TestDriver()],

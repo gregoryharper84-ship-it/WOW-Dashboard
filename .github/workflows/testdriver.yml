@@ -68,7 +68,7 @@ jobs:
           api-key: ${{ secrets.TD_API_KEY }}
 
       - name: Run sandboxed React dashboard E2E and optional staging API smoke
-        run: pnpm exec vitest run
+        run: pnpm exec vitest run --config vitest.config.mjs
 
       - name: Upload test results
         if: always()

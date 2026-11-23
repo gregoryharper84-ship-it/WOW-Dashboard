@@ -101,6 +101,9 @@ describe("WOW Final Lock — isolated real-UI E2E", () => {
     await testdriver.find("Props Intake icon in left navigation rail").click();
     await testdriver.find("Paste / Manual tab").click();
     await testdriver.find("Paste props JSON textarea").click();
+    // Replace the deliberately invalid input from the earlier negative test.
+    await testdriver.pressKeys(["ctrl", "a"]);
+    await testdriver.pressKeys(["backspace"]);
     await testdriver.type(JSON.stringify({
       player: "Test Fixture Player",
       sport: "NBA",
