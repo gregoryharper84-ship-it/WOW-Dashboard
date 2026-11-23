@@ -76,7 +76,11 @@ def request_one_verified_native_swarm_pilot(
         if not isinstance(rows, list):
             continue
         for index, row in enumerate(rows):
-            if not isinstance(row, dict) or row.get("can_execute") is not False:
+            # The raw nightly Scout candidate normally omits this field;
+            # the outer handoff is already explicitly nonexecuting. Reject
+            # any row that asserts or malforms its own execution bit.
+            if not isinstance(row, dict) or (("can_execute" in row)
+                                             and row["can_execute"] is not False):
                 continue
             official_id = row.get("official_event_id")
             if (row.get("official_event_identity_verified") is not True
@@ -106,7 +110,8 @@ def request_one_verified_native_swarm_pilot(
     _, event_id, lane, index = min(eligible)
     updated_handoff = dict(handoff)
     updated_rows = list(handoff[lane])
-    updated_rows[index] = {**updated_rows[index], "native_swarm_requested": True}
+    updated_rows[index] = {**updated_rows[index], "can_execute": False,
+                           "native_swarm_requested": True}
     updated_handoff[lane] = updated_rows
     return {
         **payload,
