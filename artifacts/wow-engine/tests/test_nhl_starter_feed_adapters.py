@@ -37,6 +37,7 @@ def identity() -> dict:
         "away_team": "NYR",
         "identity_provider": "NHL_PUBLIC_WEB_API",
         "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/BOS/20262027",
+        "identity_match_sha256": "a" * 64,
         "identity_verified_at": (NOW - timedelta(minutes=2)).isoformat(),
         "market_features_used": False,
         "prediction_authority": False,
