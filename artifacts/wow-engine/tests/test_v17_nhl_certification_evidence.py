@@ -339,3 +339,206 @@ def test_generic_path_still_rejects_non_nhl_unsupported_family():
     )
     result = entry.verify_candidate_certification_evidence(db, "x")
     assert "CANDIDATE_REPLAY_CONTRACT_UNSUPPORTED" in result["blockers"]
+
+
+def _patch_small_split(monkeypatch) -> tuple[int, int, int]:
+    """Use a compact chronological split so Wilson replay tests stay unit-sized."""
+    train_n, cal_n, test_n = 240, 80, 80
+    monkeypatch.setattr(nhl, "REQUIRED_TRAINING_ROWS", train_n)
+    monkeypatch.setattr(nhl, "REQUIRED_CALIBRATION_ROWS", cal_n)
+    monkeypatch.setattr(nhl, "REQUIRED_TEST_ROWS", test_n)
+    monkeypatch.setattr(nhl, "REQUIRED_CORPUS_ROWS", train_n + cal_n + test_n)
+    return train_n, cal_n, test_n
+
+
+def _ready_source(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        nhl,
+        "source_readiness",
+        lambda _source_id: SimpleNamespace(ready_for_candidate_training=True, blockers=()),
+    )
+
+
+def _wilson_bound_corpus(n: int = 400) -> tuple[list[dict], dict]:
+    """Build a real fitted candidate package with a #2810 Wilson bound calibrator."""
+    from dataclasses import asdict, replace
+    from datetime import datetime, timedelta, timezone
+
+    import numpy as np
+    from nhl_candidate_pipeline import FEATURE_NAMES as PIPE_FEATURES
+    from v17.binary_candidate_lifecycle import BinaryTrainingRow, train_binary_candidate
+    from v17.nhl_bound_calibrator import build_nhl_certification_bound_calibrator
+
+    assert tuple(PIPE_FEATURES) == FEATURE_NAMES
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    training_rows: list[dict] = []
+    binary_rows: list[BinaryTrainingRow] = []
+    for i in range(n):
+        start = base + timedelta(hours=i)
+        # Strong separable signal so the bound calibrator remains non-identity.
+        elo = float((i % 17) - 8)
+        positive = elo > 0 if i % 11 != 0 else i % 2 == 0
+        features = {name: 0.0 for name in FEATURE_NAMES}
+        features["elo_delta"] = elo
+        features["season_win_pct_delta"] = elo / 10.0
+        features["neutral_site"] = 0.0
+        manifest = _manifest()
+        event_id = f"NHL:TEST-{i:04d}"
+        training_rows.append(
+            {
+                "training_row_id": f"tr-{i:04d}",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "sport": "NHL",
+                "league": "NHL",
+                "model_family": nhl.MODEL_FAMILY,
+                "feature_schema_version": nhl.FEATURE_SCHEMA,
+                "official_event_id": event_id,
+                "event_start_time": start.isoformat(),
+                "feature_as_of": (start - timedelta(seconds=1)).isoformat(),
+                "features": features,
+                "outcome_json": {"positive_outcome": positive},
+                "source_manifest": manifest,
+                "source_manifest_sha256": _hash(manifest),
+                "market_features_used": False,
+                "can_execute": False,
+            }
+        )
+        binary_rows.append(
+            BinaryTrainingRow(
+                event_id=event_id,
+                event_start_time=start.isoformat(),
+                feature_as_of=(start - timedelta(seconds=1)).isoformat(),
+                positive_outcome=positive,
+                features=features,
+                source_manifest_sha256=_hash(manifest),
+            )
+        )
+
+    fitted = train_binary_candidate(
+        binary_rows,
+        model_family=nhl.MODEL_FAMILY,
+        feature_names=FEATURE_NAMES,
+        min_rows=300,
+    )
+    art = dict(fitted.artifact_payload)
+    train_end = int(art["train_end_index"])
+    cal_end = int(art["calibration_end_index"])
+    names = list(FEATURE_NAMES)
+    ordered = sorted(binary_rows, key=lambda row: row.event_start_time)
+    X = np.array([[float(row.features[name]) for name in names] for row in ordered], dtype=float)
+    mean = np.array(art["scaler_mean"], dtype=float)
+    scale = np.array(art["scaler_scale"], dtype=float)
+    coef = np.array(art["coefficients"], dtype=float)
+    intercept = float(art["intercept"])
+    X_cal = (X[train_end:cal_end] - mean) / scale
+    logits = intercept + X_cal @ coef
+    p_cal = (1.0 / (1.0 + np.exp(-logits))).tolist()
+    y_cal = [1 if row.positive_outcome else 0 for row in ordered[train_end:cal_end]]
+    fit_end = ordered[cal_end - 1].event_start_time
+    bound = build_nhl_certification_bound_calibrator(
+        [float(v) for v in p_cal],
+        [int(v) for v in y_cal],
+        fit_end_timestamp=fit_end,
+    )
+    assert bound.get("certification_calibrator_ready") is True
+    candidate = replace(fitted, calibrator_payload=bound["calibrator_payload"])
+    metrics = asdict(candidate.metrics)
+    metrics.update(
+        {
+            "research_screen_pass": candidate.research_screen_pass,
+            "historical_reconstruction": True,
+            "market_features_used": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    )
+    record = {
+        "candidate_id": "nhl-wilson-1",
+        "created_at": "2026-02-01T00:00:00+00:00",
+        "sport": "NHL",
+        "league": "NHL",
+        "model_family": nhl.MODEL_FAMILY,
+        "model_artifact_version": nhl.expected_model_artifact_version(
+            candidate.dataset_hash, "a" * 40
+        ),
+        "feature_schema_version": nhl.FEATURE_SCHEMA,
+        "source_policy_id": nhl.SOURCE_POLICY,
+        "training_dataset_hash": candidate.dataset_hash,
+        "training_code_sha": "a" * 40,
+        "artifact_checksum": _hash(dict(candidate.artifact_payload)),
+        "artifact_payload": dict(candidate.artifact_payload),
+        "calibrator_payload": dict(candidate.calibrator_payload),
+        "validation_metrics": metrics,
+        "training_rows": candidate.metrics.train_n,
+        "calibration_rows": candidate.metrics.calibration_n,
+        "test_rows": candidate.metrics.test_n,
+        "research_screen_pass": True,
+        "source_review_status": "REQUIRED",
+        "lifecycle_state": "CANDIDATE",
+        "promoted": False,
+        "active": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+    return training_rows, record
+
+
+def test_wilson_bound_candidate_replays_clean_without_replay_calibrator_mismatch(monkeypatch):
+    train_n, cal_n, test_n = _patch_small_split(monkeypatch)
+    _ready_source(monkeypatch)
+    training_rows, record = _wilson_bound_corpus(train_n + cal_n + test_n)
+    assert record["training_rows"] == train_n
+    assert str(record["calibrator_payload"]["method"]) == "EMPIRICAL_WILSON_BINS_V1"
+    db = _Database(candidates=[record], training_rows=training_rows)
+    result = nhl.verify_nhl_candidate_certification_evidence(db, "nhl-wilson-1")
+    assert "REPLAY_CALIBRATOR_MISMATCH" not in result["blockers"]
+    assert "SOURCE_REVIEW_REQUIRED" in result["blockers"]
+    assert result["status"] == "CERTIFICATION_EVIDENCE_FAILED"
+    assert result["replay_status"] == "PASS"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_tampered_wilson_bound_calibrator_still_mismatches(monkeypatch):
+    train_n, cal_n, test_n = _patch_small_split(monkeypatch)
+    _ready_source(monkeypatch)
+    training_rows, record = _wilson_bound_corpus(train_n + cal_n + test_n)
+    tampered = deepcopy(record)
+    payload = deepcopy(tampered["calibrator_payload"])
+    bins = list(payload.get("bins") or [])
+    assert bins
+    first = dict(bins[0])
+    first["calibrated_probability"] = min(0.999, float(first["calibrated_probability"]) + 0.05)
+    bins[0] = first
+    payload["bins"] = bins
+    tampered["calibrator_payload"] = payload
+    db = _Database(candidates=[tampered], training_rows=training_rows)
+    result = nhl.verify_nhl_candidate_certification_evidence(db, "nhl-wilson-1")
+    assert "REPLAY_CALIBRATOR_MISMATCH" in result["blockers"]
+    assert result["replay_status"] == "FAIL"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_identity_calibrator_remains_forbidden_even_with_frozen_corpus(monkeypatch):
+    train_n, cal_n, test_n = _patch_small_split(monkeypatch)
+    _ready_source(monkeypatch)
+    training_rows, record = _wilson_bound_corpus(train_n + cal_n + test_n)
+    identity = deepcopy(record)
+    identity["calibrator_payload"] = {
+        "method": nhl.IDENTITY_CALIBRATION_METHOD,
+        "training_n": cal_n,
+        "selection_version": "FORWARD_CALIBRATION_SELECTION_V2",
+        "bins": [],
+    }
+    identity["source_review_status"] = "PASS"
+    db = _Database(candidates=[identity], training_rows=training_rows)
+    result = nhl.verify_nhl_candidate_certification_evidence(db, "nhl-wilson-1")
+    assert "NHL_IDENTITY_CALIBRATOR_FORBIDDEN" in result["blockers"]
+    assert result["status"] != "CERTIFICATION_EVIDENCE_PASS"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
