@@ -213,3 +213,110 @@ def discrete_prop_distribution_audit(
         "can_execute": False,
         "terminal_authority": TERMINAL_AUTHORITY,
     }
+
+def multiclass_event_distribution_audit(
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
+    min_n: int = 30,
+) -> dict[str, Any]:
+    """Grade frozen, exact-outcome multiclass distributions without binary splitting.
+
+    Only separately authenticated pregame and official settlement records may be
+    supplied. This diagnostic checks their declared identity/provenance; it does
+    not verify signatures, infer absent outcome states, or promote a fitted model.
+    Multiclass Brier uses SUM over outcomes, not a binary Brier convention.
+    """
+    from math import log
+
+    if type(min_n) is not int or min_n < 1:
+        raise ValueError("INVALID_MIN_N")
+    seen: set[str] = set()
+    blocked: list[dict[str, str]] = []
+    groups: dict[tuple[str, str, str, str, tuple[str, ...]], list[tuple[float, float]]] = defaultdict(list)
+    identity_fields = (
+        "sport", "official_event_id", "market_family", "period", "settlement_basis",
+    )
+    for index, (prediction, settlement) in enumerate(pairs):
+        receipt = str(prediction.get("prediction_id") or "").strip()
+        reason: str | None = None
+        if not receipt or receipt in seen:
+            reason = "PREDICTION_ID_MISSING_OR_DUPLICATE"
+        else:
+            seen.add(receipt)
+        start = _utc(prediction.get("event_start_utc"))
+        frozen = _utc(prediction.get("model_timestamp_utc"))
+        material = _utc(prediction.get("latest_material_update_at_utc"))
+        final = _utc(settlement.get("settled_at_utc"))
+        if not reason and (
+            start is None or frozen is None or not frozen < start
+            or material is None or material > frozen
+            or final is None or final < start
+        ):
+            reason = "PREGAME_OR_SETTLEMENT_CHRONOLOGY_INVALID"
+        if not reason and (
+            prediction.get("immutable_pregame") is not True
+            or not prediction.get("source_snapshot_id")
+            or not prediction.get("model_artifact_digest")
+            or not prediction.get("controlling_specialist")
+            or any(not prediction.get(k) or prediction.get(k) != settlement.get(k)
+                   for k in identity_fields)
+        ):
+            reason = "EXACT_IDENTITY_OR_FROZEN_MODEL_EVIDENCE_MISSING"
+        if not reason and (
+            settlement.get("source_type") != "INDEPENDENT_OFFICIAL"
+            or not settlement.get("settlement_source_id")
+        ):
+            reason = "INDEPENDENT_SETTLEMENT_EVIDENCE_MISSING"
+        result = settlement.get("settlement_outcome")
+        if not reason and result in ("VOID", "NO_CONTEST", "CANCELED", "UNRESOLVED"):
+            reason = "NON_SCOREABLE_SETTLEMENT"
+        p = prediction.get("outcome_probabilities")
+        if not reason and (
+            not isinstance(p, dict) or len(p) < 2 or len(p) > 100
+            or any(not isinstance(k, str) or not k for k in p)
+            or any(_num(v, 0, 1) is None for v in p.values())
+            or abs(sum(p.values()) - 1) > 1e-8
+        ):
+            reason = "FROZEN_MULTICLASS_DISTRIBUTION_INVALID"
+        if not reason and (
+            result not in p
+            or (prediction.get("market_family") == "SOCCER_1X2"
+                and set(p) != {"HOME", "DRAW", "AWAY"})
+        ):
+            reason = "EXACT_OUTCOME_SPACE_OR_SETTLEMENT_INVALID"
+        if reason:
+            blocked.append({"row": str(index), "prediction_id": receipt, "reason": reason})
+            continue
+        brier = sum((value - int(label == result)) ** 2 for label, value in p.items())
+        true_p = p[result]
+        # Clipping is for finite log-score reporting only; preserve zero-mass fact.
+        log_score = -log(max(true_p, 1e-12))
+        key = (
+            str(prediction["sport"]), str(prediction["market_family"]),
+            str(prediction["controlling_specialist"]),
+            str(prediction["model_artifact_digest"]), tuple(sorted(p)),
+        )
+        groups[key].append((brier, log_score))
+    cohorts = [
+        {
+            "sport": key[0], "market_family": key[1],
+            "controlling_specialist": key[2], "model_artifact_digest": key[3],
+            "outcome_space": list(key[4]), "n": len(scores),
+            "mean_multiclass_brier": mean(x for x, _ in scores),
+            "mean_multiclass_log_loss": mean(y for _, y in scores),
+            "status": "DIAGNOSTIC_ONLY" if len(scores) >= min_n else "INSUFFICIENT_SAMPLE",
+        }
+        for key, scores in sorted(groups.items())
+    ]
+    return {
+        "rows_received": len(pairs),
+        "rows_graded": sum(len(scores) for scores in groups.values()),
+        "rows_blocked": len(blocked),
+        "blockers": blocked,
+        "reconciled": len(pairs) == sum(len(scores) for scores in groups.values()) + len(blocked),
+        "cohorts": cohorts,
+        "brier_convention": "SUM_OVER_OUTCOME_CATEGORIES",
+        "source_receipts_cryptographically_verified": False,
+        "automatic_parameter_mutation": False,
+        "can_execute": False,
+        "terminal_authority": TERMINAL_AUTHORITY,
+    }
