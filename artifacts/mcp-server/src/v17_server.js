@@ -12,8 +12,12 @@ function resultEnvelope(payload, isError = false) {
   };
 }
 
+export function getV17VisibleTools({ healthOnly = false } = {}) {
+  return healthOnly ? V17_TOOLS.filter((entry) => entry.name === "getWowV17BackendHealth") : V17_TOOLS;
+}
+
 export function createV17McpServer(options = {}) {
-  const visibleTools = options.healthOnly ? V17_TOOLS.filter((entry) => entry.name === "getWowV17BackendHealth") : V17_TOOLS;
+  const visibleTools = getV17VisibleTools(options);
   const visibleNames = new Set(visibleTools.map((entry) => entry.name));
   const server = new Server(
     { name: "wow-v17-mcp", version: "1.0.0" },
