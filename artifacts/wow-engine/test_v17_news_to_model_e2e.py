@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from v17.news_event_research_handoff import reconcile_news_handoff
@@ -60,7 +60,20 @@ def _ok_scorer(request):
     }
 
 
-def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path):
+def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, monkeypatch):
+    # This is a historical pregame fixture, not a wall-clock test. Without a
+    # frozen clock the official 720-minute news freshness SLA expires, so a
+    # previously green E2E route becomes red solely as time advances.
+    from v17 import news_event_research_handoff as news_clock
+    from v17 import news_fitted_rescore_dispatch as rescore_clock
+
+    class _FixtureDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(news_clock, "datetime", _FixtureDatetime)
+    monkeypatch.setattr(rescore_clock, "datetime", _FixtureDatetime)
     identity = resolve_multiscout_nhl_identity(
         {
             "sport_key": "icehockey_nhl",
@@ -163,6 +176,26 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path):
     assert receipt["can_execute"] is False
     assert verified["news_fitted_rescore_summary"]["rescore_verified"] == 1
     assert verified["can_execute"] is False
+
+    # Keep the real fail-closed freshness behavior: the same official item
+    # becomes invalid once publisher age crosses the unchanged 720m SLA.
+    stale = reconcile_news_handoff(
+        discovery,
+        {
+            "sport_key": "icehockey_nhl",
+            "official_event_id": "2026020381",
+            "provider_event_id": "espn-401999999",
+            "official_event_identity_verified": True,
+            "canonical_identity_status": identity["canonical_identity_status"],
+            "event_start_utc": "2026-11-24T00:30:00Z",
+        },
+        [claim],
+        observed_at=NOW + timedelta(hours=13),
+        source_receipt_sha256=digest,
+    )
+    assert stale["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+    assert stale["research_rescore_requested"] is False
+    assert stale["can_execute"] is False
 
 
 def test_adversarial_forged_id_and_duplicate_syndication_never_qualify():
