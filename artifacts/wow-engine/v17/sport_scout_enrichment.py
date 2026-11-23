@@ -89,10 +89,22 @@ def _native_swarm_receipt_valid(
                         or verdict.get("can_execute") is not False
                         or verdict.get("facts_screened_structurally") != len(worker["facts"])):
                     return False
+        # Reconstruct every aggregate from canonical worker evidence once;
+        # never let a return receipt hide an independent worker HOLD.
         domain_facts = [fact for worker in workers[1:] for fact in worker["facts"]]
+        missing = sorted({reason for worker in workers for reason in worker["missing_evidence"]})
+        conflicts = sorted({reason for worker in workers for reason in worker["conflicts"]})
+        audit = receipt.get("matchup_discovery")
+        if not isinstance(audit, dict) or not isinstance(audit.get("missing_critical_features"), list):
+            return False
+        expected_status = ("RESEARCH_ONLY_HOLD" if missing or conflicts or audit["missing_critical_features"]
+                           else "RESEARCH_ONLY_SCREENED")
         return (all(isinstance(fact, dict) and fact.get("source_rights_status") == "CLEARED_FOR_RESEARCH"
                     for fact in domain_facts)
-                and handoff["source_screened_research_facts"] == domain_facts)
+                and handoff["source_screened_research_facts"] == domain_facts
+                and handoff.get("missing_evidence") == missing
+                and handoff.get("conflicts") == conflicts
+                and receipt.get("status") == expected_status)
     except (KeyError, TypeError, ValueError, AttributeError):
         # A malformed/untrusted receipt is a typed research hold, never metadata.
         return False
@@ -130,7 +142,17 @@ def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
              or event_request.get("event_start_time_utc"))
     normalized = {**candidate, "commence_time": start}
     try:
-        from tools.wow_specialized_swarm import WORKERS, build_manifest, run_swarm, validate_submission
+        try:
+            from tools.wow_specialized_swarm import WORKERS, build_manifest, run_swarm, validate_submission
+        except ModuleNotFoundError as exc:
+            if exc.name != "tools":
+                raise
+            # The existing direct-script CLI loads from /v17, not engine root.
+            import sys
+            engine_root = str(Path(__file__).resolve().parents[1])
+            if engine_root not in sys.path:
+                sys.path.insert(0, engine_root)
+            from tools.wow_specialized_swarm import WORKERS, build_manifest, run_swarm, validate_submission
         # The manifest is recomputed from the caller's canonical event, not
         # from the untrusted return. Invalid source identity/time is INPUT.
         expected_manifest = build_manifest(normalized, max_parallel=2)
