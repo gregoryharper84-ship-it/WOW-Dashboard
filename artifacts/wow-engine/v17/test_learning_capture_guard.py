@@ -206,3 +206,22 @@ def test_unrecognized_scalar_prop_market_cannot_borrow_player_prop_grade():
     p, o = prop()
     p["market_type"] = "FANTASY_SCORE_CANDIDATE"
     assert capture_eligibility(p, o, kind="PROP") == "SCALAR_PROP_MARKET_ROUTE_UNVERIFIED"
+
+
+def test_directional_cohorts_never_pool_more_and_less():
+    from v17.core_intelligence import build_learning_observation, cohort_key
+    p, o = prop()
+    a = {
+        "prediction_id": p["prediction_id"],
+        "sport": "NBA", "market_type": "PLAYER_PROP",
+        "stat_type": "PTS", "direction": "MORE",
+        "model_family": "NBA_POINTS", "model_artifact_version": "v1",
+        "calibration_version": "c1", "calibrated_probability": .7,
+    }
+    outcome = {"prediction_id": p["prediction_id"], "official_result": "WIN",
+               "settlement_source": "official", "settlement_timestamp": o["settlement_timestamp"]}
+    more = build_learning_observation(a, outcome)
+    less = build_learning_observation({**a, "direction": "LESS"}, outcome)
+    assert cohort_key(more) != cohort_key(less)
+    assert cohort_key(more).endswith("|MORE")
+    assert cohort_key(less).endswith("|LESS")
