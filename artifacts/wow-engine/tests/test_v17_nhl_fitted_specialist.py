@@ -274,8 +274,25 @@ def _reconstruction(db=None):
 
 
 @pytest.fixture(autouse=True)
-def _install_test_timeline_receipt_provider():
-    """Score path must not trust caller evidence; use a synthetic server seam."""
+def _install_test_timeline_receipt_provider(monkeypatch):
+    """Score path must not trust caller evidence; use synthetic server seams."""
+    def _verified_official_nhl_game(**kwargs):
+        return {
+            "event_id": "2026029001",
+            "event_start_time": START.isoformat(),
+            "home_team": "BOS",
+            "away_team": "NYR",
+            "game_type": 2,
+            "game_state": "FUT",
+            "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/BOS/20262027",
+            "identity_match_sha256": "a" * 64,
+            "identity_verified_at": NOW.isoformat(),
+            "market_features_used": False,
+            "prediction_authority": False,
+            "can_execute": False,
+        }
+    monkeypatch.setattr(nhl, "_NHL_CUTOFF_RESOLVER", _verified_official_nhl_game)
     def _provider(*, season, event_start_time, home_team="", away_team="", session=None, db=None, as_of_utc=None, **_kwargs):
         del session, db, as_of_utc
         return _timeline_receipt(
@@ -1601,3 +1618,48 @@ def test_registry_loader_recovers_after_overflowing_newest_metric():
     assert selected.created_at == datetime.fromisoformat(prior["created_at"])
     assert selected.publication_capable is False
     assert selected.research_screen_pass is True
+
+
+
+def test_nhl_fitted_score_rechecks_live_official_id_before_probability(monkeypatch):
+    from v17.nhl_event_identity import NHLEventIdentityError
+    seen = []
+
+    def wrong_club(**kwargs):
+        seen.append(kwargs)
+        return {
+            "event_id": "2026029999",
+            "event_start_time": START.isoformat(),
+            "home_team": "BOS", "away_team": "NYR",
+            "game_type": 2, "game_state": "FUT",
+            "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_match_sha256": "a" * 64,
+            "identity_verified_at": NOW.isoformat(),
+            "market_features_used": False,
+            "prediction_authority": False,
+            "can_execute": False,
+        }
+    monkeypatch.setattr(nhl, "_NHL_CUTOFF_RESOLVER", wrong_club)
+    with pytest.raises(nhl.NHLFittedSpecialistError) as exc:
+        nhl.score_current_nhl_event(_request(), db=_DB(), now_utc=NOW)
+    assert exc.value.code == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NHL_CUTOFF_OFFICIAL_EVENT_ID_CHANGED" in exc.value.blockers
+    assert len(seen) == 1
+    assert seen[0]["home_team"] == "BOS"
+
+    def moved(**kwargs):
+        return {**wrong_club(**kwargs), "event_id": "2026029001",
+                "event_start_time": (START + timedelta(minutes=5)).isoformat()}
+    monkeypatch.setattr(nhl, "_NHL_CUTOFF_RESOLVER", moved)
+    with pytest.raises(nhl.NHLFittedSpecialistError) as exc:
+        nhl.score_current_nhl_event(_request(), db=_DB(), now_utc=NOW)
+    assert "NHL_CUTOFF_OFFICIAL_START_CHANGED" in exc.value.blockers
+
+    def rate_limited(**_kwargs):
+        raise NHLEventIdentityError("NHL_OFFICIAL_SOURCE_RATE_LIMITED")
+    monkeypatch.setattr(nhl, "_NHL_CUTOFF_RESOLVER", rate_limited)
+    with pytest.raises(nhl.NHLFittedSpecialistError) as exc:
+        nhl.score_current_nhl_event(_request(), db=_DB(), now_utc=NOW)
+    assert exc.value.code == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NHL_OFFICIAL_SOURCE_RATE_LIMITED" in exc.value.blockers
+    assert "MODEL_UNAVAILABLE" not in exc.value.blockers
