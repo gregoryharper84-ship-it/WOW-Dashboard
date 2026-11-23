@@ -428,6 +428,7 @@ def test_claimed_price_edge_is_rejected_when_research_probability_below_breakeve
         sport="NBA", official_event_id="jaguars-giants",
         market_family="MONEYLINE", market_period="FULL_GAME",
         side="HOME", exact_line=None,
+        settlement_basis="INCL_OT",
         estimated_selection_probability=0.70,
     )
     result = audit_research_slips(cards([jax, leg("second", "nba-second")]), as_of_utc=AS_OF)
@@ -471,6 +472,7 @@ def test_research_value_cannot_launder_other_player_or_stat_into_price_edge():
         sport="NBA", official_event_id="nuggets-bulls",
         market_family="PLAYER_PROP", market_period="FULL_GAME",
         side="UNDER", exact_line=24.5,
+        settlement_basis="INCL_OT",
         official_player_id="NBA-JOKIC", stat_type="REBOUNDS",
         estimated_selection_probability=0.80,
     )
@@ -502,6 +504,7 @@ def test_research_value_team_total_must_match_exact_selected_team():
         sport="NBA", official_event_id="nba-1",
         market_family="TEAM_TOTAL", market_period="FULL_GAME",
         side="UNDER", exact_line=115.5,
+        settlement_basis="INCL_OT",
         selected_team_id="AWAY", estimated_selection_probability=0.80,
     )
     result = audit_research_slips(cards([g, leg("other", "nba-2")]), as_of_utc=AS_OF)
@@ -510,3 +513,25 @@ def test_research_value_team_total_must_match_exact_selected_team():
     result = audit_research_slips(cards([g, leg("other", "nba-2")]), as_of_utc=AS_OF)
     assert "RESEARCH_VALUE_TEAM_MISMATCH" not in result["cards"][0]["blockers"]
     assert result["cards"][0]["can_publish_as_certified"] is False
+
+
+def test_research_value_settlement_basis_must_match_exact_over_time_rule():
+    gordon = prop("gordon-under", "nuggets-bulls", player="NBA-GORDON")
+    gordon["value_claim"] = "STRONG_VALUE"
+    gordon["research_value_evidence"] = dict(
+        source_id="synthetic-stat-prob",
+        observed_at_utc="2026-11-19T23:45:00Z",
+        sport="NBA", official_event_id="nuggets-bulls",
+        market_family="PLAYER_PROP", market_period="FULL_GAME",
+        side="UNDER", exact_line=24.5,
+        settlement_basis="EXCL_OT",
+        official_player_id="NBA-GORDON", stat_type="POINTS",
+        estimated_selection_probability=0.80,
+    )
+    out = audit_research_slips(cards([gordon, leg("other", "nba-other")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_EVIDENCE_UNVERIFIED" in out["cards"][0]["blockers"]
+    gordon["research_value_evidence"]["settlement_basis"] = "INCL_OT"
+    out = audit_research_slips(cards([gordon, leg("other", "nba-other")]), as_of_utc=AS_OF)
+    assert "RESEARCH_VALUE_EVIDENCE_UNVERIFIED" not in out["cards"][0]["blockers"]
+    assert out["joint_probability"] is None
+    assert out["cards"][0]["can_publish_as_certified"] is False

@@ -118,6 +118,7 @@ def _price_edge_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetim
             or _market(value.get("market_family")) != _market(leg.get("market_family"))
             or _text(value.get("market_period")).upper() != _text(leg.get("market_period")).upper()
             or _text(value.get("side")).upper() != _text(leg.get("side")).upper()
+            or _text(value.get("settlement_basis")).upper() != _text(leg.get("settlement_basis")).upper()
             or _line_key(value.get("exact_line")) != _line_key(leg.get("exact_line"))):
         return ["RESEARCH_VALUE_EVIDENCE_UNVERIFIED"]
     # Research forecasts must bind to the *same* market selection, not just
