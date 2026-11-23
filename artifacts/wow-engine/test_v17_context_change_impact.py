@@ -340,3 +340,23 @@ def test_durable_queue_cannot_repromote_legacy_context_status():
     assert priority == "UNRANKED"
     assert gate == "HANDOFF_BLOCKED"
     assert evidence["research_status"] == "QUARANTINED"
+
+
+def test_event_peer_key_preserves_sport_and_nested_kickoff_fallbacks():
+    from v17.sport_scout_enrichment import _verified_event_key
+    event_a = {
+        "sport": "NBA",
+        "official_event_id": "official-nba-event",
+        "event_request": {"event_start_time_utc": "2026-11-24T02:00:00Z"},
+    }
+    event_b = {
+        "sport_key": "NBA",
+        "official_event_id": "official-nba-event",
+        "commence_time": "2026-11-24T02:00:00+00:00",
+    }
+    assert _verified_event_key(event_a) == _verified_event_key(event_b)
+    assert _verified_event_key(event_a) == (
+        "NBA", "official-nba-event", "2026-11-24T02:00:00+00:00"
+    )
+    unrelated = dict(event_a, sport="NHL")
+    assert _verified_event_key(unrelated) != _verified_event_key(event_b)
