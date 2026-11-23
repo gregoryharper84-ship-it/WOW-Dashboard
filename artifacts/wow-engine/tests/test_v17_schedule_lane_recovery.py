@@ -20,8 +20,8 @@ NBA_DAILY = "wow-v17-basketball-model-maintenance.yml"
 NOW = datetime(2026, 11, 20, 4, 45, tzinfo=timezone.utc)  # :07 and :17 slots due; :23 waiting; :37 too close
 
 
-def _run(at, status="completed"):
-    return {"created_at": at.strftime("%Y-%m-%dT%H:%M:%SZ"), "status": status}
+def _run(at, status="completed", event="schedule"):
+    return {"created_at": at.strftime("%Y-%m-%dT%H:%M:%SZ"), "status": status, "event": event}
 
 
 class FakeLanes:
@@ -131,6 +131,21 @@ def test_daily_nba_maintenance_recovers_one_missed_slot_without_duplicate_dispat
     result = _by_wf(lanes.recover("t", now=now, http=already_ran))[NBA_DAILY]
     assert result["status"] == "SLOT_NOT_DUE" and result["reason"] == "SLOT_ALREADY_SERVED"
     assert NBA_DAILY not in already_ran.dispatched()
+
+
+def test_verification_only_push_never_satisfies_daily_maintenance_slot():
+    now = datetime(2026, 11, 23, 13, 30, tzinfo=timezone.utc)
+    push_only = FakeLanes(runs={NBA_DAILY: [_run(now - timedelta(minutes=2), event="push")]})
+    outcome = _by_wf(lanes.recover("t", now=now, http=push_only))[NBA_DAILY]
+    assert outcome["status"] == "DISPATCHED" and NBA_DAILY in push_only.dispatched()
+    # An active verification-only run still occupies the workflow's live group.
+    active_push = FakeLanes(runs={NBA_DAILY: [_run(now - timedelta(minutes=2), "in_progress", "push")]})
+    outcome = _by_wf(lanes.recover("t", now=now, http=active_push))[NBA_DAILY]
+    assert outcome["status"] == "LANE_GROUP_BUSY" and NBA_DAILY not in active_push.dispatched()
+    # Do not dispatch on an API response that cannot identify the run's trigger.
+    unknown = FakeLanes(runs={NBA_DAILY: [{"created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "status": "completed"}]})
+    outcome = _by_wf(lanes.recover("t", now=now, http=unknown))[NBA_DAILY]
+    assert outcome["status"] == "GITHUB_EVIDENCE_INVALID" and NBA_DAILY not in unknown.dispatched()
 
 
 def test_daily_nba_owner_stop_busy_and_deadline_fail_closed():
