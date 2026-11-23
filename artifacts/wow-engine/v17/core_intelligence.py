@@ -353,7 +353,14 @@ def summarize_cohort(
         mean_log_loss=sum(losses_metric) / len(losses_metric) if losses_metric else None,
         close_miss_n=sum(1 for row in rows if row.close_miss_flag is True),
         diagnostic_tag_counts=tuple(sorted(tag_counts.items())),
-        ready_for_hypothesis=len(scored) >= min_samples,
+        # HOME-side event observations do not currently persist the exact
+        # frozen favorite/underdog role. They may be graded descriptively,
+        # but pooled role-ambiguous EVENT calibration cannot justify a
+        # model-change/recalibration challenger hypothesis.
+        ready_for_hypothesis=(
+            len(scored) >= min_samples
+            and rows[0].source_prediction_kind != "EVENT"
+        ),
         min_samples=min_samples,
         can_execute=False,
     )
