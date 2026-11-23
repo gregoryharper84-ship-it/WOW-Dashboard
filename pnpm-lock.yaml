@@ -8260,6 +8260,8 @@ snapshots:
 
   '@ark/util@0.56.8': {}
 
+  '@borewit/text-codec@0.2.3': {}
+
   '@colors/colors@1.5.0':
     optional: true
 
@@ -8273,12 +8275,10 @@ snapshots:
       enabled: 2.0.0
       kuler: 2.0.0
 
-  '@date-fns/tz@1.4.1': {}
-
-  '@drizzle-team/brocli@0.10.2': {}
-
   '@esbuild/linux-x64@0.21.5':
     optional: true
+
+  '@inquirer/ansi@1.0.2': {}
 
   '@inquirer/checkbox@4.3.2(@types/node@25.3.5)':
     dependencies:
@@ -8842,6 +8842,8 @@ snapshots:
       '@jimp/types': 1.6.1
       tinycolor2: 1.6.0
 
+  '@jridgewell/sourcemap-codec@1.6.0': {}
+
   '@modelcontextprotocol/ext-apps@1.7.5(@modelcontextprotocol/sdk@1.29.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)(zod@3.25.76)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.29.0
@@ -8850,6 +8852,8 @@ snapshots:
     optionalDependencies:
       react: 19.1.0
       react-dom: 19.1.0(react@19.1.0)
+
+  '@npmcli/redact@3.2.2': {}
 
   '@oclif/core@4.14.0':
     dependencies:
@@ -9229,6 +9233,8 @@ snapshots:
       '@opentelemetry/api': 1.10.0
       '@opentelemetry/core': 1.30.1(@opentelemetry/api@1.10.0)
 
+  '@pnpm/config.env-replace@1.1.0': {}
+
   '@pnpm/network.ca-file@1.0.2':
     dependencies:
       graceful-fs: 4.2.10
@@ -9246,9 +9252,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@radix-ui/number@1.1.1': {}
-
-  '@radix-ui/primitive@1.1.3': {}
+  '@sentry/core@9.47.2': {}
 
   '@sentry/node-core@9.47.2(@opentelemetry/api@1.10.0)(@opentelemetry/context-async-hooks@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/core@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.10.0))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/semantic-conventions@1.44.0)':
     dependencies:
@@ -9312,6 +9316,8 @@ snapshots:
       '@opentelemetry/semantic-conventions': 1.44.0
       '@sentry/core': 9.47.2
 
+  '@sindresorhus/is@4.6.0': {}
+
   '@so-ric/colorspace@1.1.6':
     dependencies:
       color: 5.0.3
@@ -9324,8 +9330,6 @@ snapshots:
   '@szmarczak/http-timer@4.0.6':
     dependencies:
       defer-to-connect: 2.0.1
-
-  '@tabby_ai/hijri-converter@1.0.5': {}
 
   '@tokenizer/inflate@0.4.1':
     dependencies:
@@ -9354,7 +9358,7 @@ snapshots:
 
   '@types/deep-eql@4.0.2': {}
 
-  '@types/estree@1.0.8': {}
+  '@types/http-cache-semantics@4.2.0': {}
 
   '@types/keyv@3.1.4':
     dependencies:
@@ -9384,10 +9388,6 @@ snapshots:
 
   '@types/prop-types@15.7.15': {}
 
-  '@types/qs@6.15.0': {}
-
-  '@types/range-parser@1.2.7': {}
-
   '@types/react@18.3.31':
     dependencies:
       '@types/prop-types': 15.7.15
@@ -9397,13 +9397,13 @@ snapshots:
     dependencies:
       '@types/node': 25.3.5
 
+  '@types/shimmer@1.2.0': {}
+
   '@types/tedious@4.0.14':
     dependencies:
       '@types/node': 25.3.5
 
   '@types/triple-beam@1.3.5': {}
-
-  '@types/unist@3.0.3': {}
 
   '@vitest/mocker@5.0.5(vite@7.3.2(@types/node@25.3.5)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.4))':
     dependencies:
@@ -9441,8 +9441,6 @@ snapshots:
     dependencies:
       acorn: 8.16.0
 
-  acorn@8.16.0: {}
-
   agent-base@6.0.2:
     dependencies:
       debug: 4.4.3(supports-color@8.1.1)
@@ -9456,8 +9454,6 @@ snapshots:
   ansi-escapes@7.3.0:
     dependencies:
       environment: 1.1.0
-
-  ansi-regex@5.0.1: {}
 
   ansi-regex@6.5.0: {}
 
@@ -9477,8 +9473,6 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  argparse@2.0.1: {}
-
   arkregex@0.0.14:
     dependencies:
       '@ark/util': 0.56.8
@@ -9494,8 +9488,6 @@ snapshots:
   async@3.2.6: {}
 
   asynckit@0.4.0: {}
-
-  atomic-sleep@1.0.0: {}
 
   auto-bind@5.0.1: {}
 
@@ -9513,13 +9505,9 @@ snapshots:
 
   bail@2.0.2: {}
 
-  balanced-match@4.0.4: {}
-
   base64-js@1.0.2: {}
 
   base64-js@1.5.1: {}
-
-  baseline-browser-mapping@2.10.0: {}
 
   before-after-hook@2.2.3: {}
 
@@ -9536,6 +9524,8 @@ snapshots:
     dependencies:
       balanced-match: 4.0.4
 
+  buffer-equal@0.0.1: {}
+
   buffer@5.7.1:
     dependencies:
       base64-js: 1.5.1
@@ -9549,8 +9539,6 @@ snapshots:
   bundle-name@4.1.1:
     dependencies:
       run-applescript: 7.1.0
-
-  bytes@3.1.2: {}
 
   cacheable-lookup@5.0.4: {}
 
@@ -9586,6 +9574,8 @@ snapshots:
   character-entities@2.0.2: {}
 
   chardet@2.2.0: {}
+
+  cjs-module-lexer@1.4.3: {}
 
   clean-stack@3.0.1:
     dependencies:
@@ -9639,8 +9629,6 @@ snapshots:
     dependencies:
       mimic-response: 1.0.1
 
-  clsx@2.1.1: {}
-
   code-excerpt@4.0.0:
     dependencies:
       convert-to-spaces: 2.0.1
@@ -9666,26 +9654,14 @@ snapshots:
       color-convert: 3.1.3
       color-string: 2.1.4
 
-  colorette@2.0.20: {}
-
   combined-stream@1.0.8:
     dependencies:
       delayed-stream: 1.0.0
-
-  commander@14.0.3: {}
-
-  compare-versions@6.1.1: {}
 
   config-chain@1.1.13:
     dependencies:
       ini: 1.3.8
       proto-list: 1.2.4
-
-  content-disposition@1.0.1: {}
-
-  content-type@1.0.5: {}
-
-  convert-source-map@2.0.0: {}
 
   convert-to-spaces@2.0.1: {}
 
@@ -9694,8 +9670,6 @@ snapshots:
       ms: 2.1.3
     optionalDependencies:
       supports-color: 8.1.1
-
-  decimal.js-light@2.5.1: {}
 
   decode-named-character-reference@1.3.0:
     dependencies:
@@ -9718,21 +9692,19 @@ snapshots:
 
   delayed-stream@1.0.0: {}
 
-  depd@2.0.0: {}
-
   deprecation@2.3.1: {}
 
   dequal@2.0.3: {}
-
-  detect-libc@2.1.2: {}
-
-  detect-node-es@1.1.0: {}
 
   devlop@1.1.0:
     dependencies:
       dequal: 2.0.3
 
   diff@8.0.4: {}
+
+  dom-walk@0.1.2: {}
+
+  dotenv@16.6.1: {}
 
   drizzle-orm@0.45.2(@opentelemetry/api@1.10.0)(@types/pg@8.18.0)(pg@8.20.0):
     optionalDependencies:
@@ -9745,13 +9717,21 @@ snapshots:
       drizzle-orm: 0.45.2(@opentelemetry/api@1.10.0)(@types/pg@8.18.0)(pg@8.20.0)
       zod: 3.25.76
 
+  ejs@6.0.1: {}
+
+  emoji-regex@10.6.0: {}
+
+  emoji-regex@8.0.0: {}
+
+  emojilib@2.4.0: {}
+
+  enabled@2.0.0: {}
+
+  environment@1.1.0: {}
+
   error-ex@1.3.4:
     dependencies:
       is-arrayish: 0.2.1
-
-  es-define-property@1.0.1: {}
-
-  es-errors@1.3.0: {}
 
   es-module-lexer@2.3.2: {}
 
@@ -9762,23 +9742,19 @@ snapshots:
       has-tostringtag: 1.0.2
       hasown: 2.0.4
 
+  escape-string-regexp@2.0.0: {}
+
+  escape-string-regexp@4.0.0: {}
+
   estree-walker@3.0.3:
     dependencies:
       '@types/estree': 1.0.8
-
-  esutils@2.0.3: {}
-
-  etag@1.8.1: {}
 
   event-target-shim@5.0.1: {}
 
   eventemitter2@6.4.9: {}
 
-  eventemitter3@4.0.7: {}
-
   events@3.3.0: {}
-
-  eventsource-parser@3.1.0: {}
 
   execa@5.1.1:
     dependencies:
@@ -9792,13 +9768,15 @@ snapshots:
       signal-exit: 3.0.7
       strip-final-newline: 2.0.0
 
+  exif-parser@0.1.12: {}
+
+  expect-type@1.4.0: {}
+
+  extend@3.0.2: {}
+
   fast-levenshtein@3.0.0:
     dependencies:
       fastest-levenshtein: 1.0.16
-
-  fast-safe-stringify@2.1.1: {}
-
-  fast-uri@3.1.2: {}
 
   fastest-levenshtein@1.0.16: {}
 
@@ -9825,6 +9803,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  fn.name@1.1.0: {}
+
+  follow-redirects@1.16.2: {}
+
   form-data@4.0.6:
     dependencies:
       asynckit: 0.4.0
@@ -9835,7 +9817,9 @@ snapshots:
 
   forwarded-parse@2.1.2: {}
 
-  forwarded@0.2.0: {}
+  get-east-asian-width@1.7.0: {}
+
+  get-package-type@0.1.0: {}
 
   get-stream@5.2.0:
     dependencies:
@@ -9869,11 +9853,7 @@ snapshots:
 
   graceful-fs@4.2.10: {}
 
-  graceful-fs@4.2.11: {}
-
   has-flag@4.0.0: {}
-
-  has-symbols@1.1.0: {}
 
   has-tostringtag@1.0.2:
     dependencies:
@@ -9883,11 +9863,7 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
-  help-me@5.0.0: {}
-
   highlight.js@10.7.3: {}
-
-  hono@4.12.28: {}
 
   http-cache-semantics@4.3.0: {}
 
@@ -9916,7 +9892,9 @@ snapshots:
 
   human-signals@2.1.0: {}
 
-  human-signals@8.0.1: {}
+  ieee754@1.2.1: {}
+
+  image-dimensions@2.6.0: {}
 
   image-q@4.0.0:
     dependencies:
@@ -9932,8 +9910,6 @@ snapshots:
   indent-string@4.0.0: {}
 
   indent-string@5.0.0: {}
-
-  inherits@2.0.4: {}
 
   ini@1.3.8: {}
 
@@ -9970,13 +9946,13 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  is-arrayish@0.2.1: {}
+
   is-core-module@2.17.0:
     dependencies:
       hasown: 2.0.4
 
   is-docker@3.0.0: {}
-
-  is-extglob@2.1.1: {}
 
   is-fullwidth-code-point@3.0.0: {}
 
@@ -9988,31 +9964,19 @@ snapshots:
 
   is-function@1.0.2: {}
 
+  is-in-ci@0.1.0: {}
+
   is-inside-container@1.0.0:
     dependencies:
       is-docker: 3.0.0
-
-  is-number@7.0.0: {}
-
-  is-path-inside@4.0.0: {}
-
-  is-plain-obj@4.1.0: {}
-
-  is-promise@4.0.0: {}
 
   is-retry-allowed@1.2.0: {}
 
   is-stream@2.0.1: {}
 
-  is-stream@4.0.1: {}
-
-  is-unicode-supported@2.1.0: {}
-
   is-wsl@3.1.1:
     dependencies:
       is-inside-container: 1.0.0
-
-  isexe@2.0.0: {}
 
   isomorphic-fetch@3.0.0:
     dependencies:
@@ -10068,15 +10032,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  jiti@2.6.1: {}
-
-  jose@6.2.3: {}
-
-  joycon@3.1.1: {}
-
   jpeg-js@0.4.4: {}
 
-  js-tokens@4.0.0: {}
+  json-buffer@3.0.1: {}
+
+  json-parse-better-errors@1.0.2: {}
 
   junit-report-builder@5.1.2:
     dependencies:
@@ -10090,7 +10050,7 @@ snapshots:
 
   kuler@2.0.0: {}
 
-  leven@4.1.0: {}
+  lilconfig@3.1.4: {}
 
   load-bmfont@1.4.2:
     dependencies:
@@ -10123,6 +10083,8 @@ snapshots:
       safe-stable-stringify: 2.5.0
       triple-beam: 1.4.1
 
+  lowercase-keys@2.0.0: {}
+
   magic-string@1.4.5:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
@@ -10130,6 +10092,8 @@ snapshots:
   make-dir@3.1.0:
     dependencies:
       semver: 6.3.1
+
+  markdown-parser@0.0.8: {}
 
   marked-terminal@7.3.1(marked@12.0.2):
     dependencies:
@@ -10145,8 +10109,6 @@ snapshots:
   marked@12.0.2: {}
 
   marky@1.3.0: {}
-
-  math-intrinsics@1.1.0: {}
 
   mdast-util-from-markdown@2.1.0:
     dependencies:
@@ -10169,15 +10131,7 @@ snapshots:
     dependencies:
       '@types/mdast': 4.0.4
 
-  mdurl@2.0.0: {}
-
-  media-typer@1.1.0: {}
-
-  merge-descriptors@2.0.0: {}
-
   merge-stream@2.0.0: {}
-
-  merge2@1.4.1: {}
 
   micromark-core-commonmark@2.0.4:
     dependencies:
@@ -10318,9 +10272,23 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  mime-db@1.52.0: {}
+
   mime-types@2.1.35:
     dependencies:
       mime-db: 1.52.0
+
+  mime@1.6.0: {}
+
+  mime@3.0.0: {}
+
+  mimic-fn@2.1.0: {}
+
+  mimic-function@5.0.1: {}
+
+  mimic-response@1.0.1: {}
+
+  mimic-response@3.1.0: {}
 
   min-document@2.19.2:
     dependencies:
@@ -10330,17 +10298,17 @@ snapshots:
     dependencies:
       brace-expansion: 5.0.12
 
+  module-details-from-path@1.0.4: {}
+
+  mute-stream@2.0.0: {}
+
   mz@2.7.0:
     dependencies:
       any-promise: 1.3.0
       object-assign: 4.1.1
       thenify-all: 1.6.0
 
-  nanoid@3.3.11: {}
-
   natural-orderby@3.0.2: {}
-
-  negotiator@1.0.0: {}
 
   node-emoji@2.2.0:
     dependencies:
@@ -10353,13 +10321,19 @@ snapshots:
     dependencies:
       whatwg-url: 5.0.0
 
-  node-releases@2.0.36: {}
-
   normalize-url@6.1.0: {}
 
   npm-run-path@4.0.1:
     dependencies:
       path-key: 3.1.1
+
+  object-hash@3.0.0: {}
+
+  object-treeify@4.0.1: {}
+
+  obug@3.0.0: {}
+
+  omggif@1.0.10: {}
 
   one-time@1.0.0:
     dependencies:
@@ -10380,6 +10354,14 @@ snapshots:
       is-inside-container: 1.0.0
       wsl-utils: 0.1.0
 
+  p-cancelable@2.1.1: {}
+
+  pako@1.0.11: {}
+
+  parse-bmfont-ascii@1.0.6: {}
+
+  parse-bmfont-binary@1.0.6: {}
+
   parse-bmfont-xml@1.1.6:
     dependencies:
       xml-parse-from-string: 1.0.1
@@ -10392,8 +10374,6 @@ snapshots:
       error-ex: 1.3.4
       json-parse-better-errors: 1.0.2
 
-  parse-ms@4.0.0: {}
-
   parse5-htmlparser2-tree-adapter@6.0.1:
     dependencies:
       parse5: 6.0.1
@@ -10402,19 +10382,9 @@ snapshots:
 
   parse5@6.0.1: {}
 
-  parseurl@1.3.3: {}
-
   patch-console@2.0.0: {}
 
-  path-key@3.1.1: {}
-
-  path-key@4.0.0: {}
-
   path-parse@1.0.7: {}
-
-  path-to-regexp@8.4.2: {}
-
-  pathe@2.0.3: {}
 
   peek-readable@4.1.0: {}
 
@@ -10423,12 +10393,6 @@ snapshots:
       centra: 2.7.0
     transitivePeerDependencies:
       - debug
-
-  picocolors@1.1.1: {}
-
-  picomatch@2.3.2: {}
-
-  picomatch@4.0.4: {}
 
   picomatch@4.0.7: {}
 
@@ -10444,8 +10408,6 @@ snapshots:
     dependencies:
       pngjs: 7.0.0
 
-  pkce-challenge@5.0.1: {}
-
   plist@3.1.1:
     dependencies:
       '@xmldom/xmldom': 0.9.12
@@ -10458,19 +10420,25 @@ snapshots:
 
   pngjs@7.0.0: {}
 
+  powershell-utils@0.1.0: {}
+
+  process@0.11.10: {}
+
+  proto-list@1.2.4: {}
+
+  proxy-from-env@2.1.0: {}
+
+  quick-lru@5.1.1: {}
+
   react-reconciler@0.29.2(react@18.3.1):
     dependencies:
       loose-envify: 1.4.0
       react: 18.3.1
       scheduler: 0.23.2
 
-  react-refresh@0.18.0: {}
-
   react@18.3.1:
     dependencies:
       loose-envify: 1.4.0
-
-  react@19.1.0: {}
 
   readable-stream@3.6.2:
     dependencies:
@@ -10490,11 +10458,7 @@ snapshots:
     dependencies:
       readable-stream: 4.8.0
 
-  readdirp@4.1.2: {}
-
-  readdirp@5.0.0: {}
-
-  real-require@0.2.0: {}
+  regenerator-runtime@0.13.11: {}
 
   registry-auth-token@5.1.1:
     dependencies:
@@ -10509,11 +10473,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  remeda@2.33.6: {}
-
   require-directory@2.1.1: {}
-
-  require-from-string@2.0.2: {}
 
   require-in-the-middle@7.5.2:
     dependencies:
@@ -10524,8 +10484,6 @@ snapshots:
       - supports-color
 
   resolve-alpn@1.2.1: {}
-
-  resolve-pkg-maps@1.0.0: {}
 
   resolve@1.22.13:
     dependencies:
@@ -10548,7 +10506,9 @@ snapshots:
       onetime: 7.0.0
       signal-exit: 4.1.0
 
-  reusify@1.1.0: {}
+  run-applescript@7.1.0: {}
+
+  safe-buffer@5.2.1: {}
 
   sanitize-filename@1.6.4:
     dependencies:
@@ -10560,19 +10520,17 @@ snapshots:
     dependencies:
       loose-envify: 1.4.0
 
-  scheduler@0.26.0: {}
-
-  secure-json-parse@4.1.0: {}
-
-  semver@6.3.1: {}
-
   semver@7.8.5: {}
+
+  shimmer@1.2.1: {}
+
+  signal-exit@3.0.7: {}
+
+  simple-xml-to-json@1.2.7: {}
 
   skin-tone@2.0.0:
     dependencies:
       unicode-emoji-modifier-base: 1.0.0
-
-  slash@5.1.0: {}
 
   slice-ansi@5.0.0:
     dependencies:
@@ -10589,15 +10547,13 @@ snapshots:
       ansi-styles: 6.2.3
       is-fullwidth-code-point: 5.1.0
 
+  stack-trace@0.0.10: {}
+
   stack-utils@2.0.6:
     dependencies:
       escape-string-regexp: 2.0.0
 
-  statuses@2.0.2: {}
-
   std-env@4.3.0: {}
-
-  string-argv@0.3.2: {}
 
   string-width@4.2.3:
     dependencies:
@@ -10626,10 +10582,6 @@ snapshots:
 
   strip-final-newline@2.0.0: {}
 
-  strip-final-newline@4.0.0: {}
-
-  strip-json-comments@5.0.3: {}
-
   strtok3@10.6.3:
     dependencies:
       '@tokenizer/token': 0.3.0
@@ -10655,8 +10607,6 @@ snapshots:
   supports-preserve-symlinks-flag@1.0.0: {}
 
   supports-terminal-graphics@0.1.0: {}
-
-  tailwind-merge@3.5.0: {}
 
   term-img@7.1.0:
     dependencies:
@@ -10741,12 +10691,22 @@ snapshots:
     dependencies:
       any-promise: 1.3.0
 
+  timm@1.7.1: {}
+
+  tinybench@6.2.3: {}
+
+  tinycolor2@1.6.0: {}
+
+  tinyexec@1.3.1: {}
+
   tinyglobby@0.2.17:
     dependencies:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
 
   tmp@0.2.7: {}
+
+  to-utf8@0.0.1: {}
 
   token-types@4.2.1:
     dependencies:
@@ -10773,11 +10733,15 @@ snapshots:
     dependencies:
       safe-buffer: 5.2.1
 
-  tw-animate-css@1.4.0: {}
-
   type-fest@0.21.3: {}
 
   type-fest@4.41.0: {}
+
+  uint8array-extras@1.6.0: {}
+
+  ulid@2.4.0: {}
+
+  unicode-emoji-modifier-base@1.0.0: {}
 
   unified@11.0.5:
     dependencies:
@@ -10795,17 +10759,11 @@ snapshots:
 
   universal-user-agent@6.0.1: {}
 
-  universalify@2.0.1: {}
-
-  unpipe@1.0.0: {}
+  utf8-byte-length@1.0.5: {}
 
   utif2@4.1.0:
     dependencies:
       pako: 1.0.11
-
-  util-deprecate@1.0.2: {}
-
-  vary@1.1.2: {}
 
   vfile-message@4.0.3:
     dependencies:
@@ -10847,6 +10805,8 @@ snapshots:
     dependencies:
       tr46: 0.0.3
       webidl-conversions: 3.0.1
+
+  why-is-node-running@3.2.1: {}
 
   widest-line@3.1.0:
     dependencies:
@@ -10901,8 +10861,6 @@ snapshots:
       string-width: 7.2.0
       strip-ansi: 7.2.0
 
-  wrappy@1.0.2: {}
-
   ws@8.22.1: {}
 
   wsl-utils@0.1.0:
@@ -10932,13 +10890,7 @@ snapshots:
 
   xmlbuilder@15.1.1: {}
 
-  xtend@4.0.2: {}
-
   y18n@5.0.8: {}
-
-  yallist@3.1.1: {}
-
-  yaml@2.8.4: {}
 
   yargs-parser@20.2.9: {}
 
@@ -10952,10 +10904,6 @@ snapshots:
       y18n: 5.0.8
       yargs-parser: 20.2.9
 
-  yocto-queue@1.2.2: {}
-
   yoctocolors-cjs@2.1.3: {}
-
-  yoctocolors@2.1.2: {}
 
   yoga-wasm-web@0.3.3: {}
