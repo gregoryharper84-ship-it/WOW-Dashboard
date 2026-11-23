@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Mapping, Sequence
 
+from v17.niche_prop_research import classify_niche_prop
+
 CAN_EXECUTE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 RESEARCH_CLASS = "RESEARCH_ONLY_UNCERTIFIED"
@@ -644,6 +646,7 @@ def audit_research_slips(
             reasons = list(dict.fromkeys(reasons))
             leg_reports.append({"index": i, "row_id": leg.get("row_id"),
                                 "blockers": reasons, "research_only": True,
+                                "niche_prop_research": classify_niche_prop(leg),
                                 "quote_independently_authenticated": False,
                                 "news_independently_authenticated": False,
                                 "model_probability_verified": False})
@@ -662,6 +665,10 @@ def audit_research_slips(
             "status": "RESEARCH_HOLD" if blockers else "RESEARCH_CONTEXT_REVIEWABLE_UNCERTIFIED",
             "blockers": blockers,
             "legs": leg_reports,
+            "niche_category_counts": dict(sorted(Counter(
+                item["niche_prop_research"]["category"]
+                for item in leg_reports if "niche_prop_research" in item
+            ).items())),
             "can_publish_as_certified": False,
             "model_rescore_verified": False,
             "joint_probability": None,
