@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import v17.news_event_research_handoff as news_handoff_module
 from v17.news_event_research_handoff import reconcile_news_handoff
 from v17.news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
 from v17.news_reviewed_fact_producer import attach_reviewed_facts_bundle, produce_reviewed_facts
@@ -12,6 +13,17 @@ from v17.nhl_multiscout_identity import resolve_multiscout_nhl_identity
 from v17.sport_scout_enrichment import _attach_sibling_news, enrich_handoff
 
 NOW = datetime(2026, 11, 22, 18, 0, tzinfo=timezone.utc)
+
+
+def _fixed_news_clock(instant):
+    """Freeze only the research handoff clock; never extend news freshness."""
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant if tz is not None else instant.replace(tzinfo=None)
+    return FixedDateTime
+
+
 URL = "https://www.nhl.com/news/islanders-confirm-starting-goalie"
 
 
@@ -20,9 +32,6 @@ class _Response:
 
     def __init__(self, payload):
         self.payload = payload
-        # Identity is matched from these bytes and their SHA-256 is recorded, so
-        # a schedule fixture has to provide the body, not only a parsed payload.
-        self.content = json.dumps(payload).encode()
 
     def json(self):
         return self.payload
@@ -64,6 +73,9 @@ def _ok_scorer(request):
 
 
 def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, monkeypatch):
+    # A league-official claim has a real 12h freshness ceiling. A test dated
+    # Nov 22 must not silently expire when CI runs on Nov 23 or later.
+    monkeypatch.setattr(news_handoff_module, "datetime", _fixed_news_clock(NOW))
     identity = resolve_multiscout_nhl_identity(
         {
             "sport_key": "icehockey_nhl",
@@ -145,22 +157,7 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
 
     # Default enrich_handoff uses unbound scorer → MODEL_UNAVAILABLE.
     # Re-dispatch with a genuine scorer to prove the fitted path.
-    # This synthetic as-of fixture is fixed at NOW. The production enrich
-    # function uses a live clock by default, so after 12h the independent
-    # league-news freshness gate legitimately rejects this archived claim.
-    # Inject only the deterministic *test* clock into the real reconciler;
-    # never loosen the production freshness check or fabricate a live receipt.
-    import v17.sport_scout_enrichment as enrichment_module
-    original_reconcile = enrichment_module.reconcile_news_handoff
-
-    def test_clock_reconcile(discovery, event, facts, **kwargs):
-        return original_reconcile(
-            discovery, event, facts, observed_at=NOW, **kwargs
-        )
-
-    with monkeypatch.context() as scoped:
-        scoped.setattr(enrichment_module, "reconcile_news_handoff", test_clock_reconcile)
-        enriched = enrich_handoff(attached)
+    enriched = enrich_handoff(attached)
     candidate = enriched["model_handoff"]["team_event_candidates"][0]
     assert candidate["news_research_handoff"]["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
     assert candidate["news_research_rescore_requested"] is True
@@ -181,6 +178,15 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
     assert receipt["can_execute"] is False
     assert verified["news_fitted_rescore_summary"]["rescore_verified"] == 1
     assert verified["can_execute"] is False
+
+    # Red/green regression: when time truly passes the official 12h limit,
+    # the same article must lose rescore eligibility even before puck drop.
+    monkeypatch.setattr(news_handoff_module, "datetime", _fixed_news_clock(NOW + timedelta(hours=13)))
+    expired = enrich_handoff(attached)
+    expired_row = expired["model_handoff"]["team_event_candidates"][0]
+    assert expired_row["news_research_handoff"]["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+    assert expired_row["news_research_rescore_requested"] is False
+    assert expired_row["can_execute"] is False
 
 
 def test_adversarial_forged_id_and_duplicate_syndication_never_qualify():
