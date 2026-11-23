@@ -23,6 +23,7 @@ from v17.core_intelligence import (
     detect_learning_hypotheses,
     summarize_cohort,
 )
+from v17.learning_capture_guard import capture_eligibility
 from v17.llp_v17_1_shadow_internal_routes import install_llp_v17_1_shadow_internal_routes
 from v17.postmortem_learning_ledger import signed_distance_to_threshold
 
@@ -120,8 +121,10 @@ def capture_settled_prop_observations(
     prediction_by_id: dict[str, dict[str, Any]] = {}
     select_fields = (
         "prediction_id,sport,market_type,stat_type,line,direction,"
+        "created_at,event_start_time,model_timestamp,locked_at,source_snapshot_id,"
+        "model_artifact_checksum,feature_snapshot_hash,evidence_source_kind,"
         "model_family,model_artifact_version,calibration_version,"
-        "calibrated_probability,calibrated_probability_lower_bound,"
+        "probability_publishable,calibrated_probability,calibrated_probability_lower_bound,"
         "raw_model_probability,failure_cause_tags"
     )
     for chunk in _chunks(prediction_ids):
@@ -138,10 +141,17 @@ def capture_settled_prop_observations(
 
     observations: list[dict[str, Any]] = []
     skipped_n = 0
+    skip_reasons: dict[str, int] = defaultdict(int)
     for prediction_id, outcome in outcome_by_id.items():
         prediction = prediction_by_id.get(prediction_id)
         if prediction is None:
             skipped_n += 1
+            skip_reasons["SOURCE_PREDICTION_NOT_FOUND"] += 1
+            continue
+        reason = capture_eligibility(prediction, outcome, kind="PROP")
+        if reason is not None:
+            skipped_n += 1
+            skip_reasons[reason] += 1
             continue
         enriched = dict(outcome)
         enriched["signed_distance_to_threshold"] = signed_distance_to_threshold(
@@ -151,8 +161,14 @@ def capture_settled_prop_observations(
         )
         if not enriched.get("process_classification"):
             enriched["process_classification"] = enriched.get("failure_category")
+        # The generic observation primitive supports raw-only research data.
+        # Official capture MUST use the frozen governed calibrated probability;
+        # never silently score a fallback raw or market proxy.
+        governed = dict(prediction)
+        governed.pop("raw_model_probability", None)
+        governed.pop("model_probability", None)
         observation = build_learning_observation(
-            prediction,
+            governed,
             enriched,
             source_prediction_kind="PROP",
         )
@@ -172,6 +188,8 @@ def capture_settled_prop_observations(
         "candidate_n": len(prediction_ids),
         "observation_n": len(observations),
         "skipped_n": skipped_n,
+        "skip_reasons": dict(sorted(skip_reasons.items())),
+        "source_provenance_authenticated_externally": False,
         "authority": AUTHORITY,
         "can_execute": False,
     }
