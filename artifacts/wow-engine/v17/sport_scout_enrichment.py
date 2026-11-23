@@ -15,6 +15,8 @@ try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
     from v17.matchup_discovery import discover_matchup
     from v17.news_event_research_handoff import reconcile_news_handoff
+    from v17.news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
+    from v17.news_reviewed_fact_producer import attach_reviewed_facts_bundle
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
@@ -22,6 +24,8 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
     from matchup_discovery import discover_matchup
     from news_event_research_handoff import reconcile_news_handoff
+    from news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
+    from news_reviewed_fact_producer import attach_reviewed_facts_bundle
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
@@ -68,7 +72,8 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
                 "official_event_identity_verified": row.get("official_event_identity_verified"),
                 "canonical_identity_status": row.get("canonical_identity_status"),
                 "event_start_utc": (
-                    row.get("event_start_utc")
+                    row.get("canonical_identity_event_start_utc")
+                    or row.get("event_start_utc")
                     or row.get("commence_time")
                     or (row.get("event_request") or {}).get("event_start_time_utc")
                 ),
@@ -82,6 +87,16 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
         )
         enriched["news_intelligence_status"] = enriched["news_research_handoff"]["research_status"]
         enriched["news_research_rescore_requested"] = enriched["news_research_handoff"]["research_rescore_requested"]
+        facts = enriched.get("news_reviewed_facts")
+        if isinstance(facts, list) and facts:
+            latest = None
+            for fact in facts:
+                if not isinstance(fact, dict):
+                    continue
+                stamp = fact.get("independently_reviewed_at_utc")
+                if isinstance(stamp, str) and (latest is None or stamp > latest):
+                    latest = stamp
+            enriched["news_latest_verified_at_utc"] = latest
     enriched["can_execute"] = False
     return enriched
 
@@ -151,6 +166,12 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         "can_execute": False,
     })
     out["governance"] = governance
+    out["can_execute"] = False
+    # Attempt news-triggered fitted rescores only after research reconciliation.
+    # Default scorer binding is absent → MODEL_UNAVAILABLE typed receipt, never
+    # a synthetic probability. Callers may inject a real score_fn in tests or
+    # production runners.
+    out = dispatch_news_rescores_for_handoff(out)
     out["can_execute"] = False
     return promote_handoff(out)
 
@@ -250,6 +271,7 @@ def main() -> int:
     payload = json.loads(source.read_text(encoding="utf-8"))
     payload = _attach_sibling_snapshot(payload, source)
     payload = _attach_sibling_news(payload, source)
+    payload = attach_reviewed_facts_bundle(payload, source)
     enriched = enrich_handoff(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(enriched, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -271,6 +293,10 @@ def main() -> int:
         "news_source_code": enriched.get("public_news_discovery_bridge", {}).get("source_code", "NOT_PRESENT"),
         "news_article_count": enriched.get("public_news_discovery_bridge", {}).get("article_count", 0),
         "news_candidates_touched": enriched.get("public_news_discovery_bridge", {}).get("candidates_touched", 0),
+        "news_reviewed_facts_bridge_status": enriched.get("news_reviewed_facts_bridge", {}).get("status", "NOT_PRESENT"),
+        "news_reviewed_facts_attached": enriched.get("news_reviewed_facts_bridge", {}).get("candidates_attached", 0),
+        "news_rescore_considered": enriched.get("news_fitted_rescore_summary", {}).get("candidates_considered", 0),
+        "news_rescore_verified": enriched.get("news_fitted_rescore_summary", {}).get("rescore_verified", 0),
         "can_execute": False,
     }))
     return 0
