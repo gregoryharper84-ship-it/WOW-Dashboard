@@ -59,6 +59,12 @@ jobs:
           python-version: "3.11"
       - name: Resolve authenticated exact-PR release lane
         id: target
+        # Automatic QA callbacks are checks on protected main, not authority
+        # over the target PR. A refused admission publishes no Release check
+        # (applicable=false is written first, so the release job is skipped)
+        # and must not fail main (Render checksPass). Manual dispatch still
+        # fails hard. Carried forward from #2630.
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -98,8 +104,34 @@ jobs:
             --run-id "$QA_RUN_ID" --run-attempt "$QA_RUN_ATTEMPT")
           if [ "$EVENT" = "workflow_dispatch" ]; then
             args+=(--pr "$INPUT_PR")
+          else
+            # The producer policy is fully authenticated first. A PR that
+            # subsequently moved heads or closed is no longer a Release
+            # target; no check is published and this main-scoped callback
+            # exits neutral. Current, malformed and foreign targets retain
+            # the existing fail-closed policy resolution.
+            # A draft source cannot be merged, so it can never be a
+            # Release target; neutralizing it stops a PR-scoped callback
+            # from failing the unrelated protected-main commit that
+            # Render's checksPass trigger is evaluating.
+            args+=(--neutral-if-superseded --neutral-if-draft-target)
           fi
-          bundle=$(python "$tool" "${args[@]}")
+          # A refusal is a typed admission decision, not an opaque shell
+          # failure. Surface the exact reason so a main-scoped callback can be
+          # diagnosed from the check annotation alone. The disposition is
+          # unchanged: exit 1 and no Release check is published either way.
+          err="$RUNNER_TEMP/resolve-qa-policy.err"
+          if ! bundle=$(python "$tool" "${args[@]}" 2>"$err"); then
+            reason=$(head -n 1 "$err" | tr -d '\r')
+            reason=${reason:-RELEASE_QA_POLICY_UNRESOLVED}
+            echo "::error::${reason}"
+            echo "Release admission refused: ${reason} (no Release check published)." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<< "$bundle")" = "neutral" ]; then
+            echo "::notice::RELEASE_NEUTRAL_BEFORE_PR_LOCK:$(jq -r .reason <<< "$bundle")"
+            exit 0
+          fi
           pr=$(jq -er '.policy.target.pr_number' <<< "$bundle")
           head=$(jq -er '.policy.target.head_sha' <<< "$bundle")
           [[ "$pr" =~ ^[1-9][0-9]*$ ]] &&
@@ -111,10 +143,18 @@ jobs:
               echo "::error::RELEASE_POLICY_TARGET_STALE"; exit 1;
             }
           fi
+          echo "Authenticated QA policy resolved PR #$pr head $head" >> "$GITHUB_STEP_SUMMARY"
           echo "pr_number=$pr" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head" >> "$GITHUB_OUTPUT"
+          # Last line: nothing after it can fail with applicable=true already set.
           echo "applicable=true" >> "$GITHUB_OUTPUT"
-          echo "Authenticated QA policy resolved PR #$pr head $head" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve automatic Release target admission HOLD
+        if: always() && github.event_name == 'workflow_run' && steps.target.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::RELEASE_AUTOMATIC_TARGET_HOLD: QA source unreadable or invalid; no Release Authority App check published."
+          echo "RELEASE_AUTOMATIC_TARGET_HOLD production_verified=false can_execute=false (no exact-head Release PASS)" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     needs: admit-release
@@ -227,8 +267,21 @@ jobs:
               echo "::error::RELEASE_PR_NUMBER_INVALID"; exit 1;
             }
             policy_args+=(--pr "$INPUT_PR")
+          else
+            # A PR may move again while this job waits for its per-PR writer.
+            # Re-authenticate the source policy; neutralize only a proven
+            # superseded historical workflow_run, never a manual release.
+            # A draft source cannot be merged, so it can never be a Release
+            # target: neutralizing it keeps a PR-scoped callback from failing
+            # the unrelated main commit Render's checksPass trigger evaluates.
+            policy_args+=(--neutral-if-superseded --neutral-if-draft-target)
           fi
           policy_bundle=$(python "$tool" "${policy_args[@]}")
+          if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<<"$policy_bundle")" = "neutral" ]; then
+            echo "::notice::RELEASE_NEUTRAL_AT_DECIDE:$(jq -r .reason <<<"$policy_bundle")"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           policy=$(jq -ce '.policy' <<<"$policy_bundle")
           printf '%s\n' "$policy" > "$out/qa-policy.json"
           pr=$(jq -r '.target.pr_number' <<<"$policy")

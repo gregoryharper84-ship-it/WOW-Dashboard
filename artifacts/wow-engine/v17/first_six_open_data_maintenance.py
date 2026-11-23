@@ -232,6 +232,11 @@ def _persist_team_state_batch(db: Any, payload: dict[str, Any]) -> dict[str, Any
             ):
                 raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_TRAINING_ROW_GOVERNANCE_INVALID","can_execute":False})
         else:
+            if str(row.get("source_review_status") or "REQUIRED").strip().upper() == "PASS":
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "D1_CANDIDATE_SOURCE_REVIEW_SELF_APPROVAL_FORBIDDEN", "can_execute": False},
+                )
             required_false = (
                 "promoted",
                 "active",

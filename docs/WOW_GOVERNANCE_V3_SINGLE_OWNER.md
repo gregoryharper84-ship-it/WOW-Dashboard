@@ -36,16 +36,15 @@ Changes to `.github/**`, reviewer decision behavior, secret/permission boundarie
 ### Category interaction
 A change to probability logic, model artifacts, calibration or thresholds may also be protected engineering, but **model activation is a separate gate**, below. Engineering admission does not authorize probability publication.
 
-## 3. Exactly three required GitHub regression checks
+## 3. Current GitHub release policy — live checks, not a frozen count
 
-Ruleset `24907422` was observed to require:
-- `WOW required-three regression`
-- `WOW governed probability backend`
-- `WOW additional required regression`
+The original three native regressions are `WOW required-three regression`, `WOW governed probability backend`, and `WOW additional required regression`. **They are not necessarily the entire required check set.** Historical review chains and obsolete three-check snapshots must not become new merge blockers or waive current checks.
 
-The installed ruleset is the source of truth. Verify its live effective requirements and exact-head app provenance at each release; this document does **not** change branch protection. If the ruleset differs, follow the actual GitHub enforcement and record drift.
+**Verified November 4, 2026:** active ruleset `24907422` additionally requires `WOW Independent QA exact-head` (App `5245832`) and `WOW Release Authority exact-head` (App `5245853`), for **five total required checks**, and sets **zero mandatory approving reviews**. These two App checks can be deterministic in zero-credit mode; their success is not evidence of independent semantic review. This is a dated observation, not a permanent policy declaration.
 
-The optional `WOW Independent Security Review` check and legacy QA/Release App checks do not become additional merge gates through documentation alone. An optional review that reports `HOLD` remains `HOLD`; it is not proof of security review or a manufactured `PASS`.
+For each PR, run `python artifacts/wow-engine/v17/release_truth_preflight.py --repo gregoryharper84-ship-it/WOW-Dashboard --pr-number <PR>` in a GitHub-authenticated read-only environment, or use the existing Engineering digest's live release-truth section. The classifier reads the current active rulesets, exact-head/App checks and merge conflicts; inaccessible evidence is `UNVERIFIED`. A mandatory human review may only be claimed from current applicable rules or a separately stated, verified organizational acceptance contract, not old comments. Branch protection outside these rulesets, semantic findings, Render deployment and model acceptance remain distinct.
+
+The installed ruleset is the source of truth, not this document. This text **never** changes the ruleset or authorizes merging, publishing probability, deploying or execution. An actual substantive security `HOLD` remains `HOLD`, not a fabricated `PASS`.
 
 ## 4. Release invariant: no semantic security laundering
 

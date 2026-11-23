@@ -158,6 +158,21 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     _apply_schema()
     monkeypatch.setenv("WOW_ACTION_API_KEY", "ci-agent-runtime-key")
 
+    from agent_runtime.queue import celery_app
+    from agent_runtime.durable_runner import execute_durable
+
+    assert celery_app.conf.task_always_eager is False, "integration must publish to real Redis"
+    workers = celery_app.control.inspect(timeout=5).stats() or {}
+    assert workers, "no separate Celery worker answered through the real broker"
+    assert all(int(stats["pid"]) != os.getpid() for stats in workers.values())
+
+    # A task executed by this HTTP/test process is a false integration pass.
+    # The independently started worker retains its own unpatched task body.
+    def reject_inline_execution(*_args, **_kwargs):
+        raise AssertionError("durable task executed inline in the API/test process")
+
+    monkeypatch.setattr(execute_durable, "run", reject_inline_execution)
+
     from fastapi.testclient import TestClient
     import api_ncaaf_acceptance as prod
     import ledger
@@ -181,7 +196,7 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
         "user_timezone": "America/Chicago", "discovery_enabled": False,
         "candidate_inputs": [_candidate()], "can_execute": False,
     }
-    headers = {"Idempotency-Key": "ci-agent-runtime-e2e"}
+    headers = {"Idempotency-Key": "ci-agent-runtime-e2e-" + uuid.uuid4().hex}
     first = client.post("/wow/runs", json=body, headers=headers)
     assert first.status_code == 202, first.text
     run_id = first.json()["run_id"]
@@ -209,6 +224,18 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     with psycopg.connect(_pg_dsn()) as conn, conn.cursor() as cur:
         cur.execute("select count(*) from public.wow_agent_terminal_decisions where run_id = %s", (run_id,))
         assert cur.fetchone()[0] == 1
+        cur.execute("select job_id from public.wow_agent_jobs where run_id = %s", (run_id,))
+        job_ids = [str(row[0]) for row in cur.fetchall()]
+
+    assert job_ids, "terminal manifest has no durable worker jobs"
+    for job_id in job_ids:
+        # Results must exist in the real Redis backend as well as Postgres.
+        # With the local task body forbidden, these results can only come from
+        # the separate worker that consumed the queued messages.
+        result = celery_app.AsyncResult(job_id).get(timeout=10)
+        assert result["job_id"] == job_id
+        assert result["run_id"] == run_id
+        assert result["can_execute"] is False
 
 
 # ---------------------------------------------------------------------------

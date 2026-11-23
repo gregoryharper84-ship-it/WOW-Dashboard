@@ -673,3 +673,76 @@ def test_legacy_reservation_altered_identity_is_rejected(key, value):
     fixture.comment["body"] = ledger._body(doc)
     with pytest.raises(probe.ReceiptBlocked):
         fixture.prove()
+
+
+def _exact_late_branchless_fixture(monkeypatch):
+    """Synthetic analogue of the one recorded after-cutoff failed launch."""
+    fixture = FailedLaunchFixture()
+    _legacy(
+        fixture,
+        created="2026-11-01T05:21:32Z",
+        run_created="2026-11-01T05:21:01Z",
+    )
+    monkeypatch.setattr(probe, "EXACT_BRANCHLESS_RECONCILIATION", {
+        "comment_id": FAILED_CID,
+        "body_sha256": hashlib.sha256(fixture.comment["body"].encode()).hexdigest(),
+        "created_at": "2026-11-01T05:21:32Z",
+        "dispatcher_run_id": FAILED_WORKER_RUN,
+        "dispatcher_created_at": "2026-11-01T05:21:01Z",
+    })
+    return fixture
+
+
+def test_late_branchless_exception_is_bound_only_to_real_immutable_record():
+    assert probe.EXACT_BRANCHLESS_RECONCILIATION == {
+        "comment_id": 6553867635,
+        "body_sha256": "e5ee1bfd536f4ee7d25747ee10b14d0eb819d4dc11e569752425843cb015af62",
+        "created_at": "2026-11-01T05:21:32Z",
+        "dispatcher_run_id": 41276607293,
+        "dispatcher_created_at": "2026-11-01T05:21:01Z",
+    }
+
+
+def test_exact_late_branchless_probe_requires_complete_negative_proof(monkeypatch):
+    fixture = _exact_late_branchless_fixture(monkeypatch)
+    receipt = fixture.prove()
+    assert receipt["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
+    assert receipt["agent_status"] == "NEVER_CREATED"
+    assert receipt["reservation"]["legacy_branchless"] is True
+    assert receipt["reservation"]["reservation_sha256"] == hashlib.sha256(
+        fixture.comment["body"].encode()
+    ).hexdigest()
+
+
+@pytest.mark.parametrize("tamper", [
+    lambda f: f.comment.update(updated_at="2026-11-01T05:22:00Z"),
+    lambda f: f.comment.update(created_at="2026-11-01T05:22:00Z"),
+    lambda f: f.origin.update(created_at="2026-11-01T05:21:02Z"),
+    lambda f: f.origin.update(id=FAILED_WORKER_RUN + 1),
+    lambda f: f.origin.update(conclusion="success"),
+    lambda f: setattr(f, "agent_response", {"id": FAILED_AGENT, "status": "IDLE"}),
+    lambda f: setattr(f, "global_pages", [{"items": [], "nextCursor": "unread"}]),
+])
+def test_exact_late_branchless_tampering_or_active_writer_remains_hold(monkeypatch, tamper):
+    fixture = _exact_late_branchless_fixture(monkeypatch)
+    tamper(fixture)
+    with pytest.raises(probe.ReceiptBlocked):
+        fixture.prove()
+
+
+def test_late_branchless_wrong_digest_cannot_recover(monkeypatch):
+    fixture = _exact_late_branchless_fixture(monkeypatch)
+    record = dict(probe.EXACT_BRANCHLESS_RECONCILIATION)
+    record["body_sha256"] = "0" * 64
+    monkeypatch.setattr(probe, "EXACT_BRANCHLESS_RECONCILIATION", record)
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_RESERVATION_IDENTITY_INVALID"):
+        fixture.prove()
+
+
+def test_after_cutoff_other_branchless_reservation_stays_rejected(monkeypatch):
+    fixture = _exact_late_branchless_fixture(monkeypatch)
+    record = dict(probe.EXACT_BRANCHLESS_RECONCILIATION)
+    record["comment_id"] = FAILED_CID + 1
+    monkeypatch.setattr(probe, "EXACT_BRANCHLESS_RECONCILIATION", record)
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_RESERVATION_IDENTITY_INVALID"):
+        fixture.prove()

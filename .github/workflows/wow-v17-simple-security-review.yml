@@ -1,10 +1,10 @@
 name: wow-v17-simple-security-review
 # Independent Claude -> Gemini -> authenticated owner recovery, no certification loop.
 # Owner review never certifies owner-authored source, including App copies.
-# Add WOW Independent Security Review (QA App 5245832) as required after bootstrap.
+# Manual-only independent semantic review; not one of the five pinned required checks.
+# Retired automatic trigger lane: the five pinned main ruleset checks are authoritative.
+# Manual dispatch remains available for non-authoritative historical diagnostics.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -20,6 +20,7 @@ on:
         required: false
         type: boolean
         default: false
+
 permissions:
   contents: read
   pull-requests: read
@@ -46,7 +47,10 @@ jobs:
         with:
           python-version: '3.11'
       - name: Validate reviewer code locally
-        run: python -m unittest discover -s .github/scripts/tests -p test_wow_simple_security_review.py -q
+        run: |
+          python -m unittest discover -s .github/scripts/tests -p test_wow_simple_security_review.py -q
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v28_reviewer_app_preflight.py -q
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v28_gemini_qa_bridge.py -q
       - name: Mint separate QA App checks-only token
         if: inputs.preflight_only != true
         id: qa
@@ -56,6 +60,13 @@ jobs:
           private-key: ${{ secrets.WOW_QA_APP_PRIVATE_KEY }}
           repositories: WOW-Dashboard
           permission-checks: write
+      - name: Verify dedicated reviewer App installation
+        if: inputs.preflight_only == true
+        env:
+          WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
+          WOW_REVIEWER_APP_PRIVATE_KEY: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}
+        run: python .github/scripts/wow_v28_reviewer_app_preflight.py
+
       - name: Authenticate Gemini model without generating content
         if: inputs.preflight_only == true
         env:
@@ -67,7 +78,8 @@ jobs:
         env:
           GH_READ_TOKEN: ${{ github.token }}
           QA_APP_TOKEN: ${{ steps.qa.outputs.token }}
-          WOW_QA_REVIEW_ANTHROPIC_API_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY }}
+          WOW_QA_REVIEW_ANTHROPIC_API_KEY: ''
+          WOW_QA_GEMINI_FREE_TIER_CONFIRMED: ${{ vars.WOW_QA_GEMINI_FREE_TIER_CONFIRMED }}
           WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
           WOW_QA_CLAUDE_MODEL: ${{ vars.WOW_QA_CLAUDE_MODEL }}
           WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}

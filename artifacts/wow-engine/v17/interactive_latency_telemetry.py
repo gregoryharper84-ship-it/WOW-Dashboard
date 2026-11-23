@@ -148,7 +148,9 @@ def _outcome(status_code: int, error: BaseException | None) -> str:
         return "timeout"
     if status_code in _OVERLOAD_STATUS:
         return "overload"
-    if error is not None or status_code >= 500:
+    # HTTP denials and schema failures are not successful Action invocations.
+    # Keep the native HTTP status and do not recast them as fitted-model failures.
+    if error is not None or status_code >= 400:
         return "error"
     return "ok"
 

@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 from v17.team_event_model_development_manifest import development_lane
+from v17.nba_team_event_certification_replay import run_nba_team_event_certification_replay
 
 CAN_EXECUTE = False
 CANDIDATE_TABLE = "wow_d1_candidate_artifacts"
@@ -122,10 +123,44 @@ def _artifact_identity_complete(row: Mapping[str, Any]) -> bool:
 
 
 def _partitions_valid(row: Mapping[str, Any]) -> bool:
-    try:
-        return all(int(row.get(name) or 0) > 0 for name in ("training_rows", "calibration_rows", "test_rows"))
-    except (TypeError, ValueError):
-        return False
+    # bool is an int subclass, and int(3.5) silently truncates. Neither may
+    # satisfy immutable fitted train/calibration/test evidence.
+    return all(
+        type(row.get(name)) is int and row[name] > 0
+        for name in ("training_rows", "calibration_rows", "test_rows")
+    )
+
+
+def _partition_metrics_mismatch(row: Mapping[str, Any]) -> bool:
+    """Audit persisted split counts against fitted metrics, without altering data.
+
+    Some legacy research candidates lack fitted split metrics. Preserve their
+    existing status only when the model family does not require these metrics.
+    The fitted NHL_REGULAR_SEASON_LOGISTIC_V1 family must always provide them;
+    otherwise absence would bypass the very guard against the historical
+    total-as-training split-count defect.
+    """
+    metrics = row.get("validation_metrics")
+    nhl_fitted = str(row.get("model_family") or "").strip().upper() == "NHL_REGULAR_SEASON_LOGISTIC_V1"
+    if metrics is None:
+        return nhl_fitted
+    if not isinstance(metrics, Mapping):
+        return True
+    partitions = (
+        ("training_rows", "train_n"),
+        ("calibration_rows", "calibration_n"),
+        ("test_rows", "test_n"),
+    )
+    if not any(name in metrics for _, name in partitions):
+        return nhl_fitted
+    for column, metric in partitions:
+        stored = row.get(column)
+        reported = metrics.get(metric)
+        if (isinstance(stored, bool) or isinstance(reported, bool)
+                or not isinstance(stored, int) or not isinstance(reported, int)
+                or stored <= 0 or reported <= 0 or stored != reported):
+            return True
+    return False
 
 
 def assess_candidate(
@@ -196,6 +231,8 @@ def assess_candidate(
         blockers.append("CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE")
     if not _partitions_valid(candidate):
         blockers.append("CANDIDATE_PARTITIONS_INVALID")
+    if _partition_metrics_mismatch(candidate):
+        blockers.append("CANDIDATE_PARTITION_METRICS_MISMATCH")
     if candidate.get("research_screen_pass") is not True:
         blockers.append("RESEARCH_SCREEN_FAILED")
 
@@ -295,13 +332,17 @@ def build_certification_report(
         for candidate in sorted(sport_candidates, key=lambda row: _lane_id(row)):
             lid = _lane_id(candidate)
             exact_pass = _evidence_identity(candidate) in exact_passes
+            # A technical replay receipt cannot override the candidate's
+            # independent source-review state.
+            governed_source_pass = str(candidate.get("source_review_status") or "").strip().upper() == "PASS"
+            governed_exact_pass = exact_pass and governed_source_pass
             helper_replay_pass = lane_evidence.get(lid.upper(), sport_evidence.get(sport, False))
             assessed = assess_candidate(
                 sport,
                 candidate,
-                replay_evidence_pass=exact_pass or helper_replay_pass,
-                source_review_evidence_pass=exact_pass,
-                candidate_bound_evidence_pass=exact_pass,
+                replay_evidence_pass=governed_exact_pass or helper_replay_pass,
+                source_review_evidence_pass=governed_exact_pass,
+                candidate_bound_evidence_pass=governed_exact_pass,
             ).as_dict()
             lane_rows.append(assessed)
             all_lane_results.append(assessed)
@@ -332,7 +373,7 @@ def run_certification_replay(db: Any) -> dict[str, Any]:
         db.table(CANDIDATE_TABLE)
         .select(
             "candidate_id,created_at,sport,league,model_family,model_artifact_version,training_dataset_hash,"
-            "training_code_sha,artifact_checksum,training_rows,calibration_rows,test_rows,"
+            "training_code_sha,artifact_checksum,training_rows,calibration_rows,test_rows,validation_metrics,"
             "research_screen_pass,source_review_status,lifecycle_state,promoted,active,"
             "automatic_certification,automatic_promotion,probability_publishable,can_execute"
         )
@@ -355,7 +396,34 @@ def run_certification_replay(db: Any) -> dict[str, Any]:
         receipts = list(getattr(evidence_result, "data", None) or [])
     except Exception:
         receipts = []
-    return build_certification_report(rows, certification_evidence_receipts=receipts)
+    report = build_certification_report(rows, certification_evidence_receipts=receipts)
+    # NBA basketball artifacts are stored outside the D1 candidate registry.
+    # Keep their exact fitted/calibrator/corpus replay visible without converting
+    # a shadow artifact into candidate-bound certification evidence.
+    try:
+        nba_replay = run_nba_team_event_certification_replay(db)
+    except Exception as exc:  # noqa: BLE001 - preserve the shared replay response
+        nba_replay = {
+            "sport": "NBA",
+            "status": "REPLAY_UNCAUGHT_FAILURE",
+            "error_type": type(exc).__name__,
+            "blockers": ["NBA_REPLAY_UNCAUGHT_FAILURE"],
+            "artifact_ready": False,
+            "calibrator_ready": False,
+            "pregame_corpus_ready": False,
+            "exact_bundle_match": False,
+            "numerical_replay_status": "NOT_RUN",
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+    report["nba_team_event_replay"] = nba_replay
+    report["summary"]["nba_team_event_replay_status"] = nba_replay.get("status")
+    report["summary"]["nba_team_event_numerical_replay_status"] = nba_replay.get("numerical_replay_status")
+    report["summary"]["nba_team_event_exact_bundle_match"] = nba_replay.get("exact_bundle_match") is True
+    return report
 
 
 def install_team_event_certification_replay_route(

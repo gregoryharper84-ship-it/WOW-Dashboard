@@ -22,6 +22,8 @@ def read(name: str) -> str:
 def completed_run_sources(name: str) -> set[str]:
     body = read(name)
     head = body.split("\npermissions:", 1)[0]
+    if "\n  workflow_run:" not in head:
+        return set()
     match = re.search(r"(?m)^\s+workflows:\s*\[([^\]\n]*)\]", head)
     assert match is not None, f"Missing or changed workflow_run trigger: {name}"
     return {w.strip() for w in match.group(1).split(",") if w.strip()}
@@ -51,11 +53,11 @@ def test_qa_still_requires_original_independent_regression_triggers():
     assert "workflow_dispatch:" in read("wow-v17-independent-qa-check")
 
 def test_certifier_and_trusted_gate_preserve_exact_lineage():
-    assert completed_run_sources("wow-v17-existing-pr-governance-review") == {"wow-v17-independent-qa-check"}
-    assert completed_run_sources("wow-v17-trusted-governance-gate") == {"wow-v17-existing-pr-governance-review"}
+    assert completed_run_sources("wow-v17-existing-pr-governance-review") == set()
+    assert completed_run_sources("wow-v17-trusted-governance-gate") == set()
     assert completed_run_sources("wow-v17-release-authority-check") == {"wow-v17-independent-qa-check"}
-    assert "pull_request_target:" in read("wow-v17-existing-pr-governance-review")
-    assert "pull_request_target:" in read("wow-v17-trusted-governance-gate")
+    assert "workflow_dispatch:" in read("wow-v17-existing-pr-governance-review")
+    assert "if: ${{ false }}" in read("wow-v17-trusted-governance-gate")
     for name in WORKFLOWS:
         body = read(name)
         assert "permissions:" in body

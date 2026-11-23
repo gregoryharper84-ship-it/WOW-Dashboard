@@ -364,7 +364,7 @@ a{{color:#93c5fd}}
 <div class="notice"><strong>No live trading recommendations.</strong> Independent P(YES)/P(NO), calibration, and fees-adjusted edge are not certified. All entries are NO_PLAY.</div></div>
 <div class="metrics">
 <div class="metric">Forecasts loaded<b>{_h(snapshot["loaded_forecasts"])}</b></div>
-<div class="metric">Unique settled targets (all buckets)<b>{_h(calibration["eligible_unique_settled_samples"])}</b></div>
+<div class="metric">Settled target/bucket samples<b>{_h(calibration["eligible_unique_settled_samples"])}</b></div>
 <div class="metric">Pooled MAE (research only)<b>{_degrees(calibration["historical_mae_f"])}</b></div>
 <div class="metric">Provider freshness verified<b>No</b></div>
 </div>
