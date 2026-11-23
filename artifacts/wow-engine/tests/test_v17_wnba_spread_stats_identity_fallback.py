@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -25,7 +25,15 @@ def test_alias_registry_covers_current_2026_wnba_teams_without_duplicate_espn_id
 
 
 def _ledger_rows(*, home, away, line):
-    """Two-sided main-line pregame observations for the 2099 fixture."""
+    """Two-sided main-line pregame observations for the 2099 fixture.
+
+    Only the event is future-dated. The capture instant is a real past
+    observation, because a quote timestamped in the future is not evidence
+    that the market line was ever observed.
+    """
+    observed_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     common = {
         "provider_event_id": "rd-wnba-1042600122",
         "sport_key": "basketball_wnba",
@@ -33,8 +41,8 @@ def _ledger_rows(*, home, away, line):
         "market_id": "2",
         "market_name": "spreads",
         "sportsbook": "Pinnacle",
-        "price_updated_at": "2099-10-04T12:00:00Z",
-        "fetched_at": "2099-10-04T12:00:00Z",
+        "price_updated_at": observed_at,
+        "fetched_at": observed_at,
         "snapshot_kind": "CURRENT",
         "is_live": False,
         "is_main_line": True,

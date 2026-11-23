@@ -10,6 +10,12 @@ from v17.daily_snapshot_runtime import DailySnapshotRequest, _prop_manifest_rows
 FUTURE_DT = datetime.now(timezone.utc) + timedelta(hours=12)
 FUTURE = FUTURE_DT.isoformat()
 SLATE_DATE = FUTURE_DT.astimezone(ZoneInfo("America/Chicago")).date().isoformat()
+# Only the event is future-dated. A market quote must already have been
+# observed, and the model must score after that quote and before now.
+QUOTE_DT = datetime.now(timezone.utc) - timedelta(minutes=15)
+QUOTE = QUOTE_DT.isoformat()
+MODEL_DT = QUOTE_DT + timedelta(minutes=10)
+SOURCE_SNAPSHOT_DT = QUOTE_DT - timedelta(minutes=10)
 
 
 class Result:
@@ -978,7 +984,7 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
 def test_spread_lane_binds_the_ledger_line_and_holds_without_a_model():
     from v17.daily_snapshot_runtime import _spread_lane_rows
 
-    quote_at = (FUTURE_DT - timedelta(hours=1)).isoformat()
+    quote_at = QUOTE
     common = {
         "provider_event_id": "rd-nfl-7001",
         "sport_key": "americanfootball_nfl",
@@ -1059,7 +1065,7 @@ def test_spread_lane_persists_rows_for_the_authenticated_readback(monkeypatch):
 
 def _nfl_spread_lane_fixture(db):
     """Ledger-bound NFL event identity for the spread lane."""
-    quote_at = (FUTURE_DT - timedelta(hours=2)).isoformat()
+    quote_at = QUOTE
     common = {
         "provider_event_id": "rd-nfl-7001",
         "sport_key": "americanfootball_nfl",
@@ -1106,18 +1112,18 @@ def certified_spread_receipt(**overrides):
         "calibrated_upper_bound": 0.61,
         "probability_publishable": True,
         "rank_eligible": True,
-        "model_timestamp": (FUTURE_DT - timedelta(minutes=30)).isoformat(),
+        "model_timestamp": MODEL_DT.isoformat(),
         "event_state": "SCHEDULED",
         "score_snapshot_status": "PASS",
         "can_execute": False,
         "source_receipt_id": "receipt-spread-1",
         "provider_event_id": "rd-nfl-7001",
         "quote_sportsbook": "Pinnacle",
-        "quote_observed_at_utc": (FUTURE_DT - timedelta(hours=2)).isoformat(),
+        "quote_observed_at_utc": QUOTE,
         "model_class": "CERTIFIED_FITTED",
         "model_version": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
         "calibration_version": "cal-v1",
-        "source_snapshot_timestamp": (FUTURE_DT - timedelta(minutes=40)).isoformat(),
+        "source_snapshot_timestamp": SOURCE_SNAPSHOT_DT.isoformat(),
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "controlling_engine_identity": "LLP_TEAM_BETTING_ENGINE",
         # The governed relation only stores admitted receipts; a row without it
@@ -1203,7 +1209,7 @@ def test_governed_receipt_completes_the_spread_row():
     [
         ({"provider_event_id": "OTHER_PROVIDER_EVENT"}, "SPREAD_RECEIPT_PROVIDER_EVENT_MISMATCH"),
         ({"quote_sportsbook": "OtherBook"}, "SPREAD_RECEIPT_BOOK_MISMATCH"),
-        ({"quote_observed_at_utc": (FUTURE_DT - timedelta(hours=1)).isoformat()},
+        ({"quote_observed_at_utc": (QUOTE_DT - timedelta(minutes=30)).isoformat()},
          "SPREAD_RECEIPT_QUOTE_TIME_MISMATCH"),
         ({"quote_observed_at_utc": "not-a-date"}, "SPREAD_RECEIPT_QUOTE_TIME_MISMATCH"),
     ],
