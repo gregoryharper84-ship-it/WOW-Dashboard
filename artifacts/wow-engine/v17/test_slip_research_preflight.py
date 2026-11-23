@@ -79,6 +79,26 @@ def prop(row, event, *, player="NUGGETS-15", team="HOME", line=24.5):
     return data
 
 
+def post_news_receipt(candidate):
+    """A complete *claimed* post-news receipt; never independently authenticated."""
+    news = candidate["news_evidence"]
+    return dict(
+        immutable_pregame_receipt_id=news["new_model_receipt_id"],
+        fitted_model_hash="synthetic-fitted-model",
+        calibration_receipt_id="synthetic-calibration",
+        consumed_news_review_receipt_id=news["independent_review_receipt_id"],
+        frozen_at_utc="2026-11-19T23:55:00Z",
+        sport=candidate["sport"], official_event_id=candidate["official_event_id"],
+        market_family=candidate["market_family"],
+        market_period=candidate["market_period"], side=candidate["side"],
+        settlement_basis=candidate["settlement_basis"],
+        exact_line=candidate["exact_line"],
+        official_player_id=candidate.get("official_player_id"),
+        stat_type=candidate.get("stat_type"),
+        selected_team_id=candidate.get("selected_team_id"),
+    )
+
+
 def cards(*rows):
     return [{"card_id": f"slip-{i}", "structure": "FLEX", "legs": list(legs)}
             for i, legs in enumerate(rows)]
@@ -271,7 +291,11 @@ def test_player_team_transfer_injury_news_and_material_rescore_hold():
     player["news_evidence"]["material_change"] = True
     out = audit_research_slips(cards([player, leg("other", "other")]), as_of_utc=AS_OF)
     assert "MATERIAL_NEWS_RESCORE_NOT_VERIFIED" in out["cards"][0]["blockers"]
+    # An arbitrary text receipt ID must not clear a material-news hold.
     player["news_evidence"]["new_model_receipt_id"] = "synthetic-refresh"
+    out = audit_research_slips(cards([player, leg("other", "other")]), as_of_utc=AS_OF)
+    assert "MATERIAL_NEWS_RESCORE_NOT_VERIFIED" in out["cards"][0]["blockers"]
+    player["news_evidence"]["new_model_receipt"] = post_news_receipt(player)
     out = audit_research_slips(cards([player, leg("other", "other")]), as_of_utc=AS_OF)
     assert out["cards"][0]["status"] == "RESEARCH_CONTEXT_REVIEWABLE_UNCERTIFIED"
     assert not out["cards"][0]["model_rescore_verified"]
@@ -342,3 +366,88 @@ def test_invalid_asof_and_missing_card_handled_explicitly():
     out = audit_research_slips([{"card_id": "bad", "legs": [None]}], as_of_utc=AS_OF)
     assert "RESEARCH_LEG_INVALID" in out["cards"][0]["blockers"]
     assert out["can_execute"] is False
+
+
+SPORTS_13 = (
+    "NFL", "NBA", "NHL", "NCAAF", "MLB", "WNBA", "NCAAB",
+    "SOCCER", "TENNIS", "GOLF", "MMA", "BOXING", "CRICKET",
+)
+
+
+@pytest.mark.parametrize("sport", SPORTS_13)
+@pytest.mark.parametrize("market,side,line", [
+    ("MONEYLINE", "HOME", None),
+    ("POINT_SPREAD", "AWAY", -3.5),
+    ("GAME_TOTAL", "UNDER", 218.5),
+    ("TEAM_TOTAL", "OVER", 110.5),
+    ("PLAYER_PROP", "UNDER", 8.5),
+])
+def test_all_sports_all_markets_hold_old_receipt_after_material_change(sport, market, side, line):
+    candidate = leg("person", "evt-1", sport=sport, market=market, side=side, line=line)
+    candidate["news_evidence"]["material_change"] = True
+    candidate["news_evidence"]["new_model_receipt_id"] = "new-receipt"
+    # Regression: a bare ID is not proof of post-change specialist consumption.
+    out = audit_research_slips(cards([candidate, leg("other", "evt-2")]), as_of_utc=AS_OF)
+    assert "MATERIAL_NEWS_RESCORE_NOT_VERIFIED" in out["cards"][0]["blockers"]
+    assert out["cards"][0]["can_publish_as_certified"] is False
+    assert out["cards"][0]["joint_probability"] is None
+
+
+@pytest.mark.parametrize("mutation", [
+    "stale", "after-start", "wrong-event", "wrong-market", "wrong-side",
+    "wrong-line", "wrong-review", "wrong-stat", "wrong-player",
+])
+def test_post_change_scorer_claim_must_match_exact_market_and_news(mutation):
+    p = prop("hart", "nba-nyk", player="NBA-HART", line=8.5)
+    p["stat_type"] = "REBOUNDS"
+    p["market_quote"]["stat_type"] = "REBOUNDS"
+    p["news_evidence"]["material_change"] = True
+    p["news_evidence"]["new_model_receipt_id"] = "new-receipt"
+    receipt = post_news_receipt(p)
+    if mutation == "stale":
+        receipt["frozen_at_utc"] = "2026-11-19T23:00:00Z"
+    elif mutation == "after-start":
+        receipt["frozen_at_utc"] = "2026-11-20T02:01:00Z"
+    elif mutation == "wrong-event":
+        receipt["official_event_id"] = "other"
+    elif mutation == "wrong-market":
+        receipt["market_family"] = "MONEYLINE"
+    elif mutation == "wrong-side":
+        receipt["side"] = "OVER"
+    elif mutation == "wrong-line":
+        receipt["exact_line"] = 9.5
+    elif mutation == "wrong-review":
+        receipt["consumed_news_review_receipt_id"] = "old-news"
+    elif mutation == "wrong-stat":
+        receipt["stat_type"] = "POINTS"
+    elif mutation == "wrong-player":
+        receipt["official_player_id"] = "NBA-KAT"
+    p["news_evidence"]["new_model_receipt"] = receipt
+    out = audit_research_slips(cards([p, leg("other", "nba-other")]), as_of_utc=AS_OF)
+    assert "MATERIAL_NEWS_RESCORE_NOT_VERIFIED" in out["cards"][0]["blockers"]
+
+
+def test_scout_context_invalidation_holds_a_card_even_if_news_field_claims_no_change():
+    x = leg("hart", "nba-nyk", market="POINT_SPREAD", side="HOME", line=-3.5)
+    x["news_evidence"]["material_change"] = False
+    x["context_change_impact"] = {
+        "impact_status": "CONTEXT_STALE_RECALC_REQUIRED",
+        "research_invalidation_requested": True,
+        "affected_market_families": ["SPREAD_HANDICAP", "PARTICIPANT_PROP_UNDER"],
+    }
+    out = audit_research_slips(cards([x, leg("other", "other")]), as_of_utc=AS_OF)
+    assert "CONTEXT_STALE_RECALC_REQUIRED" in out["cards"][0]["blockers"]
+    assert out["cards"][0]["can_publish_as_certified"] is False
+
+
+def test_research_completeness_never_authenticates_post_news_fitted_consumption():
+    x = prop("hart", "nba-nyk", player="NBA-HART", line=8.5)
+    x["news_evidence"]["material_change"] = True
+    x["news_evidence"]["new_model_receipt_id"] = "new-receipt"
+    x["news_evidence"]["new_model_receipt"] = post_news_receipt(x)
+    out = audit_research_slips(cards([x, leg("other", "other")]), as_of_utc=AS_OF)
+    assert out["cards"][0]["blockers"] == []
+    assert out["cards"][0]["status"] == "RESEARCH_CONTEXT_REVIEWABLE_UNCERTIFIED"
+    assert out["cards"][0]["can_publish_as_certified"] is False
+    assert out["cards"][0]["model_rescore_verified"] is False
+    assert out["joint_probability"] is None
