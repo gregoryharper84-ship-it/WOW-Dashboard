@@ -22,8 +22,9 @@ def candidate(**overrides):
 def receipt():
     """Structurally realistic local runner receipt; fabricated facts are test-only."""
     from datetime import timedelta
-    event = candidate()
-    run_id = "f" * 20
+    canonical = native.build_manifest(candidate(), max_parallel=2)
+    event = canonical["event"]
+    run_id = canonical["run_id"]
     fact = {
         "feature": "opponent_adjusted_strength",
         "value": "private-source-only-value",
@@ -267,3 +268,55 @@ def test_malformed_digest_object_never_leaks_secret(monkeypatch):
     assert summary["reason_code"] == "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"
     assert summary["receipt_sha256"] is None
     assert "extremely-secret-value" not in str(summary)
+
+
+
+def test_forged_uncleared_rights_in_both_worker_and_handoff_are_held(monkeypatch):
+    fake = receipt()
+    fake["worker_reports"][3]["facts"][0]["source_rights_status"] = "REVIEW_REQUIRED"
+    fake["handoff"]["source_screened_research_facts"][0]["source_rights_status"] = "REVIEW_REQUIRED"
+    monkeypatch.setattr(native, "run_swarm", lambda *args, **kwargs: fake)
+    summary = _native_swarm_summary(candidate())
+    assert summary["reason_code"] == "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"
+    assert summary["research_facts_screened"] == 0
+    assert summary["workers_completed"] == 0
+
+
+def test_forged_matching_event_id_with_different_time_and_run_id_is_held(monkeypatch):
+    fake = receipt()
+    forged = native.build_manifest({
+        **candidate(), "commence_time": "2100-01-01T00:00:00Z",
+    }, max_parallel=2)
+    fake["event"] = forged["event"]
+    fake["run_id"] = forged["run_id"]
+    for report in fake["worker_reports"]:
+        report["run_id"] = forged["run_id"]
+    monkeypatch.setattr(native, "run_swarm", lambda *args, **kwargs: fake)
+    summary = _native_swarm_summary(candidate())
+    assert summary["reason_code"] == "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"
+    assert summary["receipt_sha256"] is None
+    assert summary["workers_completed"] == 0
+
+
+def test_valid_candidate_but_actual_local_worker_invalid_is_runtime_hold(monkeypatch):
+    original = native._local_worker
+
+    def invalid_worker(*args, **kwargs):
+        report = original(*args, **kwargs)
+        if report["worker_id"] == native.WORKERS[0]:
+            report["can_execute"] = True
+        return report
+
+    monkeypatch.setattr(native, "_local_worker", invalid_worker)
+    summary = _native_swarm_summary(candidate())
+    assert summary["reason_code"] == "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"
+    assert summary["status"] == "RESEARCH_ONLY_HOLD"
+    assert summary["workers_completed"] == 0
+    assert summary["can_execute"] is False
+
+
+def test_malformed_candidate_time_is_input_hold_before_worker_admission(monkeypatch):
+    monkeypatch.setattr(native, "run_swarm", lambda *args, **kwargs: pytest.fail("worker must not start"))
+    summary = _native_swarm_summary(candidate(commence_time="bad timestamp"))
+    assert summary["reason_code"] == "NATIVE_SWARM_INPUT_INVALID"
+    assert summary["workers_completed"] == 0
