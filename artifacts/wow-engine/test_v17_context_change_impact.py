@@ -242,6 +242,10 @@ def test_material_news_from_one_role_quarantines_all_same_event_candidate_positi
     props = out["model_handoff"]["prop_candidates"]
     assert teams[0]["research_recommendation_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
     assert all(p["research_recommendation_status"] == "CONTEXT_STALE_RECALC_REQUIRED" for p in props[:2])
+    assert all(p["research_status"] == "QUARANTINED" for p in props[:2])
+    assert teams[0]["research_status"] == "QUARANTINED"
+    assert all("CONTEXT_STALE_RECALC_REQUIRED" in p["research_blockers"] for p in props[:2])
+    assert out["research_promotion"]["status_counts"]["QUARANTINED"] >= 3
     assert all(p["context_change_impact"]["propagated_from_event_peer"] is True for p in props[:2])
     assert all(p["context_change_impact"]["no_position_exclusions"] is True for p in props[:2])
     assert props[2]["context_change_impact"]["research_invalidation_requested"] is False
