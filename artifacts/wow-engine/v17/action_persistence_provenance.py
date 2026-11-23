@@ -269,7 +269,7 @@ def readback_durable_receipt_row(db: Any, receipt_id: str) -> dict[str, Any] | N
         (
             PICK_REQUEST_RUN_TABLE,
             "request_id",
-            "request_id,created_at,status",
+            "run_id,request_id,created_at,run_status",
         ),
         (
             SCOUT_HANDOFF_JOB_TABLE,
