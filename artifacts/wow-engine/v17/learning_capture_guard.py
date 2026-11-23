@@ -94,9 +94,17 @@ def capture_eligibility(
 
     result = str(settlement.get("official_result") or "").strip().upper()
     if kind == "EVENT":
-        # Home binary observation is invalid for draw-enabled 1X2.
+        # Soccer's canonical OUTRIGHT_WINNER contract is draw-enabled even
+        # when its market-family label does not literally contain "1X2".
         family = str(prediction.get("market_family") or "").upper()
-        if "1X2" in family or family in {"THREE_WAY", "THREE_WAY_WINNER"}:
+        from v17.team_event_governance_profiles import governance_profile
+        profile = governance_profile(str(prediction.get("sport") or ""))
+        three_way = (
+            profile is not None
+            and profile.outcome_space == "HOME_DRAW_AWAY"
+            and family in {"OUTRIGHT_WINNER", "SOCCER_1X2"}
+        )
+        if three_way or "1X2" in family or family in {"THREE_WAY", "THREE_WAY_WINNER"}:
             return "MULTICLASS_ROUTE_REQUIRED"
         if not (prediction.get("model_artifact_id")
                 and prediction.get("controlling_specialist")
