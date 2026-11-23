@@ -276,3 +276,67 @@ def test_mismatched_context_receipt_does_not_poison_peer_event(monkeypatch):
     assert out["model_handoff"]["prop_candidates"][0][
         "context_change_impact"]["research_invalidation_requested"] is False
     assert out["context_impact_summary"]["same_event_peer_rows_quarantined"] == 0
+
+
+def test_nested_event_request_start_is_valid_for_impact_and_peer_matching(monkeypatch):
+    from v17 import sport_scout_enrichment as scout
+    start = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    row = event()
+    row.pop("commence_time")
+    row["event_request"] = {"event_start_time_utc": start}
+    impact = assess_context_change_impact(row)
+    assert impact["impact_status"] == "NO_MATERIAL_EVENT_RECEIPT"
+    assert impact["event_start_utc"] == start
+    news = material_handoff()
+    news["event_start_utc"] = start
+    news["news_context"][0]["independently_reviewed_at_utc"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=5)
+    ).isoformat()
+    monkeypatch.setattr(scout, "reconcile_news_handoff", lambda *_args, **_kwargs: news)
+    trigger = dict(row, news_discovery_receipt={"fixture": True})
+    peer = dict(row)
+    peer["candidate_id"] = "HART"
+    out = scout.enrich_handoff({
+        "can_execute": False,
+        "model_handoff": {"team_event_candidates": [trigger], "prop_candidates": [peer]},
+    })
+    assert out["model_handoff"]["team_event_candidates"][0][
+        "context_change_impact"]["impact_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert out["model_handoff"]["prop_candidates"][0][
+        "context_change_impact"]["propagated_from_event_peer"] is True
+    assert out["context_impact_summary"]["same_event_peer_rows_quarantined"] == 1
+
+
+def test_durable_queue_cannot_repromote_material_context_quarantine():
+    from v17.scout_research_promotion import evaluate_candidate
+    from v17.scout_handoff_queue import _research_gate
+    row = {
+        "sport_key": "basketball_nba",
+        "official_event_id": "nba-event",
+        "commence_time": "2026-11-24T23:00:00Z",
+        "home_team": "Home", "away_team": "Away",
+        "research_status": "RESEARCH_INTEREST_HIGH",
+        "context_change_impact": {
+            "impact_status": "CONTEXT_STALE_RECALC_REQUIRED",
+            "research_invalidation_requested": True,
+        },
+    }
+    evaluation = evaluate_candidate(row)
+    assert evaluation["research_status"] == "QUARANTINED"
+    assert evaluation["red_team"]["status"] == "QUARANTINED"
+    assert "CONTEXT_STALE_RECALC_REQUIRED" in evaluation["red_team"]["flags"]
+    priority, gate, evidence = _research_gate(row)
+    assert priority == "UNRANKED"
+    assert gate == "HANDOFF_BLOCKED"
+    assert evidence["research_status"] == "QUARANTINED"
+    assert evidence["code"] == "SCOUT_RED_TEAM_QUARANTINED"
+
+
+def test_durable_queue_cannot_repromote_legacy_context_status():
+    from v17.scout_handoff_queue import _research_gate
+    candidate = event()
+    candidate["research_recommendation_status"] = "CONTEXT_STALE_RECALC_REQUIRED"
+    priority, gate, evidence = _research_gate(candidate)
+    assert priority == "UNRANKED"
+    assert gate == "HANDOFF_BLOCKED"
+    assert evidence["research_status"] == "QUARANTINED"
