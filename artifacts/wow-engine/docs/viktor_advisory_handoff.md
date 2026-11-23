@@ -1,6 +1,6 @@
 # Viktor audit → WOW V17 existing engineering workers (P candidate)
 
-Status: PROTECTED DRAFT, NOT FOR MERGE OR ACTIVATION.
+Status: PROTECTED REVIEW CANDIDATE, NOT MERGED OR ACTIVE. Do not merge until current exact-head P-class evidence and owner authorization pass.
 Identity: WOW_BETTING_ENGINE / V17_ACTIVE / V17_TERMINAL_REDUCER; can_execute=false; DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true.
 
 The existing hourly dispatcher, approved manifest, GitHub issue state, single-writer lease and protected approvals remain authoritative. Issue comments do NOT trigger workers.
@@ -20,7 +20,7 @@ Hashes above are placeholders, not evidence. Use exact observed 40-char current 
 - Existing worker context, model authority, certification, approval, leases and release remain unchanged. Every evidence link is independently reverified.
 
 ## Release prerequisites
-1. Independently enforce review on main first. Read on 2026-11-22: ruleset 24907422 requires zero approving PR reviews and no code-owner review. Preserve all three existing required checks, zero bypass actors and stale-approval dismissal; require at least one independent non-author approval. Current CODEOWNERS assigns .github/** only to the owner, so mandatory code-owner review of owner-authored PRs requires a separate eligible code owner first; never create an unreviewable gate.
+1. Use the owner-approved zero-mandatory-human-review policy in docs/WOW_STABILITY_FIRST_MINIMUM_GOVERNANCE.md (issue #1830); do not introduce a single-owner review deadlock. Preserve GitHub ruleset 24907422's three App-pinned required regressions, strict exact-head checks, stale-review dismissal, deletion/non-fast-forward protection and zero bypass. P-class release still requires negative-security tests, independently sourced exact-head QA App (5245832) and Release Authority App (5245853) evidence, substantive findings resolved and authenticated owner release authorization. Automated check PASS is not an independent semantic review or permission to merge.
 2. Review the actual Viktor App installation's permissions; the App advertises broad Actions, contents, workflows and pull-request write rights. Scope it to least privilege before go-live.
 3. Exact-head CI and independent QA/Release/Security sign-off for the two protected worker workflow edits (class P).
 4. Verify a real admitted worker reads an authenticated Viktor pointer for an OPEN registered issue without duplicate dispatch or model release. A verified comment is not a worker run.
