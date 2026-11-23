@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from v17.sport_scout_enrichment import enrich_candidate, _native_swarm_summary
+from v17.sport_scout_enrichment import (enrich_candidate, _native_swarm_summary,
+                                        request_one_verified_native_swarm_pilot)
 from tools import wow_specialized_swarm as native
 
 
@@ -365,3 +366,141 @@ def test_native_swarm_direct_cli_without_pythonpath(tmp_path):
     assert summary["paid_provider_calls"] == 0
     assert summary["can_execute"] is False
     assert receipt["can_execute"] is False
+
+
+def _pilot_payload(*rows):
+    return {
+        "can_execute": False,
+        "model_handoff": {
+            "team_event_candidates": list(rows),
+            "prop_candidates": [],
+        },
+    }
+
+
+def _verified_nhl(**overrides):
+    return {
+        "sport_key": "icehockey_nhl",
+        "official_event_id": "2026020385",
+        "canonical_event_id": "2026020385",
+        "official_event_identity_verified": True,
+        "canonical_identity_status": "CANONICAL_RESOLVED",
+        "commence_time": "2026-11-25T01:00:00Z",
+        "home_team": "Edmonton Oilers",
+        "away_team": "Vegas Golden Knights",
+        "can_execute": False,
+        **overrides,
+    }
+
+
+def test_verified_pilot_one_actual_canonical_event_not_mutating_input():
+    now = datetime(2026, 11, 23, 23, tzinfo=timezone.utc)
+    wrong = _verified_nhl(official_event_identity_verified=False)
+    valid = _verified_nhl()
+    source = _pilot_payload(wrong, valid)
+    out = request_one_verified_native_swarm_pilot(source, now=now)
+    rows = out["model_handoff"]["team_event_candidates"]
+    assert out["native_swarm_pilot"]["status"] == "VERIFIED_EVENT_OPTED_IN"
+    assert out["native_swarm_pilot"]["requested_count"] == 1
+    assert rows[0].get("native_swarm_requested") is not True
+    assert rows[1]["native_swarm_requested"] is True
+    assert source["model_handoff"]["team_event_candidates"][1].get("native_swarm_requested") is None
+    assert out["native_swarm_pilot"]["paid_provider_calls"] == 0
+    assert out["native_swarm_pilot"]["can_execute"] is False
+
+
+@pytest.mark.parametrize("invalid", [
+    {"official_event_identity_verified": False},
+    {"canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED"},
+    {"canonical_event_id": "not-the-canonical-official-id"},
+    {"can_execute": True},
+    {"commence_time": "malformed"},
+    {"commence_time": "2026-11-23T23:10:00Z"},
+])
+def test_verified_pilot_rejects_untrusted_or_imminent_event(invalid):
+    now = datetime(2026, 11, 23, 23, tzinfo=timezone.utc)
+    row = _verified_nhl()
+    row.update(invalid)
+    result = request_one_verified_native_swarm_pilot(_pilot_payload(row), now=now)
+    assert result["native_swarm_pilot"]["status"] == "NO_VERIFIED_FUTURE_EVENT"
+    assert result["native_swarm_pilot"]["requested_count"] == 0
+    assert result["model_handoff"]["team_event_candidates"][0].get("native_swarm_requested") is not True
+
+
+def test_verified_pilot_does_not_duplicate_an_existing_explicit_optin():
+    now = datetime(2026, 11, 23, 23, tzinfo=timezone.utc)
+    first = _verified_nhl(native_swarm_requested=True)
+    second = _verified_nhl(official_event_id="2026020386", canonical_event_id="2026020386")
+    result = request_one_verified_native_swarm_pilot(_pilot_payload(first, second), now=now)
+    assert result["native_swarm_pilot"]["status"] == "EXPLICIT_CANDIDATE_OPT_IN_ALREADY_PRESENT"
+    assert result["model_handoff"]["team_event_candidates"][1].get("native_swarm_requested") is None
+
+
+def test_verified_pilot_rejects_execution_authority_before_admission():
+    with pytest.raises(ValueError, match="SCOUT_HANDOFF_CAN_EXECUTE_MUST_BE_FALSE"):
+        request_one_verified_native_swarm_pilot(
+            {"can_execute": True, "model_handoff": {"team_event_candidates": [_verified_nhl()]}}
+        )
+
+
+def test_actual_local_swarm_on_verified_nhl_without_clearance_holds():
+    row = _verified_nhl(
+        commence_time="2099-01-01T00:00:00Z",
+        native_swarm_requested=True,
+    )
+    result = enrich_candidate(row, "TEAM_EVENT")
+    summary = result["native_swarm_summary"]
+    assert summary["status"] == "RESEARCH_ONLY_HOLD"
+    assert summary["workers_completed"] == 5
+    assert summary["research_facts_screened"] == 0
+    assert summary["independent_source_verification"] is False
+    assert summary["paid_provider_calls"] == 0
+    assert summary["external_llm_calls"] == 0
+    assert summary["can_execute"] is False
+    assert summary["may_publish_or_qualify"] is False
+    assert len(summary["receipt_sha256"]) == 64
+
+
+def test_live_scout_workflow_explicit_optin_and_archived_bounded_receipt():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-nightly-multiscout.yml").read_text()
+    assert "--native-swarm-verified-pilot" in workflow
+    assert "native-swarm-receipt.json" in workflow
+    assert "NATIVE_SWARM_PILOT_RECEIPT_MISSING" in workflow
+
+
+def test_direct_cli_verified_pilot_generates_real_research_hold(tmp_path):
+    import json
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    engine_root = Path(__file__).resolve().parents[1]
+    source = tmp_path / "scout-input.json"
+    output = tmp_path / "scout-output.json"
+    source.write_text(json.dumps(_pilot_payload(_verified_nhl(
+        commence_time="2099-01-01T00:00:00Z"
+    )) | {"can_execute": False}), encoding="utf-8")
+    # Ensure root CLI sees the same controlled opt-in as GitHub Actions.
+    result = subprocess.run(
+        [sys.executable, str(engine_root / "v17/sport_scout_enrichment.py"),
+         "--input", str(source), "--output", str(output),
+         "--native-swarm-verified-pilot"],
+        cwd=engine_root,
+        env={**os.environ, "PYTHONPATH": ""},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-1500:]
+    artifact = json.loads(output.read_text(encoding="utf-8"))
+    assert artifact["native_swarm_pilot"]["status"] == "VERIFIED_EVENT_OPTED_IN"
+    row = artifact["model_handoff"]["team_event_candidates"][0]
+    assert row["native_swarm_requested"] is True
+    assert row["native_swarm_summary"]["status"] == "RESEARCH_ONLY_HOLD"
+    assert row["native_swarm_summary"]["workers_completed"] == 5
+    assert row["native_swarm_summary"]["paid_provider_calls"] == 0
+    assert artifact["can_execute"] is False
