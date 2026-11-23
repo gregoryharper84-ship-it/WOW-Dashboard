@@ -31,6 +31,75 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
 
+
+def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Optional, bounded summary-only native research; no raw source payload export.
+
+    Opt-in is explicit per candidate; absence leaves existing Scout behavior
+    untouched. Even a successful Swarm receipt has no scoring or release power.
+    """
+    base = {
+        "schema_version": "wow.v17.native_swarm_handoff_summary.v1",
+        "status": "RESEARCH_ONLY_HOLD",
+        "reason_code": None,
+        "receipt_sha256": None,
+        "research_facts_screened": 0,
+        "missing_evidence_count": 0,
+        "conflicts_count": 0,
+        "workers_completed": 0,
+        "external_llm_calls": 0,
+        "paid_provider_calls": 0,
+        "independent_source_verification": False,
+        "specialist_rescore_verified": False,
+        "may_publish_or_qualify": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+    if candidate.get("can_execute") is not False:
+        return {**base, "reason_code": "NATIVE_SWARM_INPUT_INVALID"}
+    event_request = candidate.get("event_request")
+    event_request = event_request if isinstance(event_request, dict) else {}
+    start = (candidate.get("commence_time") or candidate.get("event_start_utc")
+             or candidate.get("event_start_time_utc")
+             or event_request.get("event_start_time_utc"))
+    normalized = {**candidate, "commence_time": start}
+    try:
+        from tools.wow_specialized_swarm import run_swarm
+        receipt = run_swarm(normalized, max_parallel=2)
+    except (ValueError, TypeError, KeyError):
+        return {**base, "reason_code": "NATIVE_SWARM_INPUT_INVALID"}
+    except Exception:
+        # Never expose provider, credential or source values in a public handoff.
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    if not isinstance(receipt, dict):
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    handoff = receipt.get("handoff")
+    workers, reviews = receipt.get("worker_reports"), receipt.get("wave_reviews")
+    if (receipt.get("status") not in ("RESEARCH_ONLY_HOLD", "RESEARCH_ONLY_SCREENED")
+            or receipt.get("policy", {}).get("can_execute") is not False
+            or receipt.get("external_llm_calls") != 0
+            or receipt.get("paid_provider_calls") != 0
+            or not isinstance(handoff, dict)
+            or handoff.get("can_execute") is not False
+            or handoff.get("may_publish_or_qualify") is not False
+            or handoff.get("probability_authority") is not False
+            or not isinstance(workers, list) or len(workers) != 5
+            or not isinstance(reviews, list) or len(reviews) < 1
+            or not all(isinstance(v, dict) and v.get("all_structurally_valid") is True for v in reviews)
+            or not isinstance(handoff.get("source_screened_research_facts"), list)
+            or not isinstance(handoff.get("missing_evidence"), list)
+            or not isinstance(handoff.get("conflicts"), list)):
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    return {
+        **base, "status": receipt["status"],
+        "receipt_sha256": receipt.get("receipt_sha256"),
+        "research_facts_screened": len(handoff["source_screened_research_facts"]),
+        "missing_evidence_count": len(handoff["missing_evidence"]),
+        "conflicts_count": len(handoff["conflicts"]),
+        "workers_completed": len(workers),
+    }
+
+
 def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None,
                      public_news_sha256: str | None = None) -> dict[str, Any]:
     enriched = dict(row)
@@ -53,6 +122,8 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
     # Mandatory per-event review request: report what was actually screened,
     # rather than treating a game-script hypothesis as completed research.
     enriched["matchup_discovery"] = discover_matchup(enriched)
+    if row.get("native_swarm_requested") is True:
+        enriched["native_swarm_summary"] = _native_swarm_summary(enriched)
     enriched["news_intelligence_status"] = "NEWS_NOT_OBSERVED"
     enriched["news_latest_verified_at_utc"] = None
     enriched["news_model_rescore_verified"] = False
