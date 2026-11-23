@@ -1,6 +1,8 @@
 """Official NHL Multiscout identity mapping regressions."""
 from __future__ import annotations
 
+import json
+
 from v17.nhl_multiscout_identity import resolve_multiscout_nhl_identity
 
 
@@ -9,6 +11,9 @@ class _Response:
 
     def __init__(self, payload):
         self.payload = payload
+        # Identity is matched from these bytes and their SHA-256 is recorded, so
+        # a schedule fixture has to provide the body, not only a parsed payload.
+        self.content = json.dumps(payload).encode()
 
     def json(self):
         return self.payload
@@ -79,6 +84,10 @@ def test_provider_alias_maps_to_distinct_official_nhl_event_id():
     assert out["event_start_utc"] == "2026-11-24T00:30:00+00:00"
     assert out["canonical_identity_event_start_utc"] == "2026-11-24T00:30:00+00:00"
     assert out["canonical_identity_receipt"]["event_id"] == "2026020381"
+    assert len(out["canonical_identity_match_sha256"]) == 64
+    assert out["canonical_identity_receipt"]["identity_match_sha256"] == out["canonical_identity_match_sha256"]
+    assert out["canonical_identity_receipt"]["identity_match"]["id"] == "2026020381"
+    assert out["canonical_identity_receipt"]["identity_match"]["homeTeam"]["abbrev"] == "NYI"
     assert out["canonical_identity_receipt"]["can_execute"] is False
     assert out["can_execute"] is False
     assert "/club-schedule-season/NYI/" in session.calls[0][0]
@@ -101,3 +110,21 @@ def test_non_nhl_rows_are_untouched():
     row = _nhl_row(sport_key="basketball_nba")
     out = resolve_multiscout_nhl_identity(row, session=_Session(_schedule_payload()))
     assert out == row
+
+
+
+def test_no_matched_game_hash_keeps_nhl_provider_alias_unverified(monkeypatch):
+    from v17 import nhl_multiscout_identity as bridge
+    monkeypatch.setattr(bridge, "resolve_nhl_current_event_identity", lambda **_kwargs: {
+        "event_id": "2026020381",
+        "identity_provider": "NHL_PUBLIC_WEB_API",
+        "identity_verified_at": "2026-11-22T22:29:57Z",
+        "event_start_time": "2026-11-24T00:30:00Z",
+        "home_team": "NYI", "away_team": "TOR",
+        "identity_match_sha256": None,
+    })
+    result = bridge.resolve_multiscout_nhl_identity(_nhl_row())
+    assert result["canonical_event_id"] is None
+    assert result["official_event_identity_verified"] is False
+    assert result["canonical_identity_blocker"] == "NHL_IDENTITY_MATCH_DIGEST_INVALID"
+    assert result["can_execute"] is False

@@ -19,6 +19,7 @@ def identity(**kwargs):
         "event_start_time": (NOW + timedelta(hours=3)).isoformat(),
         "identity_provider": "NHL_PUBLIC_WEB_API",
         "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/BOS/20262027",
+        "identity_match_sha256": "a" * 64,
         "identity_verified_at": (NOW - timedelta(minutes=2)).isoformat(),
         "market_features_used": False,
         "prediction_authority": False,
@@ -69,6 +70,7 @@ def test_official_future_capture_still_holds_goalie_even_if_boxscore_has_starter
     result, calls = capture(response=resp)
     assert result["code"] == "NHL_GOALIE_STARTER_CONFIRMATION_REQUIRED"
     assert result["source_content_sha256"] == hashlib.sha256(resp.content).hexdigest()
+    assert result["identity_match_sha256"] == "a" * 64
     assert result["gamecenter_source_status"] == "OFFICIAL_PREGAME_CAPTURED_RESEARCH_ONLY"
     assert result["goalie_status"] == "UNVERIFIED"
     assert result["source_snapshot_id"] is None
@@ -103,6 +105,8 @@ def test_provider_event_alias_or_invalid_id_never_fetches(event_id):
 @pytest.mark.parametrize("field,value", [
     ("event_id", "0000000000"), ("home_team", "NYR"),
     ("identity_provider", "ESPN"), ("identity_source", "https://other.example/stolen"),
+    ("identity_match_sha256", None), ("identity_match_sha256", "a" * 63),
+    ("identity_match_sha256", "Z" * 64),
     ("identity_verified_at", (NOW - timedelta(hours=26)).isoformat()),
     ("can_execute", True), ("prediction_authority", True),
 ])
