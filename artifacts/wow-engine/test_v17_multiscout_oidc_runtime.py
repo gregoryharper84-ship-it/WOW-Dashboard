@@ -161,8 +161,29 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     monkeypatch.setattr(advance_oidc, "mint_github_actions_oidc", lambda force=True: "fresh-oidc")
     seen = []
 
-    def fake_execute(payload, *, token, origin, post_fn=None, max_in_flight=None, progress_fn=None):
-        seen.append((token, origin, payload["run_id"], post_fn, progress_fn, max_in_flight))
+    def fake_execute(
+        payload,
+        *,
+        token,
+        origin,
+        post_fn=None,
+        max_in_flight=None,
+        progress_fn=None,
+        persistence_readback_by_id=None,
+        configured_supabase_url=None,
+    ):
+        seen.append(
+            (
+                token,
+                origin,
+                payload["run_id"],
+                post_fn,
+                progress_fn,
+                max_in_flight,
+                persistence_readback_by_id,
+                configured_supabase_url,
+            )
+        )
         return {
             "status": "AUTO_ADVANCE_COMPLETE",
             "code": "AUTO_ADVANCE_RECONCILED",
@@ -178,6 +199,8 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     assert callable(seen[0][3])
     assert callable(seen[0][4])
     assert seen[0][5] == advance_oidc.OIDC_MAX_IN_FLIGHT == 2
+    assert seen[0][6] is None
+    assert seen[0][7] in (None, "")
     assert json.loads(output.read_text())["can_execute"] is False
 
 
@@ -196,8 +219,26 @@ def test_auto_advance_static_action_key_keeps_existing_nonrefreshing_path(monkey
     monkeypatch.setenv("WOW_ACTION_API_KEY", "static-action-key")
     seen = []
 
-    def fake_execute(payload, *, token, origin, progress_fn=None):
-        seen.append((token, origin, payload["run_id"], progress_fn))
+    def fake_execute(
+        payload,
+        *,
+        token,
+        origin,
+        progress_fn=None,
+        persistence_readback_by_id=None,
+        configured_supabase_url=None,
+        **_kwargs,
+    ):
+        seen.append(
+            (
+                token,
+                origin,
+                payload["run_id"],
+                progress_fn,
+                persistence_readback_by_id,
+                configured_supabase_url,
+            )
+        )
         return {
             "status": "AUTO_ADVANCE_COMPLETE",
             "code": "AUTO_ADVANCE_RECONCILED",
@@ -211,6 +252,8 @@ def test_auto_advance_static_action_key_keeps_existing_nonrefreshing_path(monkey
     assert advance_oidc.main() == 0
     assert seen[0][:3] == ("static-action-key", advance_oidc.ACTION_ORIGIN, "run-static")
     assert callable(seen[0][3])
+    assert seen[0][4] is None
+    assert seen[0][5] in (None, "")
 
 
 def test_postmerge_workflow_direct_script_invocations_import_v17_package():
@@ -248,6 +291,10 @@ def test_postmerge_workflow_installs_runtime_dependencies_before_live_scout():
     run_at = live_job.index("- name: Run V17 Nightly Multi-Scout")
     assert "pip install -r requirements.txt" in live_job[install_at:run_at]
     assert install_at < run_at
+    # Live Nightly must fail closed on sealed-destination readback, not on HTTP alone.
+    assert 'WOW_REQUIRE_PERSISTENCE_READBACK: "true"' in live_job.split("steps:", 1)[0]
+    assert "SUPABASE_URL: ${{ secrets.SUPABASE_URL }}" in live_job.split("steps:", 1)[0]
+    assert "test_v17_action_persistence_provenance.py" in text
 
 
 def test_auto_advance_progress_writer_is_atomic_and_fail_closed(tmp_path):
