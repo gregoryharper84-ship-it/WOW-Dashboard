@@ -197,3 +197,28 @@ def test_multiclass_zero_probability_finite_log_score_never_changes_distribution
     assert r["rows_graded"] == 1
     assert math.isfinite(r["cohorts"][0]["mean_multiclass_log_loss"])
     assert before["outcome_probabilities"] == copy
+
+
+@pytest.mark.parametrize("raw", [
+    [0.10000005, 0.2, 0.70000045],
+    [0.09999995, 0.2, 0.69999955],
+])
+def test_pmf_roundoff_normalizes_before_pit_and_conserves_total_mass(raw):
+    before, settled = prop_pair(pid="normalized", pmf=raw, outcome=2)
+    frozen_before = list(before["predictive_count_pmf"])
+    r = discrete_prop_distribution_audit([(before, settled)], bins=10, min_n=1)
+    assert r["rows_graded"] == 1
+    assert r["rows_pit_graded"] == 1
+    assert sum(r["nonrandomized_pit_bin_proportions"]) == pytest.approx(1.0, abs=1e-12)
+    assert before["predictive_count_pmf"] == frozen_before
+    total = sum(raw)
+    normalized = [x / total for x in raw]
+    expected_crps = normalized[0]**2 + (normalized[0]+normalized[1])**2
+    assert r["mean_discrete_crps"] == pytest.approx(expected_crps)
+
+
+def test_pmf_mass_error_beyond_tolerance_blocks_frozen_distribution():
+    p, o = prop_pair(pid="badmass", pmf=[0.1, 0.2, 0.700002], outcome=2)
+    r = discrete_prop_distribution_audit([(p, o)], min_n=1)
+    assert r["rows_graded"] == 0
+    assert r["blockers"][0]["reason"] == "FROZEN_COUNT_PMF_INVALID"
