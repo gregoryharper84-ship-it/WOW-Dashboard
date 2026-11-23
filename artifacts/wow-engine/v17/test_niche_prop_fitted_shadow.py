@@ -28,7 +28,7 @@ def row(i, *, stat="FREE_THROW_ATTEMPTS", result=True, season="train"):
     }
     line = 2.5 + (i % 4)
     # This number is synthetic test settlement, never a sports prediction.
-    actual = line - 1 if result else line + 1
+    actual = math.floor(line) if result else math.ceil(line)
     return {
         "row_id": f"{season}-{i}",
         "category": "NBA_LOW_VOLUME_UNDER",
@@ -109,6 +109,8 @@ def test_predict_research_only_and_digest_bound_to_exact_features():
     lambda a,b,c: a.__setitem__(0, dict(a[0], features={**a[0]["features"], "leaked_final_box_score": 12})),
     lambda a,b,c: a.__setitem__(0, dict(a[0], features={**a[0]["features"], "projected_minutes": float("nan")})),
     lambda a,b,c: a.__setitem__(0, dict(a[0], settlement_source_ref="")),
+    lambda a,b,c: a.__setitem__(0, dict(a[0], features={**a[0]["features"], "projected_minutes": 900.0})),
+    lambda a,b,c: a.__setitem__(0, dict(a[0], actual_stat=3.25)),
 ))
 def test_fail_closed_on_leakage_identity_lineage_and_malformed_data(tamper):
     a, b, c = cohorts()
@@ -138,8 +140,17 @@ def test_all_nfl_niche_specialists_fit_distinct_research_shadows(route, stat):
         x = dict(r)
         x["sport"], x["category"], x["stat_type"] = "NFL", route, stat
         x["market_period"], x["side"] = "FIRST_QUARTER", "MORE"
-        x["features"] = {key: (1.0 + (int(x["row_id"].rsplit("-", 1)[1]) % 7) * 0.1)
-                         for key in FEATURE_KEYS[route]}
+        base = {
+            "expected_q1_drives": 4.0, "home_q1_fg_attempt_rate_prior": .3,
+            "away_q1_fg_attempt_rate_prior": .35, "q1_red_zone_td_rate_prior": .48,
+            "weather_wind_mph": 8.0, "fourth_down_go_rate_prior": .32,
+            "projected_q1_drives": 2.0, "pass_rate_prior": .56,
+            "plays_per_drive_prior": 6.0, "opponent_pressure_prior": .23,
+            "projected_q1_plays": 13.0, "pass_epa_prior": .05,
+            "qb_rush_share_prior": .12,
+        }
+        perturb = 1.0 + (int(x["row_id"].rsplit("-", 1)[1]) % 7) * 0.01
+        x["features"] = {key: base[key] * perturb for key in FEATURE_KEYS[route]}
         if route == "NFL_1Q_TWO_KICKER_FG_OVER_0_5":
             x["exact_line"] = 0.5
             x["combo_participant_ids"] = ["synthetic-kicker-home", "synthetic-kicker-away"]
@@ -147,8 +158,8 @@ def test_all_nfl_niche_specialists_fit_distinct_research_shadows(route, stat):
             x["home_team_id"], x["away_team_id"] = "HOME", "AWAY"
         else:
             x["official_player_position"] = "QB"
-        x["actual_stat"] = (x["exact_line"] + 1 if x["settled_result"] == "WIN"
-                            else max(0, x["exact_line"] - 1))
+        x["actual_stat"] = (math.ceil(x["exact_line"]) if x["settled_result"] == "WIN"
+                            else max(0, math.floor(x["exact_line"])))
         return x
 
     a,b,c = cohorts()
