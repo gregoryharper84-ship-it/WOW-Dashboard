@@ -529,20 +529,46 @@ jobs:
           PY
       - name: Read bounded prior Swarm receipts (existing GitHub artifacts only)
         if: always()
+        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/wow-swarm-prior"
-          gh run list --repo "$GITHUB_REPOSITORY" \
-            --workflow wow-v17-nightly-multiscout.yml \
-            --status success --limit 10 --json databaseId \
-            --jq '.[].databaseId' | head -n 8 | while read -r rid; do
-              [ "$rid" = "$GITHUB_RUN_ID" ] && continue
-              gh run download "$rid" --repo "$GITHUB_REPOSITORY" \
-                --pattern 'wow-native-swarm-receipt-*' \
-                --dir "$RUNNER_TEMP/wow-swarm-prior/$rid" 2>/dev/null || true
-            done
+          # Match LIVE-eligible triggers; pull_request/push verification runs
+          # do not execute native research and cannot teach anything.
+          candidate_runs="$(
+            for event in workflow_run workflow_dispatch schedule; do
+              gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-nightly-multiscout.yml --event "$event" \
+                --status success --limit 20 --json databaseId \
+                --jq '.[].databaseId' || true
+            done | sort -rn | uniq | head -n 40
+          )"
+          valid_count=0
+          while IFS= read -r rid; do
+            [ -n "$rid" ] || continue
+            [ "$rid" != "$GITHUB_RUN_ID" ] || continue
+            dst="$RUNNER_TEMP/wow-swarm-prior/$rid"
+            if gh run download "$rid" --repo "$GITHUB_REPOSITORY" \
+                 --pattern 'wow-native-swarm-receipt-*' --dir "$dst" 2>/dev/null; then
+              receipt="$(find "$dst" -type f -name native-swarm-receipt.json -print -quit)"
+              if [ -n "$receipt" ] && jq -e '
+                  .schema_version == "wow.v17.native_swarm_production_readback.v1" and
+                  .can_execute == false and
+                  .may_publish_or_qualify == false and
+                  .pilot.status == "VERIFIED_EVENT_OPTED_IN" and
+                  .pilot.requested_count == 1 and
+                  .summary.workers_completed == 5 and
+                  .summary.can_execute == false and
+                  .summary.paid_provider_calls == 0
+                ' "$receipt" >/dev/null 2>&1; then
+                valid_count=$((valid_count + 1))
+              fi
+            fi
+            [ "$valid_count" -lt 8 ] || break
+          done <<< "$candidate_runs"
+          echo "Validated past live native Swarm receipts retrieved: $valid_count (max 8)"
       - name: Generate bounded research-only Swarm learning report
         if: always()
         continue-on-error: true
