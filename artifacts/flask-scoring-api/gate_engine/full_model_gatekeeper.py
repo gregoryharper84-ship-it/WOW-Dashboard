@@ -231,6 +231,33 @@ def _check_invalidation(row: dict[str, Any]) -> tuple[dict[str, Any], list[str],
         if val is True or val == "true" or val == "True":
             triggered[key] = label
 
+    # Invalidation must be monotonic across repeated Scout and governed
+    # full-model evaluation. This module may HOLD an untrusted row, never
+    # certify a claimed fresh fit or override V17_TERMINAL_REDUCER.
+    context = row.get("context_change_impact")
+    if isinstance(context, dict) and context.get("research_invalidation_requested") is True:
+        triggered["context_change_impact"] = "CONTEXT_STALE_RECALC_REQUIRED"
+    context_status = row.get("research_recommendation_status")
+    if isinstance(context_status, str) and context_status in {
+        "CONTEXT_STALE_RECALC_REQUIRED", "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
+        "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH", "CONTEXT_MATERIAL_EVIDENCE_INVALID",
+        "CONTEXT_RECEIPT_DIGEST_INVALID",
+    }:
+        triggered["research_recommendation_status"] = "CONTEXT_STALE_RECALC_REQUIRED"
+    latest = row.get("latest_material_update_timestamp")
+    if latest not in (None, ""):
+        def _aware_instant(value):
+            try:
+                at = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                return at.astimezone(datetime.timezone.utc) if at.utcoffset() is not None else None
+            except (ValueError, TypeError, OverflowError):
+                return None
+        source_at = _aware_instant(latest)
+        model_at = _aware_instant(row.get("immutable_model_timestamp") or row.get("model_timestamp"))
+        if source_at is None or model_at is None or model_at < source_at:
+            triggered["material_context_chronology"] = "CONTEXT_STALE_RECALC_REQUIRED"
+
     is_inv = bool(triggered)
     evidence = {"triggered_signals": triggered, "is_invalidated": is_inv}
     if is_inv:
