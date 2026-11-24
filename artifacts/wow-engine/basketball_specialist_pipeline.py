@@ -206,6 +206,38 @@ def evaluate_untouched_calibrated_holdout(artifact, holdout, coefficients):
     }
 
 
+# Owner decision 2026-11-24 (Greg): NBA refits no longer move the registered
+# forward candidate. Each maintenance refit minted a new version and re-pointed
+# the single registration row, so forward shadow evidence restarted every run
+# (83 captures over 7 versions in 3 days) and no version could reach the forward
+# minimum. While NBA has a registered SHADOW candidate, a refit is still fitted
+# and stored as an inactive challenger artifact + calibrator, but the
+# registration row is left unchanged. The pointer moves only through an
+# owner-approved change to that row. No probability is published either way.
+FROZEN_FORWARD_CANDIDATE_SPORTS = frozenset({"NBA"})
+
+
+def _frozen_forward_candidate(client: Any, sport: str) -> str | None:
+    """Return the registered SHADOW version a refit must not replace, if any.
+
+    Read errors propagate before anything is fitted or written (fail closed).
+    """
+    if sport not in FROZEN_FORWARD_CANDIDATE_SPORTS:
+        return None
+    rows = (
+        client.table("wow_basketball_team_event_certification")
+        .select("capability_status,model_artifact_version")
+        .eq("sport", sport).limit(1).execute().data
+    ) or []
+    if not rows:
+        return None
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    version = str(row.get("model_artifact_version") or "").strip()
+    if row.get("capability_status") == "SHADOW" and version:
+        return version
+    return None
+
+
 def fit_and_persist(
     sport: str,
     client=None,
@@ -222,6 +254,7 @@ def fit_and_persist(
     if sport not in TRAIN_TABLE:
         raise ValueError(f"unsupported sport {sport}")
     client = client or _client()
+    frozen_candidate_version = _frozen_forward_candidate(client, sport)
     games = load_games(client, sport)
     features = build_pregame_features(games, sport)
     version_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -304,25 +337,26 @@ def fit_and_persist(
     if calibration_artifact_block is not None:
         persisted_status = "SHADOW"
         persisted_reason = "BASKETBALL_CALIBRATION_ARTIFACT_BLOCKED"
-    client.table("wow_basketball_team_event_certification").upsert({
-        "sport": sport, "capability_status": persisted_status,
-        "reason_code": persisted_reason,
-        "model_artifact_version": model_version,
-        "calibrator_version": calibrator_version,
-        "corpus_rows": len(games), "settled_rows": len(games),
-        "certification_notes": {
-            "fit_decision": asdict(decision),
-            "calibration_status": calibration_status,
-            "calibration_artifact_block": calibration_artifact_block,
-            "calibration_training_cutoff": artifact.train_end_date,
-            "calibration_training_rows": len(calibration_train),
-            "calibration_holdout_overlap_rows": 0,
-            "untouched_holdout_evidence": holdout_evidence,
-            "provenance_complete": bool(provenance_complete),
-            "promotion_attempted": False, "can_execute": False,
-        },
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }, on_conflict="sport").execute()
+    if frozen_candidate_version is None:
+        client.table("wow_basketball_team_event_certification").upsert({
+            "sport": sport, "capability_status": persisted_status,
+            "reason_code": persisted_reason,
+            "model_artifact_version": model_version,
+            "calibrator_version": calibrator_version,
+            "corpus_rows": len(games), "settled_rows": len(games),
+            "certification_notes": {
+                "fit_decision": asdict(decision),
+                "calibration_status": calibration_status,
+                "calibration_artifact_block": calibration_artifact_block,
+                "calibration_training_cutoff": artifact.train_end_date,
+                "calibration_training_rows": len(calibration_train),
+                "calibration_holdout_overlap_rows": 0,
+                "untouched_holdout_evidence": holdout_evidence,
+                "provenance_complete": bool(provenance_complete),
+                "promotion_attempted": False, "can_execute": False,
+            },
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="sport").execute()
 
     return {
         "sport": sport, "corpus_rows": len(games), "feature_rows": len(features),
@@ -341,6 +375,8 @@ def fit_and_persist(
         "calibration_holdout_overlap_rows": 0,
         "untouched_holdout_evidence": holdout_evidence,
         "persisted_status": persisted_status,
+        "registered_candidate_frozen": frozen_candidate_version is not None,
+        "registered_candidate_version": frozen_candidate_version or model_version,
         "provenance_complete": bool(provenance_complete),
         "promotion_attempted": False,
         "can_execute": False,
