@@ -106,6 +106,7 @@ def _features(receipt: dict[str, Any], sport: str) -> list[str]:
 
 def _history(paths: list[Path], current_run: str) -> tuple[list[dict[str, Any]], int]:
     valid: dict[str, dict[str, Any]] = {}
+    quarantined: set[str] = set()
     rejected = 0
     for path in paths[:MAX_HISTORY * 3]:
         try:
@@ -126,8 +127,14 @@ def _history(paths: list[Path], current_run: str) -> tuple[list[dict[str, Any]],
                             if _safe_feature(x)
                         ]
             run = prior["run_id"]
+            if run in quarantined:
+                rejected += 1
+                continue
             if run in valid and valid[run]["digest"] != prior["digest"]:
-                raise ValueError("conflicting immutable research run")
+                valid.pop(run)
+                quarantined.add(run)
+                rejected += 1
+                continue
             valid[run] = prior
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             rejected += 1
@@ -139,14 +146,22 @@ def learn(current: dict[str, Any], history: list[dict[str, Any]],
           rejected_history: int = 0) -> dict[str, Any]:
     sample = _receipt(current)
     unique: dict[str, dict[str, Any]] = {}
+    quarantined: set[str] = set()
     for row in history:
         try:
             checked = _receipt(row)
         except (ValueError, TypeError, KeyError):
             rejected_history += 1
             continue
-        if checked["run_id"] != sample["run_id"]:
-            unique[checked["run_id"]] = {**checked, "missing_features": row.get("missing_features", [])}
+        run = checked["run_id"]
+        if run == sample["run_id"] or run in quarantined:
+            continue
+        if run in unique and unique[run]["digest"] != checked["digest"]:
+            unique.pop(run)
+            quarantined.add(run)
+            rejected_history += 1
+            continue
+        unique[run] = {**checked, "missing_features": row.get("missing_features", [])}
     past = sorted(unique.values(), key=lambda row: int(row["run_id"]))[-MAX_HISTORY:]
     same = [row for row in past if (row["sport"], row["event_id"]) ==
             (sample["sport"], sample["event_id"])]
