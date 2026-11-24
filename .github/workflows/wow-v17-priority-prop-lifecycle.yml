@@ -283,17 +283,24 @@ jobs:
           }
 
           seed_failures=0
-          seed_if_admitted() {
+          record_nonadmitted_seed() {
             local slate_date="$1" admission="$2"
             case "${admission}" in
-              0) seed_date "${slate_date}" ;;
               3) echo "SEASON_DEFERRED sport=${SPORT} date=${slate_date}; settlement and audit continue"; return 0 ;;
               *) echo "SEASON_ADMISSION_FAILED sport=${SPORT} date=${slate_date} rc=${admission}" >&2; return 1 ;;
             esac
           }
-          if ! seed_if_admitted "${today}" "${today_admission}"; then seed_failures=$((seed_failures + 1)); fi
+          if [ "${today_admission}" -eq 0 ]; then
+            if ! seed_date "${today}"; then seed_failures=$((seed_failures + 1)); fi
+          elif ! record_nonadmitted_seed "${today}" "${today_admission}"; then
+            seed_failures=$((seed_failures + 1))
+          fi
           if [ "${POST_DEPLOY_SMOKE}" != "true" ]; then
-            if ! seed_if_admitted "${tomorrow}" "${tomorrow_admission}"; then seed_failures=$((seed_failures + 1)); fi
+            if [ "${tomorrow_admission}" -eq 0 ]; then
+              if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
+            elif ! record_nonadmitted_seed "${tomorrow}" "${tomorrow_admission}"; then
+              seed_failures=$((seed_failures + 1))
+            fi
           fi
 
           settlement_failures=0
