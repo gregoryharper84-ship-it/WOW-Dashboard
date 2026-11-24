@@ -37,6 +37,8 @@ on:
       - "artifacts/wow-engine/v17/morning_scout_report.py"
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
+      - "artifacts/wow-engine/tools/wow_native_swarm_learning.py"
+      - "artifacts/wow-engine/tests/test_wow_native_swarm_learning.py"
       - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
       - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/v17/scout_research_ledger.py"
@@ -149,6 +151,7 @@ jobs:
           test_v17_scout_source_degradation.py
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
+          tests/test_wow_native_swarm_learning.py
           test_v17_news_scout_receipt_bridge.py
           test_v17_news_active_slate.py
           tests/test_v17_market_evidence_sources.py
@@ -302,6 +305,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: read  # read-only bounded historic Swarm artifact retrieval
     defaults:
       run:
         working-directory: artifacts/wow-engine
@@ -510,6 +514,45 @@ jobs:
                   assert row.get("can_execute") is False
                   assert row.get("controlling_specialist_route") in {"LLP_TEAM_BETTING_ENGINE", "WOW_PROP_LANE"}
           PY
+      - name: Read bounded prior Swarm receipts (existing GitHub artifacts only)
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-swarm-prior"
+          gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow wow-v17-nightly-multiscout.yml \
+            --status success --limit 10 --json databaseId \
+            --jq '.[].databaseId' | head -n 8 | while read -r rid; do
+              [ "$rid" = "$GITHUB_RUN_ID" ] && continue
+              gh run download "$rid" --repo "$GITHUB_REPOSITORY" \
+                --pattern 'wow-native-swarm-receipt-*' \
+                --dir "$RUNNER_TEMP/wow-swarm-prior/$rid" 2>/dev/null || true
+            done
+      - name: Generate bounded research-only Swarm learning report
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          base="$RUNNER_TEMP/wow-multiscout"
+          if [ -f "$base/native-swarm-receipt.json" ] && [ -f "$base/model-handoff.json" ]; then
+            python tools/wow_native_swarm_learning.py \
+              --current "$base/native-swarm-receipt.json" \
+              --handoff "$base/model-handoff.json" \
+              --history-dir "$RUNNER_TEMP/wow-swarm-prior" \
+              --output "$base/swarm-learning.json"
+          fi
+      - name: Persist compact research receipts for next-run learning
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-native-swarm-receipt-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
+            ${{ runner.temp }}/wow-multiscout/swarm-learning.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Stamp recoverable Scout run identity and manifest
         id: delivery
         if: always()
@@ -683,6 +726,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
             ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
+            ${{ runner.temp }}/wow-multiscout/swarm-learning.json
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
             ${{ runner.temp }}/wow-multiscout/terminal-acceptance-receipt.json
             ${{ runner.temp }}/wow-multiscout/market-evidence.json
