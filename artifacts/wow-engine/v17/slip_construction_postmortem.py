@@ -13,6 +13,8 @@ import json
 from collections import Counter, defaultdict
 from typing import Any, Mapping, Sequence
 
+from v17.slip_portfolio_optimizer import component_composite_overlap
+
 CAN_EXECUTE = False
 SCHEMA_VERSION = "wow.v17.slip_construction_postmortem.v1"
 _ALLOWED = {"WIN", "LOSS", "PUSH", "VOID"}
@@ -54,6 +56,7 @@ def build_slip_construction_postmortem(
     by_position: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     selection_positions: dict[tuple[Any, ...], set[str]] = defaultdict(set)
     selection_results: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    player_event_positions: dict[tuple[str, str, str], set[str]] = defaultdict(set)
     seen_row_ids: set[tuple[str, str]] = set()
     position_map: dict[str, Mapping[str, Any]] = {}
 
@@ -82,6 +85,12 @@ def build_slip_construction_postmortem(
         key = _selection_key(leg)
         selection_positions[key].add(ref)
         selection_results[key].add(result)
+        if all((_norm(leg.get("sport")), _norm(leg.get("event_id")),
+                _norm(leg.get("participant")))):
+            player_event_positions[(
+                _norm(leg.get("sport")), _norm(leg.get("event_id")),
+                _norm(leg.get("participant"))
+            )].add(ref)
 
     if any(len(results) != 1 for results in selection_results.values()):
         raise ValueError("CONFLICTING_EXACT_SELECTION_SETTLEMENT")
@@ -115,6 +124,21 @@ def build_slip_construction_postmortem(
             for x in items if _norm(x.get("sport")) and _norm(x.get("event_id"))
         )
         same_event_count = sum(v - 1 for v in events.values() if v > 1)
+        player_counts = Counter(
+            (_norm(x.get("sport")), _norm(x.get("event_id")),
+             _norm(x.get("participant")))
+            for x in items if all((
+                _norm(x.get("sport")), _norm(x.get("event_id")),
+                _norm(x.get("participant"))
+            ))
+        )
+        same_player_count = sum(v - 1 for v in player_counts.values() if v > 1)
+        composite_pairs = [
+            sorted((str(left.get("row_key")), str(right.get("row_key"))))
+            for index, left in enumerate(items)
+            for right in items[index + 1:]
+            if component_composite_overlap(dict(left), dict(right))
+        ]
         reused = sorted({
             _digest(_selection_key(item))
             for item in items if _selection_key(item) in repeated
@@ -125,6 +149,10 @@ def build_slip_construction_postmortem(
             flags.append("CROSS_SLIP_SHARED_THESIS_EXPOSURE")
         if same_event_count:
             flags.append("SAME_EVENT_DEPENDENCY_UNVERIFIED")
+        if same_player_count:
+            flags.append("SAME_PLAYER_MULTI_MARKET_DEPENDENCE_UNVERIFIED")
+        if composite_pairs:
+            flags.append("COMPONENT_COMPOSITE_OVERLAP_REQUIRES_JOINT_REVIEW")
         if len(items) >= 4:
             flags.append("FOUR_PLUS_LEGS_FRAGILITY")
         if any(not _norm(x.get("event_id")) for x in items):
@@ -142,6 +170,8 @@ def build_slip_construction_postmortem(
             "leg_count": len(items),
             "distinct_sport_count": len({_norm(x.get("sport")) for x in items if _norm(x.get("sport"))}),
             "same_event_extra_legs": same_event_count,
+            "same_player_event_extra_legs": same_player_count,
+            "component_composite_overlap_row_pairs": sorted(composite_pairs),
             "reused_selection_hashes": reused,
             "observed_result": observed,
             "observed_leg_wins": counts["WIN"],
@@ -168,6 +198,9 @@ def build_slip_construction_postmortem(
         "distinct_selection_count": len(selection_results),
         "unique_selection_result_counts": unique_counts,
         "reused_selection_group_count": len(repeated),
+        "cross_slip_same_player_event_groups": sum(
+            len(refs) > 1 for refs in player_event_positions.values()
+        ),
         "shared_losing_hinge_count": len(shared_losses),
         "shared_losing_hinges": shared_losses,
         "affected_all_or_nothing_position_count": len(affected),
