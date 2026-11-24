@@ -136,12 +136,16 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
-      - uses: actions/checkout@v6
+      - name: Check out exact maintenance source
+        uses: actions/checkout@v6
+        id: source
+        continue-on-error: true
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Assert non-execution governance and OIDC context
         id: gov
+        if: steps.source.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -388,15 +392,19 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
+          SOURCE_OUTCOME: ${{ steps.source.outcome }}
           GOV_OUTCOME: ${{ steps.gov.outcome }}
           WORK_OUTCOME: ${{ steps.work.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "governance_outcome=$GOV_OUTCOME work_outcome=$WORK_OUTCOME"
+            echo "source_outcome=$SOURCE_OUTCOME governance_outcome=$GOV_OUTCOME work_outcome=$WORK_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$GOV_OUTCOME" != "success" ]; then
+          if [ "$SOURCE_OUTCOME" != "success" ]; then
+            echo "FIRST_SIX_MODEL_MAINTENANCE_SOURCE_CHECKOUT_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_MODEL_MAINTENANCE_SOURCE_CHECKOUT_FAILED"
+          elif [ "$GOV_OUTCOME" != "success" ]; then
             echo "FIRST_SIX_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
             echo "::error::FIRST_SIX_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED"
           elif [ "$WORK_OUTCOME" = "success" ]; then
