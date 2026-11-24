@@ -875,6 +875,43 @@ def test_nov22_tate_under_longest_reception_requires_explosive_tail_and_return_s
     assert third["cards"][0]["can_publish_as_certified"] is False
     assert third["joint_probability"] is None
 
+
+def test_nov23_research_high_confidence_claims_fail_closed_even_with_favorable_prices():
+    # The caller can type "STRONG" and a price but cannot authenticate the
+    # fitted specialist, calibrated lower bound or a parlay joint distribution.
+    a = leg("fav-a", "event-a")
+    b = leg("fav-b", "event-b")
+    a["confidence_label"] = "STRONG"
+    a["market_quote"]["american_odds"] = -350
+    card = {
+        "card_id": "nov23-synthetic-favorite-slip",
+        "confidence_label": "ELITE",
+        "legs": [a, b],
+    }
+    result = audit_research_slips([card], as_of_utc=AS_OF)
+    report = result["cards"][0]
+    assert "SLIP_JOINT_CONFIDENCE_UNVERIFIED" in report["blockers"]
+    assert "RESEARCH_STRONG_CONFIDENCE_CLAIM_UNVERIFIED" in report["legs"][0]["blockers"]
+    assert report["joint_probability"] is None
+    assert report["joint_probability_certified"] is False
+    assert report["can_publish_as_certified"] is False
+    assert report["can_execute"] is False
+
+
+def test_nov23_value_claim_and_high_confidence_are_separate_unsupported_claims():
+    a = leg("fav-value", "event-a")
+    a["confidence_label"] = "HIGH_CONFIDENCE"
+    a["value_claim"] = "STRONG_VALUE"
+    b = leg("other", "event-b")
+    report = audit_research_slips(
+        [{"card_id": "nov23-synthetic", "legs": [a, b]}],
+        as_of_utc=AS_OF,
+    )["cards"][0]
+    assert "RESEARCH_STRONG_CONFIDENCE_CLAIM_UNVERIFIED" in report["legs"][0]["blockers"]
+    assert "RESEARCH_VALUE_CLAIM_UNSUPPORTED" in report["legs"][0]["blockers"]
+    assert report["status"] == "RESEARCH_HOLD"
+
+
 SPORTS_13 = (
     "NFL", "NBA", "NHL", "NCAAF", "MLB", "WNBA", "NCAAB",
     "SOCCER", "TENNIS", "GOLF", "MMA", "BOXING", "CRICKET",

@@ -577,6 +577,12 @@ def test_failed_calibration_builder_persists_typed_nonpromotable_shadow(monkeypa
         def upsert(self, row, **_kwargs):
             writes[self.name] = row
             return self
+        def select(self, *_args, **_kwargs):
+            return self
+        def eq(self, *_args):
+            return self
+        def limit(self, *_args):
+            return self
         def execute(self):
             """Record DDL and raise only the configured synthetic failure."""
             return SimpleNamespace(data=[])
@@ -1176,3 +1182,137 @@ def test_hydration_transport_error_is_redacted_inside_an_upstream_blocker(monkey
     )
     assert "secret-db-host" not in str(row)
     assert row["can_execute"] is False
+
+
+
+# --- Owner decision 2026-11-24: NBA refits do not move the forward candidate ---
+
+def _run_fit_with_registration(monkeypatch, sport, registered, *, read_error=False):
+    import basketball_specialist_pipeline as pipeline
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeArtifact:
+        artifact_checksum: str = "b" * 64
+        training_row_count: int = 300
+        train_start_date: str = "2024-01-01"
+        train_end_date: str = "2025-01-01"
+        holdout_row_count: int = 80
+        holdout_brier: float = 0.23
+        holdout_log_loss: float = 0.65
+        holdout_accuracy: float = 0.60
+
+    @dataclass
+    class FakeDecision:
+        capability_status: str = "CERTIFIED"
+        reason_code: str = "OK"
+
+    writes, upserts, reads = {}, [], []
+
+    class FakeTable:
+        def __init__(self, name):
+            self.name = name
+            self.mode = None
+        def select(self, *_args, **_kwargs):
+            self.mode = "select"
+            return self
+        def eq(self, *_args):
+            return self
+        def limit(self, *_args):
+            return self
+        def insert(self, row):
+            writes[self.name] = row
+            return self
+        def upsert(self, row, **_kwargs):
+            upserts.append((self.name, row))
+            return self
+        def execute(self):
+            if self.mode == "select" and self.name == "wow_basketball_team_event_certification":
+                reads.append(self.name)
+                if read_error:
+                    raise RuntimeError("registration read denied")
+                return SimpleNamespace(data=[] if registered is None else [registered])
+            return SimpleNamespace(data=[])
+
+    class FakeDb:
+        def table(self, name):
+            return FakeTable(name)
+
+    calibration = SimpleNamespace(
+        result=None,
+        coefficients=SimpleNamespace(a=0.1, b=0.9),
+        metrics=SimpleNamespace(brier=0.24, log_loss=0.65, ece=0.05, calibration_bias=0.01),
+    )
+    monkeypatch.setattr(pipeline, "load_games", lambda *_args: [object()])
+    monkeypatch.setattr(pipeline, "build_pregame_features", lambda *_args: [object()])
+    monkeypatch.setattr(pipeline, "train_specialist", lambda *_args, **_kw: FakeArtifact())
+    monkeypatch.setattr(pipeline, "disjoint_calibration_and_holdout",
+                        lambda *_args: ([object()], [object()]))
+    monkeypatch.setattr(pipeline, "_walk_forward_raw",
+                        lambda *_args: ([0.4]*240, [0, 1]*120, [i//40 for i in range(240)],
+                                        ["2025-01-01T00:00:00+00:00"]*240))
+    monkeypatch.setattr(pipeline, "phase_b_platt", lambda *_args: calibration)
+    monkeypatch.setattr(pipeline, "evaluate_untouched_calibrated_holdout",
+                        lambda *_args: {"holdout_rows": 80, "publication_authorized": False})
+    monkeypatch.setattr(pipeline, "certification_decision", lambda *_args, **_kw: FakeDecision())
+    monkeypatch.setattr(pipeline, "build_shadow_binary_calibration_artifact",
+                        lambda **_kw: ({"certification_status": "SHADOW"}, "c" * 64))
+    result = None
+    error = None
+    try:
+        result = pipeline.fit_and_persist(sport, client=FakeDb(), provenance_complete=True)
+    except Exception as exc:  # noqa: BLE001 - asserted by caller
+        error = exc
+    return result, error, writes, upserts, reads
+
+
+def test_nba_refit_keeps_registered_shadow_candidate_and_stores_inactive_challenger(monkeypatch):
+    registered = {"capability_status": "SHADOW",
+                  "model_artifact_version": "NBA_TEAM_EVENT_LOGISTIC_V1_20261124T133404Z"}
+    result, error, writes, upserts, _ = _run_fit_with_registration(monkeypatch, "NBA", registered)
+    assert error is None
+    assert upserts == []  # the registration pointer is not moved
+    model = writes["wow_basketball_team_event_model_artifacts"]
+    calibrator = writes["wow_basketball_team_event_calibrators"]
+    assert model["active"] is False and model["promoted"] is False
+    assert calibrator["active"] is False and calibrator["promoted"] is False
+    assert model["model_artifact_version"] != registered["model_artifact_version"]
+    assert result["registered_candidate_frozen"] is True
+    assert result["registered_candidate_version"] == registered["model_artifact_version"]
+    assert result["promotion_attempted"] is False and result["can_execute"] is False
+
+
+def test_nba_first_registration_still_writes_the_pointer(monkeypatch):
+    for registered in (None, {"capability_status": "SHADOW", "model_artifact_version": None}):
+        result, error, _w, upserts, _ = _run_fit_with_registration(monkeypatch, "NBA", registered)
+        assert error is None
+        assert [name for name, _row in upserts] == ["wow_basketball_team_event_certification"]
+        assert result["registered_candidate_frozen"] is False
+        assert result["registered_candidate_version"] == upserts[0][1]["model_artifact_version"]
+
+
+def test_nba_non_shadow_registration_is_not_frozen(monkeypatch):
+    registered = {"capability_status": "NOT_CERTIFIED",
+                  "model_artifact_version": "NBA_TEAM_EVENT_LOGISTIC_V1_20261101T000000Z"}
+    result, error, _w, upserts, _ = _run_fit_with_registration(monkeypatch, "NBA", registered)
+    assert error is None
+    assert len(upserts) == 1
+    assert result["registered_candidate_frozen"] is False
+
+
+def test_wnba_refit_behavior_is_unchanged(monkeypatch):
+    registered = {"capability_status": "SHADOW",
+                  "model_artifact_version": "WNBA_TEAM_EVENT_LOGISTIC_V1_20261124T133416Z"}
+    result, error, _w, upserts, reads = _run_fit_with_registration(monkeypatch, "WNBA", registered)
+    assert error is None
+    assert reads == []  # WNBA does not read or freeze the registration
+    assert len(upserts) == 1
+    assert result["registered_candidate_frozen"] is False
+
+
+def test_nba_registration_read_failure_fails_closed_before_any_write(monkeypatch):
+    result, error, writes, upserts, _ = _run_fit_with_registration(
+        monkeypatch, "NBA", None, read_error=True)
+    assert result is None
+    assert isinstance(error, RuntimeError)
+    assert writes == {} and upserts == []

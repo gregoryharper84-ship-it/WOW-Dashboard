@@ -1,14 +1,15 @@
-"""Replay missed hourly slots of product lanes (wake-only; runs inside the #2744 Render cron).
+"""Replay missed hourly and daily slots of product lanes (wake-only; runs inside the #2744 Render cron).
 
 GitHub sheds most sub-daily schedules in this repository. Between 2026-11-19
 18:00 and 2026-11-20 18:00 UTC, 84 of 1,331 expected scheduled runs fired
 across active workflows (6.3%); every hourly product lane ran about 3 times a
 day instead of 24. The provider dispatcher already has an off-GitHub slot
 replay (``engineering_dispatch_slot_recovery``); this module applies the same
-rule to the hourly evidence, refresh and closure lanes, from the same cron and
-token.
+rule to the hourly evidence, refresh, closure and daily basketball
+maintenance lanes, from the same cron and token.
 
-For each lane's most recent native slot (its cron minute), once the slot is
+For each lane's most recent native slot (hourly minute or daily UTC hour/minute),
+once the slot is
 ``SLOT_GRACE`` overdue and before ``SLOT_RECOVERY_DEADLINE``: if no run of that
 workflow on ``main`` was created since the slot and none is queued or running,
 dispatch it with no inputs. Lanes that share a GitHub concurrency group are
@@ -45,12 +46,24 @@ LANE_TARGETS: tuple[tuple[str, int, str], ...] = (
     ("wow-v17-team-event-recoverable-refresh.yml", 17, "wow-v17-team-event-recoverable-refresh"),
     ("wow-v17-terminal-closure-controller.yml", 17, "wow-v17-terminal-closure-controller"),
 )
+# Daily recovery reuses the off-GitHub cron. Its 15-minute ticks at 13:30
+# and 13:45 UTC fall within the existing 25-45 minute recovery window.
+# (workflow file, UTC hour, cron minute, concurrency group namespace)
+DAILY_TARGETS: tuple[tuple[str, int, int, str], ...] = (
+    ("wow-v17-basketball-model-maintenance.yml", 13, 5, "wow-v17-basketball-model-maintenance"),
+)
 OK_STATUSES = frozenset({"DISPATCHED", "SLOT_NOT_DUE", "LANE_GROUP_BUSY", "LANE_NOT_ACTIVE", "GROUP_DISPATCHED_THIS_TICK"})
 
 
 def lane_slot(now: datetime, minute: int) -> datetime:
     slot = now.astimezone(timezone.utc).replace(minute=minute, second=0, microsecond=0)
     return slot if slot <= now else slot - timedelta(hours=1)
+
+
+def daily_slot(now: datetime, hour: int, minute: int) -> datetime:
+    """Most recent UTC occurrence of a daily scheduled slot."""
+    slot = now.astimezone(timezone.utc).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return slot if slot <= now else slot - timedelta(days=1)
 
 
 def _path(workflow: str) -> str:
@@ -62,7 +75,7 @@ def _result(workflow: str, status: str, now: datetime, **extra: Any) -> dict[str
             "checked_at": now.isoformat(), "can_execute": False, **extra}
 
 
-def _read_lane(workflow: str, now: datetime, call: Http) -> dict[str, Any]:
+def _read_lane(workflow: str, now: datetime, call: Http, *, serving_events: frozenset[str] | None = None) -> dict[str, Any]:
     """Return {state, active, last_created} or {error} for one lane."""
     try:
         status, info = call("GET", _path(workflow))
@@ -83,6 +96,14 @@ def _read_lane(workflow: str, now: datetime, call: Http) -> dict[str, Any]:
             if run.get("status") in ACTIVE_STATUSES:
                 active = True
             created = _parse_time(run.get("created_at"))
+            # Daily basketball workflow also runs verify-only on push. A push
+            # must not masquerade as a successful schedule/dispatch maintain job.
+            if serving_events is not None:
+                event = run.get("event")
+                if not isinstance(event, str):
+                    raise ValueError("daily run event identity missing")
+                if event not in serving_events:
+                    continue
             last = created if last is None or created > last else last
     except ValueError:
         return {"error": "GITHUB_EVIDENCE_INVALID"}
@@ -94,10 +115,20 @@ def recover(token: str, *, now: datetime, http: Http) -> list[dict[str, Any]]:
     groups: "OrderedDict[str, list[tuple[str, int]]]" = OrderedDict()
     for workflow, minute, group in LANE_TARGETS:
         groups.setdefault(group, []).append((workflow, minute))
+    daily_slots = {}
+    for workflow, hour, minute, group in DAILY_TARGETS:
+        groups.setdefault(group, []).append((workflow, minute))
+        daily_slots[workflow] = daily_slot(now, hour, minute)
 
     results: list[dict[str, Any]] = []
     for group, members in groups.items():
-        states = {workflow: _read_lane(workflow, now, http) for workflow, _ in members}
+        states = {
+            workflow: _read_lane(
+                workflow, now, http,
+                serving_events=frozenset({"schedule", "workflow_dispatch"}) if workflow in daily_slots else None,
+            )
+            for workflow, _ in members
+        }
         failed = [w for w, s in states.items() if "error" in s]
         if failed:
             results.extend(_result(w, states[w]["error"], now, group=group) for w in failed)
@@ -109,7 +140,7 @@ def recover(token: str, *, now: datetime, http: Http) -> list[dict[str, Any]]:
             continue
         dispatched = False
         for workflow, minute in members:
-            state, slot = states[workflow], lane_slot(now, minute)
+            state, slot = states[workflow], daily_slots.get(workflow) or lane_slot(now, minute)
             extra = {"group": group, "slot": slot.isoformat()}
             if state.get("state") != "active":
                 results.append(_result(workflow, "LANE_NOT_ACTIVE", now, workflow_state=state.get("state"), **extra))

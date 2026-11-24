@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,268 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
 
+
+
+def request_one_verified_native_swarm_pilot(
+    payload: dict[str, Any], *, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Explicit CLI-only admission: one canonical future event, research-only.
+
+    The scheduled caller opts in at the CLI boundary. No provider event ID is
+    promoted to an official identity, no source rights are inferred, and no
+    existing candidate is silently removed from the normal Scout handoff.
+    """
+    if not isinstance(payload, dict) or payload.get("can_execute") is not False:
+        raise ValueError("SCOUT_HANDOFF_CAN_EXECUTE_MUST_BE_FALSE")
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("NATIVE_SWARM_PILOT_TIME_MUST_BE_AWARE")
+    now = now.astimezone(timezone.utc)
+    handoff = payload.get("model_handoff")
+    handoff = handoff if isinstance(handoff, dict) else {}
+    lanes = ("team_event_candidates", "prop_candidates")
+    existing = sum(
+        row.get("native_swarm_requested") is True
+        for lane in lanes for row in (handoff.get(lane) or [])
+        if isinstance(row, dict)
+    )
+    base = {
+        "schema_version": "wow.v17.native_swarm_pilot_admission.v1",
+        "mode": "ONE_CANONICAL_PREGAME_EVENT",
+        "requested_count": 0,
+        "paid_provider_calls": 0,
+        "may_publish_or_qualify": False,
+        "can_execute": False,
+    }
+    if existing:
+        return {**payload, "native_swarm_pilot": {
+            **base, "status": "EXPLICIT_CANDIDATE_OPT_IN_ALREADY_PRESENT",
+            "requested_count": existing,
+        }}
+    eligible: list[tuple[datetime, str, str, int]] = []
+    for lane in lanes:
+        rows = handoff.get(lane)
+        if not isinstance(rows, list):
+            continue
+        for index, row in enumerate(rows):
+            # The raw nightly Scout candidate normally omits this field;
+            # the outer handoff is already explicitly nonexecuting. Reject
+            # any row that asserts or malforms its own execution bit.
+            if not isinstance(row, dict) or (("can_execute" in row)
+                                             and row["can_execute"] is not False):
+                continue
+            official_id = row.get("official_event_id")
+            if (row.get("official_event_identity_verified") is not True
+                    or row.get("canonical_identity_status") != "CANONICAL_RESOLVED"
+                    or not isinstance(official_id, str) or not (0 < len(official_id) <= 160)
+                    or row.get("canonical_event_id") != official_id
+                    or not isinstance(row.get("sport_key"), str)
+                    or not row["sport_key"].strip()):
+                continue
+            try:
+                value = row.get("commence_time")
+                if not isinstance(value, str):
+                    continue
+                start = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if start.utcoffset() is None:
+                    continue
+                start = start.astimezone(timezone.utc)
+            except ValueError:
+                continue
+            # Never launch an asynchronous pregame pilot at the event boundary.
+            if start > now + timedelta(minutes=20):
+                eligible.append((start, official_id, lane, index))
+    if not eligible:
+        return {**payload, "native_swarm_pilot": {
+            **base, "status": "NO_VERIFIED_FUTURE_EVENT",
+        }}
+    _, event_id, lane, index = min(eligible)
+    updated_handoff = dict(handoff)
+    updated_rows = list(handoff[lane])
+    updated_rows[index] = {**updated_rows[index], "can_execute": False,
+                           "native_swarm_requested": True}
+    updated_handoff[lane] = updated_rows
+    return {
+        **payload,
+        "model_handoff": updated_handoff,
+        "native_swarm_pilot": {
+            **base, "status": "VERIFIED_EVENT_OPTED_IN",
+            "requested_count": 1,
+            "official_event_id": event_id,
+            "sport_key": updated_rows[index]["sport_key"],
+        },
+    }
+
+
+def _native_swarm_receipt_valid(
+    receipt: dict[str, Any], expected_manifest: dict[str, Any],
+    worker_ids: tuple[str, ...], validate_submission: Any,
+) -> bool:
+    """Bound a local receipt before promoting *any* field to public metadata."""
+    try:
+        digest = receipt.get("receipt_sha256")
+        run_id = receipt.get("run_id")
+        event = receipt.get("event")
+        workers = receipt.get("worker_reports")
+        reviews = receipt.get("wave_reviews")
+        handoff = receipt.get("handoff")
+        hexdigits = "0123456789abcdef"
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(c not in hexdigits for c in digest)
+                or not isinstance(run_id, str) or len(run_id) != 20
+                or any(c not in hexdigits for c in run_id)
+                or not isinstance(event, dict)
+                or event != expected_manifest.get("event")
+                or run_id != expected_manifest.get("run_id")
+                or event.get("can_execute") is not False
+                or receipt.get("max_parallel") != 2
+                or receipt.get("waves_completed") != 3
+                or not isinstance(workers, list) or len(workers) != len(worker_ids)
+                or not isinstance(reviews, list) or len(reviews) != 3
+                or not isinstance(handoff, dict)
+                or not isinstance(handoff.get("source_screened_research_facts"), list)):
+            return False
+        manifest = expected_manifest
+        for i, report in enumerate(workers):
+            if (not isinstance(report, dict)
+                    or report.get("worker_id") != worker_ids[i]
+                    or report.get("run_id") != run_id
+                    or report.get("official_event_id") != event["official_event_id"]
+                    or report.get("sport_key") != event["sport_key"]
+                    or report.get("research_ceiling") != "RESEARCH_INTEREST"
+                    or report.get("can_execute") is not False
+                    or validate_submission(manifest, report).get("valid_report") is not True):
+                return False
+        for i, wave in enumerate(reviews):
+            expected = list(worker_ids[i * 2:i * 2 + 2])
+            if (not isinstance(wave, dict)
+                    or wave.get("wave") != i + 1
+                    or wave.get("workers_checked") != expected
+                    or wave.get("all_structurally_valid") is not True):
+                return False
+            verdicts = wave.get("verdicts")
+            if not isinstance(verdicts, list) or len(verdicts) != len(expected):
+                return False
+            for verdict, worker in zip(verdicts, workers[i * 2:i * 2 + 2]):
+                if (not isinstance(verdict, dict)
+                        or verdict.get("valid_report") is not True
+                        or verdict.get("research_only") is not True
+                        or verdict.get("may_publish") is not False
+                        or verdict.get("can_execute") is not False
+                        or verdict.get("facts_screened_structurally") != len(worker["facts"])):
+                    return False
+        # Reconstruct every aggregate from canonical worker evidence once;
+        # never let a return receipt hide an independent worker HOLD.
+        domain_facts = [fact for worker in workers[1:] for fact in worker["facts"]]
+        missing = sorted({reason for worker in workers for reason in worker["missing_evidence"]})
+        conflicts = sorted({reason for worker in workers for reason in worker["conflicts"]})
+        audit = receipt.get("matchup_discovery")
+        if not isinstance(audit, dict) or not isinstance(audit.get("missing_critical_features"), list):
+            return False
+        expected_status = ("RESEARCH_ONLY_HOLD" if missing or conflicts or audit["missing_critical_features"]
+                           else "RESEARCH_ONLY_SCREENED")
+        return (all(isinstance(fact, dict) and fact.get("source_rights_status") == "CLEARED_FOR_RESEARCH"
+                    for fact in domain_facts)
+                and handoff["source_screened_research_facts"] == domain_facts
+                and handoff.get("missing_evidence") == missing
+                and handoff.get("conflicts") == conflicts
+                and receipt.get("status") == expected_status)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # A malformed/untrusted receipt is a typed research hold, never metadata.
+        return False
+
+
+def _native_swarm_summary(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Optional, bounded summary-only native research; no raw source payload export.
+
+    Opt-in is explicit per candidate; absence leaves existing Scout behavior
+    untouched. Even a successful Swarm receipt has no scoring or release power.
+    """
+    base = {
+        "schema_version": "wow.v17.native_swarm_handoff_summary.v1",
+        "status": "RESEARCH_ONLY_HOLD",
+        "reason_code": None,
+        "receipt_sha256": None,
+        "research_facts_screened": 0,
+        "missing_evidence_count": 0,
+        "conflicts_count": 0,
+        "workers_completed": 0,
+        "external_llm_calls": 0,
+        "paid_provider_calls": 0,
+        "independent_source_verification": False,
+        "specialist_rescore_verified": False,
+        "may_publish_or_qualify": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+    if candidate.get("can_execute") is not False:
+        return {**base, "reason_code": "NATIVE_SWARM_INPUT_INVALID"}
+    event_request = candidate.get("event_request")
+    event_request = event_request if isinstance(event_request, dict) else {}
+    start = (candidate.get("commence_time") or candidate.get("event_start_utc")
+             or candidate.get("event_start_time_utc")
+             or event_request.get("event_start_time_utc"))
+    normalized = {**candidate, "commence_time": start}
+    try:
+        try:
+            from tools.wow_specialized_swarm import WORKERS, build_manifest, run_swarm, validate_submission
+        except ModuleNotFoundError as exc:
+            if exc.name != "tools":
+                raise
+            # The existing direct-script CLI loads from /v17, not engine root.
+            import sys
+            engine_root = str(Path(__file__).resolve().parents[1])
+            if engine_root not in sys.path:
+                sys.path.insert(0, engine_root)
+            from tools.wow_specialized_swarm import WORKERS, build_manifest, run_swarm, validate_submission
+        # The manifest is recomputed from the caller's canonical event, not
+        # from the untrusted return. Invalid source identity/time is INPUT.
+        expected_manifest = build_manifest(normalized, max_parallel=2)
+    except (ValueError, TypeError, KeyError):
+        return {**base, "reason_code": "NATIVE_SWARM_INPUT_INVALID"}
+    except Exception:
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    try:
+        receipt = run_swarm(normalized, max_parallel=2)
+    except Exception:
+        # Once admitted, all worker/verification faults are runtime contract
+        # failures, even if the coordinator raises ValueError.
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    if not isinstance(receipt, dict):
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    handoff = receipt.get("handoff")
+    policy = receipt.get("policy")
+    workers, reviews = receipt.get("worker_reports"), receipt.get("wave_reviews")
+    if (receipt.get("status") not in ("RESEARCH_ONLY_HOLD", "RESEARCH_ONLY_SCREENED")
+            or not isinstance(policy, dict) or policy.get("can_execute") is not False
+            or receipt.get("external_llm_calls") != 0
+            or receipt.get("paid_provider_calls") != 0
+            or receipt.get("network_calls") != 0
+            or receipt.get("persisted_to_supabase") is not False
+            or receipt.get("production_verified") is not False
+            or not isinstance(handoff, dict)
+            or handoff.get("can_execute") is not False
+            or handoff.get("may_publish_or_qualify") is not False
+            or handoff.get("probability_authority") is not False
+            or handoff.get("specialist_rescore_verified") is not False
+            or not isinstance(workers, list) or len(workers) != 5
+            or not isinstance(reviews, list) or len(reviews) < 1
+            or not all(isinstance(v, dict) and v.get("all_structurally_valid") is True for v in reviews)
+            or not isinstance(handoff.get("source_screened_research_facts"), list)
+            or not isinstance(handoff.get("missing_evidence"), list)
+            or not isinstance(handoff.get("conflicts"), list)
+            or not _native_swarm_receipt_valid(receipt, expected_manifest, WORKERS, validate_submission)):
+        return {**base, "reason_code": "NATIVE_SWARM_LOCAL_RUNTIME_FAILED"}
+    return {
+        **base, "status": receipt["status"],
+        "receipt_sha256": receipt.get("receipt_sha256"),
+        "research_facts_screened": len(handoff["source_screened_research_facts"]),
+        "missing_evidence_count": len(handoff["missing_evidence"]),
+        "conflicts_count": len(handoff["conflicts"]),
+        "workers_completed": len(workers),
+    }
+
+
 def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, Any] | None = None,
                      public_news_sha256: str | None = None) -> dict[str, Any]:
     enriched = dict(row)
@@ -56,6 +318,8 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
     # Mandatory per-event review request: report what was actually screened,
     # rather than treating a game-script hypothesis as completed research.
     enriched["matchup_discovery"] = discover_matchup(enriched)
+    if row.get("native_swarm_requested") is True:
+        enriched["native_swarm_summary"] = _native_swarm_summary(enriched)
     enriched["news_intelligence_status"] = "NEWS_NOT_OBSERVED"
     enriched["news_latest_verified_at_utc"] = None
     enriched["news_model_rescore_verified"] = False
@@ -373,6 +637,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--native-swarm-verified-pilot", action="store_true",
+                        help="explicitly opt in exactly one verified future research-only event")
     args = parser.parse_args()
     source = Path(args.input)
     target = Path(args.output)
@@ -380,6 +646,8 @@ def main() -> int:
     payload = _attach_sibling_snapshot(payload, source)
     payload = _attach_sibling_news(payload, source)
     payload = attach_reviewed_facts_bundle(payload, source)
+    if args.native_swarm_verified_pilot:
+        payload = request_one_verified_native_swarm_pilot(payload)
     enriched = enrich_handoff(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(enriched, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -387,6 +655,8 @@ def main() -> int:
     print(json.dumps({
         "status": "SPORT_SCOUT_ENRICHMENT_COMPLETE",
         "team_event_candidates": len(enriched.get("model_handoff", {}).get("team_event_candidates", [])),
+        "native_swarm_pilot_status": enriched.get("native_swarm_pilot", {}).get("status", "NOT_REQUESTED"),
+        "native_swarm_pilot_requested": enriched.get("native_swarm_pilot", {}).get("requested_count", 0),
         "prop_candidates": len(enriched.get("model_handoff", {}).get("prop_candidates", [])),
         "research_workers": len(SUPPORTED_RESEARCH_WORKERS),
         "research_status_counts": enriched.get("research_promotion", {}).get("status_counts", {}),
