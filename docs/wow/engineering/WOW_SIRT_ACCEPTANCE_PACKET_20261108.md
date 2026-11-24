@@ -12,7 +12,7 @@ bound_sha                     = db5e6b7c8e97079dc52ede0e36cc2b0e6e5bbc8c
 status                        = EVIDENCE_RECORDED_PENDING_INDEPENDENT_ACCEPTANCE
 terminal                      = PENDING_SIRT_INDEPENDENT_ACCEPTANCE
 independent_verification      = NOT_PERFORMED
-production_acceptance         = NOT_PERFORMED
+production_acceptance_lanes   = PASSED_ENGINEERING_NOT_INDEPENDENT
 production_verified           = false
 can_execute                   = false
 terminal_authority            = V17_TERMINAL_REDUCER
@@ -36,6 +36,7 @@ terminal_authority            = V17_TERMINAL_REDUCER
 | Release admission on `db5e6b7c` | 7 runs: 5 `success`, 2 neutral `skipped` (`--neutral-if-superseded --neutral-if-draft-target`), 0 failures |
 | `wow-engine-verify` on `db5e6b7c` | shards 0–3, durable Agent Runtime integration, Render/Action contracts, governed probability backend all `success` |
 | Deployment-truth job `128640154104` | `BOTH_SERVICES_LIVE_SHA_CONTAINED_IN_MAIN`; observed web+worker at `12d8e65e`, lag 4; `production_verified: false`, `can_execute: false` |
+| Orchestrator run `42542393564` | readback `success`; spread-forward, spread-certification, priority-props and golden-full-slate `skipped` as already accepted for the same SHA and deploy IDs; receipt reconciliation `success` |
 | Readback workflow `42451502788` (job `128641501478`) | `success`; receipt below |
 | Web service `srv-da7sa9gu01pc73brt80g` | live `db5e6b7c8e97079dc52ede0e36cc2b0e6e5bbc8c`, deploy `dep-dbo0k97avr4c73aubphg` |
 | Worker service `srv-dapkbc0473hc73c1978g` | live `db5e6b7c8e97079dc52ede0e36cc2b0e6e5bbc8c`, deploy `dep-dbo0k97avr4c73aubr90` |
@@ -58,16 +59,19 @@ Verbatim receipt:
 
 - SIRT acceptance or independent verification. The readback is produced by the
   delivering system, so it cannot verify itself.
-- Production acceptance lanes (spread-forward canaries, spread certification,
-  priority props, golden full slate) run by
-  `wow-v17-post-deploy-verification-orchestrator.yml`. No such run is bound here.
+- Independent production acceptance. The orchestrator's engineering lanes did
+  pass for this deployment: later runs of
+  `wow-v17-post-deploy-verification-orchestrator.yml` dedupe them only when a
+  prior successful run observed the same SHA **and** the same web/worker deploy
+  IDs. That workflow states lane success is not production approval, and no
+  SIRT signature is bound here.
 - Model readiness, calibration, product acceptance or `production_verified=true`.
 - Any execution authority. `can_execute=false` throughout.
 
 ## Formal closure evaluation
 
 `assess_class_a_closure` was run on a receipt built from the evidence above with
-`production_acceptance_status=NOT_PERFORMED`,
+`production_acceptance_status=ENGINEERING_LANES_PASSED_NOT_INDEPENDENT`,
 `independent_verification_status=NOT_PERFORMED` and
 `independent_verifier=NOT_ASSIGNED`. It returns `CLOSURE_BLOCKED`, not a
 pending-terminal pass:
@@ -101,7 +105,7 @@ python -c 'import json,sys; from v17.sirt_assurance import assess_class_a_closur
 | --- | --- | --- |
 | SIRT reviewer | both deploy IDs and LIVE commits, production critical logs, genuine behaviour, canaries, persistence, rollback readiness | NOT SIGNED |
 | Independent Verification | exact-head test/review receipts and a verifier identity distinct from `implementation_owner` | NOT SIGNED |
-| Post-deploy acceptance lanes | orchestrator run bound to `db5e6b7c` and its web/worker deploy IDs | NOT RUN |
+| Post-deploy acceptance lanes | orchestrator lanes bound to `db5e6b7c` and its web/worker deploy IDs | PASSED (engineering); not a SIRT signature |
 
 Until those exist, the deployment stays `PENDING_SIRT_INDEPENDENT_ACCEPTANCE`,
 `production_verified=false`, `can_execute=false`, with `V17_TERMINAL_REDUCER`
