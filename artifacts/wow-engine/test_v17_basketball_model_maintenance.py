@@ -184,7 +184,8 @@ def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
     monkeypatch.setattr(
         maintenance,
         "run_basketball_model_maintenance",
-        lambda db: {
+        lambda db, *, active_only: {
+            "active_only": active_only,
             "status": "BLOCKED",
             "rows": [],
             "automatic_certification": False,
@@ -202,6 +203,7 @@ def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
     response = client.post("/internal/v17/basketball-model-maintenance")
     assert response.status_code == 200
     assert response.json()["can_execute"] is False
+    assert response.json()["active_only"] is True
     assert sum(route.path == "/internal/v17/basketball-model-maintenance" for route in app.routes) == 1
 
     maintenance.install_basketball_model_maintenance_route(
@@ -1316,3 +1318,36 @@ def test_nba_registration_read_failure_fails_closed_before_any_write(monkeypatch
     assert result is None
     assert isinstance(error, RuntimeError)
     assert writes == {} and upserts == []
+
+
+def test_active_maintenance_defers_expired_wnba_before_hydration_or_fit(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("deferred league must not acquire or fit")
+    monkeypatch.setattr(maintenance, "hydrate", forbidden)
+    monkeypatch.setattr(maintenance, "run_training_replay", forbidden)
+    out = maintenance.run_basketball_model_maintenance(
+        object(), sports=("WNBA",), now=datetime(2026, 11, 24, 12, tzinfo=timezone.utc),
+        active_only=True,
+    )
+    assert out["status"] == "SEASON_DEFERRED"
+    assert out["rows_updated"] == out["rows_blocked"] == 0
+    assert out["rows_season_deferred"] == 1
+    assert out["rows"][0]["season_admission"] == "CALENDAR_REFRESH_REQUIRED"
+    assert out["can_execute"] is False
+
+
+def test_active_maintenance_keeps_nba_acquisition_when_wnba_deferred(monkeypatch):
+    calls = []
+    def capture(sport, seasons, **kwargs):
+        calls.append(sport)
+        return {"latest_game_date_after": "2026-11-23"}
+    monkeypatch.setattr(maintenance, "hydrate", capture)
+    out = maintenance.run_basketball_model_maintenance(
+        object(), now=datetime(2026, 11, 24, 12, tzinfo=timezone.utc),
+        active_only=True,
+    )
+    assert calls == ["NBA"]
+    assert out["rows_season_deferred"] == 1
+    assert {row["sport"] for row in out["rows"]} == {"NBA", "WNBA"}
+    assert out["rows_updated"] == 0  # Explicit-clock replay remains held.
+    assert out["can_execute"] is False

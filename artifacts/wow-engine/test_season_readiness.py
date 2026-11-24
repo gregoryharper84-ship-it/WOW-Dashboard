@@ -1,6 +1,9 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+from v17 import season_readiness as readiness
+
 from v17.season_readiness import (
     BASE_WEEK1_GATES,
     CAN_EXECUTE,
@@ -107,3 +110,64 @@ def test_invalid_bounded_calendar_is_rejected():
     }
     errors = validate_registry(bad)
     assert any("regular_season_start must not exceed" in error for error in errors)
+
+
+_ACTIVE_SPEC = {
+    "calendar_kind": "bounded",
+    "regular_season_start": "2026-05-08",
+    "regular_season_end": "2026-09-24",
+    "postseason_start": "2026-09-27",
+    "postseason_end": "2026-10-31",
+    "calendar_valid_through": "2026-10-31",
+}
+
+
+@pytest.mark.parametrize("day,expected", [
+    (date(2026, 5, 7), (False, "PRESEASON")),
+    (date(2026, 5, 8), (True, "OPENING_RAMP")),
+    (date(2026, 8, 1), (True, "REGULAR_SEASON")),
+    (date(2026, 10, 31), (True, "POSTSEASON")),
+    (date(2026, 11, 24), (False, "CALENDAR_REFRESH_REQUIRED")),
+    (date(2026, 1, 1), (False, "OFFSEASON")),
+])
+def test_scheduled_work_admission_uses_verified_season_boundary(day, expected):
+    assert readiness.new_work_admission(_ACTIVE_SPEC, day) == expected
+
+
+def test_competition_calendar_does_not_auto_authorize_new_work():
+    assert readiness.new_work_admission(
+        {"calendar_kind": "competition_driven"}, date(2026, 11, 24)
+    ) == (False, "COMPETITION_CALENDAR_REQUIRED")
+
+
+def test_calendar_refresh_allows_next_season_reentry():
+    refreshed = {**_ACTIVE_SPEC, "regular_season_start": "2027-05-08",
+                 "regular_season_end": "2027-09-24", "postseason_start": "2027-09-27",
+                 "postseason_end": "2027-10-31", "calendar_valid_through": "2027-10-31"}
+    assert readiness.new_work_admission(refreshed, date(2027, 5, 8)) == (True, "OPENING_RAMP")
+
+
+@pytest.mark.parametrize("spec", [None, {}, {**_ACTIVE_SPEC, "calendar_valid_through": None},
+    {**_ACTIVE_SPEC, "regular_season_start": "invalid"},
+    {**_ACTIVE_SPEC, "regular_season_start": "2026-10-01"}])
+def test_missing_or_invalid_calendar_does_not_authorize_acquisition(spec):
+    assert readiness.new_work_admission(spec, date(2026, 11, 24)) == (False, "CALENDAR_UNVERIFIED")
+
+
+@pytest.mark.parametrize("change", [
+    {"postseason_start": "2026-01-01"},
+    {"postseason_end": "2026-09-01"},
+    {"championship_start": "2026-09-01"},
+])
+def test_inconsistent_postseason_calendar_is_not_admitted(change):
+    assert readiness.new_work_admission({**_ACTIVE_SPEC, **change}, date(2026, 10, 1)) == (False, "CALENDAR_UNVERIFIED")
+
+
+def test_readiness_board_reconciles_all_fourteen_declared_categories():
+    board = build_board(REGISTRY, {}, on_date=date(2026, 11, 24))
+    assert {row["sport"] for row in board["rows"]} == {
+        "NFL", "NBA", "NHL", "NCAAF", "NCAAB", "NCAAW", "SOCCER", "TENNIS",
+        "GOLF", "MMA", "BOXING", "CRICKET", "MLB", "WNBA",
+    }
+    assert _row(board, "NCAAW")["readiness"]["ready"] is False
+    assert board["can_execute"] is False

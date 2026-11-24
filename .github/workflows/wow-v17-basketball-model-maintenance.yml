@@ -171,6 +171,7 @@ jobs:
               "FRESH_ACQUISITION_PARTIAL_SOURCE_BLOCKED_USING_PERSISTED_CORPUS",
               "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS",
               "FRESH_ACQUISITION_NOT_VERIFIED",
+              "SEASON_DEFERRED",
           }
           for row in payload.get("rows", []):
               if not isinstance(row, dict) or row.get("sport") not in ("NBA", "WNBA"):
@@ -193,6 +194,7 @@ jobs:
                   "status": status,
                   "latest_persisted_settlement_date": latest,
                   "new_settled_games": new_count,
+                  "season_admission": row.get("season_admission"),
               }
 
           # The source receipt must survive a later challenger failure.
@@ -207,7 +209,11 @@ jobs:
           }, sort_keys=True))
 
           challengers = {}
+          admitted = {row["sport"] for row in basketball.get("rows", [])
+                      if row.get("status") == "SHADOW_EVIDENCE_UPDATED"}
           for sport in ("NBA", "WNBA"):
+              if sport not in admitted:
+                  continue
               challenger_payload = post(f"/internal/v17/team-state-challenger-maintenance/{sport}", attempts=8, timeout=300)
               assert challenger_payload.get("can_execute") is False, challenger_payload
               assert challenger_payload.get("probability_publishable") is False, challenger_payload

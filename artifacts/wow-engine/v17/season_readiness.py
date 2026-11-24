@@ -282,6 +282,35 @@ def phase_for(spec: dict[str, Any], on_date: date) -> str:
     return "REGULAR_SEASON"
 
 
+def new_work_admission(spec: dict[str, Any] | None, on_date: date) -> tuple[bool, str]:
+    """Gate new scheduled work; never gate settlement of already captured rows."""
+    if not isinstance(spec, dict):
+        return False, "CALENDAR_UNVERIFIED"
+    kind = spec.get("calendar_kind")
+    if kind == "competition_driven":
+        return False, "COMPETITION_CALENDAR_REQUIRED"
+    if kind != "bounded":
+        return False, "CALENDAR_UNVERIFIED"
+    try:
+        start = _parse_date(spec.get("regular_season_start"))
+        end = _parse_date(spec.get("regular_season_end"))
+        valid_through = _parse_date(spec.get("calendar_valid_through"))
+        if not start or not end or not valid_through or start > end or valid_through < end:
+            return False, "CALENDAR_UNVERIFIED"
+        post_start = _parse_date(spec.get("postseason_start"))
+        post_end = _parse_date(spec.get("postseason_end"))
+        championship = _parse_date(spec.get("championship_start"))
+        if ((post_start and post_start < end)
+                or (post_end and (not post_start or post_end < post_start))
+                or (championship and (not post_start or championship < post_start
+                                      or (post_end and championship > post_end)))):
+            return False, "CALENDAR_UNVERIFIED"
+        phase = phase_for(spec, on_date)
+    except (ValueError, TypeError, KeyError, AssertionError):
+        return False, "CALENDAR_UNVERIFIED"
+    return phase in {"OPENING_RAMP", "REGULAR_SEASON", "STRETCH_RUN", "POSTSEASON_PREP", "POSTSEASON", "CHAMPIONSHIP"}, phase
+
+
 def readiness_checkpoint(spec: dict[str, Any], on_date: date) -> dict[str, Any]:
     if spec["calendar_kind"] == "competition_driven":
         return {
