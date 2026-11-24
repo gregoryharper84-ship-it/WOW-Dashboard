@@ -400,7 +400,7 @@ def fetch_gdelt_gkg_news(sport_key: str, *, client: httpx.Client | None = None,
                         seen.add(item["source_url"])
                     if len(articles) >= MAX_NEWS_ITEMS:
                         break
-            except (httpx.TimeoutException, httpx.HTTPError, httpx.StreamError) as exc:
+            except (httpx.TimeoutException, httpx.StreamError, httpx.HTTPError) as exc:
                 code = _slice_error_code(exc)
                 attempt["source_code"] = code
                 files_tried.append(attempt)
@@ -422,18 +422,19 @@ def fetch_gdelt_gkg_news(sport_key: str, *, client: httpx.Client | None = None,
                        files_tried=files_tried, downloaded=downloaded,
                        later_slice_errors=["SOURCE_TIMEOUT"])
         return _blocked(sport_key, "SOURCE_TIMEOUT", gkg_files_tried=files_tried)
-    except httpx.HTTPError:
-        if articles:
-            return _ok(sport_key, articles, observed=at or _now(),
-                       files_tried=files_tried, downloaded=downloaded,
-                       later_slice_errors=["SOURCE_HTTP_ERROR"])
-        return _blocked(sport_key, "SOURCE_HTTP_ERROR", gkg_files_tried=files_tried)
+    # StreamError subclasses HTTPError; keep the more specific handler first.
     except httpx.StreamError:
         if articles:
             return _ok(sport_key, articles, observed=at or _now(),
                        files_tried=files_tried, downloaded=downloaded,
                        later_slice_errors=["SOURCE_STREAM_ERROR"])
         return _blocked(sport_key, "SOURCE_STREAM_ERROR", gkg_files_tried=files_tried)
+    except httpx.HTTPError:
+        if articles:
+            return _ok(sport_key, articles, observed=at or _now(),
+                       files_tried=files_tried, downloaded=downloaded,
+                       later_slice_errors=["SOURCE_HTTP_ERROR"])
+        return _blocked(sport_key, "SOURCE_HTTP_ERROR", gkg_files_tried=files_tried)
     finally:
         if owned:
             http.close()

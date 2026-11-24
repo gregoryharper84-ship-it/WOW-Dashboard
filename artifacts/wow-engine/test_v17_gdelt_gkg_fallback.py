@@ -250,6 +250,19 @@ def test_nba_host_match_does_not_accept_wnba_domain():
     assert "nba.com" in kept[0]["source_url"]
 
 
+def test_stream_error_is_not_shadowed_by_http_error(monkeypatch):
+    monkeypatch.setattr(gkg, "_now", lambda: NOW)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.StreamError("disconnect")
+
+    with httpx.Client(transport=httpx.MockTransport(handler),
+                      follow_redirects=False) as client:
+        result = gkg.fetch_gdelt_gkg_news("basketball_nba", client=client, at=NOW)
+    assert not result.ok
+    assert result.code == "SOURCE_STREAM_ERROR"
+
+
 def test_partial_gkg_recovery_survives_later_slice_timeout(monkeypatch):
     monkeypatch.setattr(gkg, "_now", lambda: NOW)
     zip_payload = _zip_bytes(NBA_ROW + "\n")
