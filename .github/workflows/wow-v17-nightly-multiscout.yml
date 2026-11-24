@@ -493,10 +493,23 @@ jobs:
               assert summary.get("external_llm_calls") == 0
           elif opted:
               raise AssertionError("NATIVE_SWARM_PILOT_RECEIPT_MISSING")
+          # Compact, canonical research-gap labels only. Never export source
+          # values, auth material, bookmaker observations or worker payloads.
+          from v17.matchup_discovery import feature_requirements
+          if opted:
+              profile = feature_requirements(opted[0].get("sport_key", ""))
+              allowed_features = {feature for names in profile.values() for feature in names}
+              audit = opted[0].get("matchup_discovery") or {}
+              missing_critical = audit.get("missing_critical_features", []) if isinstance(audit, dict) else []
+              canonical_gaps = sorted({feature for feature in missing_critical
+                  if isinstance(feature, str) and feature in allowed_features})[:32]
+          else:
+              canonical_gaps = []
           receipt = {
               "schema_version": "wow.v17.native_swarm_production_readback.v1",
               "github_run_id": os.environ.get("GITHUB_RUN_ID"),
               "source_revision": os.environ.get("GITHUB_SHA"),
+              "canonical_missing_features": canonical_gaps,
               "pilot": pilot,
               "summary": summary,
               "can_execute": False,
@@ -536,10 +549,9 @@ jobs:
         shell: bash
         run: |
           base="$RUNNER_TEMP/wow-multiscout"
-          if [ -f "$base/native-swarm-receipt.json" ] && [ -f "$base/model-handoff.json" ]; then
+          if [ -f "$base/native-swarm-receipt.json" ]; then
             python tools/wow_native_swarm_learning.py \
               --current "$base/native-swarm-receipt.json" \
-              --handoff "$base/model-handoff.json" \
               --history-dir "$RUNNER_TEMP/wow-swarm-prior" \
               --output "$base/swarm-learning.json"
           fi
@@ -547,7 +559,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wow-native-swarm-receipt-${{ github.run_id }}
+          name: wow-native-swarm-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
             ${{ runner.temp }}/wow-multiscout/swarm-learning.json
