@@ -194,8 +194,16 @@ jobs:
                   "status": status,
                   "latest_persisted_settlement_date": latest,
                   "new_settled_games": new_count,
-                  "season_admission": row.get("season_admission"),
               }
+              if status == "SEASON_DEFERRED":
+                  reason = row.get("season_admission")
+                  allowed_reasons = {"OFFSEASON", "PRESEASON", "TRANSITION",
+                                     "CALENDAR_REFRESH_REQUIRED", "CALENDAR_UNVERIFIED",
+                                     "COMPETITION_CALENDAR_REQUIRED"}
+                  source_summary[row["sport"]]["season_admission"] = (
+                      reason if isinstance(reason, str) and reason in allowed_reasons
+                      else "CALENDAR_UNVERIFIED"
+                  )
 
           # The source receipt must survive a later challenger failure.
           print(json.dumps({
