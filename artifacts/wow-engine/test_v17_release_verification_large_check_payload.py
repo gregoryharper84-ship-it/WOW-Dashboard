@@ -1,9 +1,10 @@
-"""Regression for GitHub post-merge check evidence larger than Linux argv limits.
+"""Regression coverage for the current three-check release policy.
 
-The production failure on PR #2555 used >128 KiB of check JSON as one
-jq --argjson argument, exiting 126 before release verification. Exercise
-the actual workflow shell step against bounded fake GitHub responses.
+The production failure passed a >128 KiB check-run page through a single jq
+argv value. These tests execute the workflow step with bounded fake GitHub
+responses and keep every required evidence path fail-closed.
 """
+
 import json
 import os
 from pathlib import Path
@@ -16,10 +17,14 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
 HEAD = "a" * 40
-NAMES = (
+REQUIRED = (
     ("WOW required-three regression", 15368),
     ("WOW governed probability backend", 15368),
     ("WOW additional required regression", 15368),
+)
+OPTIONAL = (
+    ("WOW Independent QA exact-head", 5245832),
+    ("WOW Release Authority exact-head", 5245853),
 )
 WORKFLOWS = (
     "wow-verify",
@@ -31,17 +36,34 @@ WORKFLOWS = (
 )
 
 
-def _check(id_number, name, app_id):
+def _check(id_number, name, app_id, *, head=HEAD, status="completed", conclusion="success"):
     return {
-        "id": id_number, "name": name, "head_sha": HEAD,
-        "app": {"id": app_id}, "status": "completed", "conclusion": "success",
+        "id": id_number,
+        "name": name,
+        "head_sha": head,
+        "app": {"id": app_id},
+        "status": status,
+        "conclusion": conclusion,
     }
 
 
-def _run(tmp_path, mode):
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+def _workflow_runs(failed=False):
+    return [
+        {
+            "name": name,
+            "path": f".github/workflows/{name}.yml",
+            "created_at": "2026-11-24T07:00:00Z",
+            "status": "completed",
+            "conclusion": "failure" if failed and index == 0 else "success",
+        }
+        for index, name in enumerate(WORKFLOWS)
+    ]
+
+
+def _run(tmp_path, mode="success", target=0):
     step = next(
-        item for item in doc["jobs"]["release-verification"]["steps"]
+        item
+        for item in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["release-verification"]["steps"]
         if item["name"] == "Verify required exact-head CI"
     )
     bin_dir = tmp_path / "bin"
@@ -49,54 +71,68 @@ def _run(tmp_path, mode):
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\n"
-        "import json,os,sys\n"
-        "routes=json.load(open(os.environ['FAKE_GH_ROUTES']))\n"
-        "key=next(arg for arg in sys.argv if arg.startswith('/repos/'))\n"
-        "value=routes[key]\n"
+        "import json, os, sys\n"
+        "routes = json.load(open(os.environ['FAKE_GH_ROUTES'], encoding='utf-8'))\n"
+        "path = next(arg for arg in sys.argv if arg.startswith('/repos/'))\n"
+        "value = routes[path]\n"
         "if '--jq' in sys.argv:\n"
-        "    assert sys.argv[sys.argv.index('--jq')+1]=='.workflow_runs'\n"
-        "    value=value['workflow_runs']\n"
+        "    value = value['workflow_runs']\n"
         "print(json.dumps(value))\n",
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
 
     checks = [
-        {**_check(i + 1, "unrelated", 42), "output": {"text": "x" * 3800}}
-        for i in range(40)
+        {**_check(index + 1, "unrelated", 42), "output": {"text": "x" * 3800}}
+        for index in range(40)
     ]
-    checks.extend(_check(50 + i, name, app_id) for i, (name, app_id) in enumerate(NAMES))
-    assert len(json.dumps(checks)) > 131072
+    checks.extend(_check(50 + index, name, app_id) for index, (name, app_id) in enumerate(REQUIRED + OPTIONAL))
 
-    if mode in ("foreign", "failed"):
-        latest = dict(checks[-2], id=100)
-        if mode == "foreign":
-            latest["app"] = {"id": 999}
+    state = mode.split(":", 1)[1] if mode.startswith("state:") else mode
+    if state in {"foreign", "failed", "pending", "stale", "missing"}:
+        name, _ = REQUIRED[target]
+        selected = next(check for check in checks if check["name"] == name)
+        if state == "foreign":
+            selected["app"] = {"id": 999}
+        elif state == "failed":
+            selected["conclusion"] = "failure"
+        elif state == "pending":
+            selected["status"] = "in_progress"
+            selected["conclusion"] = None
+        elif state == "stale":
+            selected["head_sha"] = "b" * 40
         else:
-            latest["conclusion"] = "failure"
-        checks.append(latest)
-    elif mode == "stale":
-        checks[-2]["head_sha"] = "b" * 40
-    elif mode == "optional_qa_failed":
-        qa = _check(100, "WOW Independent QA exact-head", 5245832)
-        checks.append(dict(qa, conclusion="failure"))
-    elif mode == "missing":
-        checks.pop()
-    page = {"check_runs": None if mode == "malformed" else checks}
-    runs = [{
-        "name": name,
-        "path": ".github/workflows/" + name + ".yml",
-        "created_at": "2026-11-10T07:00:00Z",
-        "status": "completed", "conclusion": "success",
-    } for name in WORKFLOWS]
-    if mode == "workflow_failed":
-        runs[0]["conclusion"] = "failure"
+            checks.remove(selected)
+
     routes = {
-        "/repos/test/repo/actions/runs?head_sha=" + HEAD + "&per_page=100":
-            {"workflow_runs": runs},
-        "/repos/test/repo/commits/" + HEAD + "/check-runs?per_page=100&page=1":
-            page,
+        f"/repos/test/repo/actions/runs?head_sha={HEAD}&per_page=100": {
+            "workflow_runs": _workflow_runs(failed=state == "workflow_failed"),
+        },
     }
+    if state == "page2":
+        routes[f"/repos/test/repo/commits/{HEAD}/check-runs?per_page=100&page=1"] = {"check_runs": checks[:100]}
+        routes[f"/repos/test/repo/commits/{HEAD}/check-runs?per_page=100&page=2"] = {"check_runs": checks[100:]}
+    elif state == "page_limit":
+        for page in range(1, 11):
+            routes[f"/repos/test/repo/commits/{HEAD}/check-runs?per_page=100&page={page}"] = {
+                "check_runs": [_check(page * 100 + index, "unrelated", 42) for index in range(100)]
+            }
+    else:
+        routes[f"/repos/test/repo/commits/{HEAD}/check-runs?per_page=100&page=1"] = {
+            "check_runs": None if state == "malformed" else checks
+        }
+
+    if state == "latest":
+        name, app_id = REQUIRED[0]
+        checks = [check for check in checks if check["name"] != name]
+        checks.extend([
+            _check(500, name, app_id, conclusion="failure"),
+            _check(600, name, app_id, conclusion="success"),
+        ])
+        routes[f"/repos/test/repo/commits/{HEAD}/check-runs?per_page=100&page=1"] = {
+            "check_runs": list(reversed(checks)),
+        }
+
     routes_file = tmp_path / "routes.json"
     routes_file.write_text(json.dumps(routes), encoding="utf-8")
     runner_temp = tmp_path / "runner"
@@ -105,52 +141,64 @@ def _run(tmp_path, mode):
         ["bash", "-c", step["run"]],
         cwd=ROOT,
         env={
-            **os.environ, "FAKE_GH_ROUTES": str(routes_file),
+            **os.environ,
+            "FAKE_GH_ROUTES": str(routes_file),
             "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
-            "GITHUB_REPOSITORY": "test/repo", "HEAD_SHA": HEAD,
-            "RUNNER_TEMP": str(runner_temp), "GH_TOKEN": "fixture-only",
+            "GITHUB_REPOSITORY": "test/repo",
+            "HEAD_SHA": HEAD,
+            "RUNNER_TEMP": str(runner_temp),
+            "GH_TOKEN": "fixture-only",
             "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
         },
-        text=True, capture_output=True, check=False,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
 
-def test_large_page_exact_head_and_app_ids_pass_without_argv_overflow(tmp_path):
-    proc = _run(tmp_path, "success")
+@pytest.mark.parametrize("state", ["success", "foreign", "failed", "pending", "stale", "missing"])
+@pytest.mark.parametrize("target", range(len(REQUIRED)))
+def test_current_three_required_checks_are_exact_and_fail_closed(tmp_path, state, target):
+    proc = _run(tmp_path, f"state:{state}", target)
+    if state == "success":
+        assert proc.returncode == 0, proc.stderr
+        assert "three-required-check evidence verified" in (tmp_path / "summary.md").read_text()
+    else:
+        assert proc.returncode != 0
+        assert "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED" in proc.stderr
+
+
+def test_required_checks_can_span_pages_without_argv_overflow(tmp_path):
+    proc = _run(tmp_path, "page2")
     assert proc.returncode == 0, proc.stderr
-    assert "native three-required-check evidence verified" in (tmp_path / "summary.md").read_text()
 
 
-@pytest.mark.parametrize(
-    ("mode", "diagnostic"),
-    [
-        ("workflow_failed", "wow-verify.yml -> completed|failure"),
-        ("optional_qa_failed", "WOW Independent QA exact-head -> completed|failure"),
-    ],
-)
-def test_failed_diagnostics_do_not_block_native_required_checks(tmp_path, mode, diagnostic):
-    proc = _run(tmp_path, mode)
+def test_latest_success_wins_by_check_id_not_response_order(tmp_path):
+    proc = _run(tmp_path, "latest")
     assert proc.returncode == 0, proc.stderr
-    assert diagnostic in (tmp_path / "summary.md").read_text()
 
 
-@pytest.mark.parametrize(
-    ("mode", "error"),
-    [
-        ("foreign", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW governed probability backend"),
-        ("failed", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW governed probability backend"),
-        ("stale", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW governed probability backend"),
-        ("missing", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW additional required regression"),
-        ("malformed", "RELEASE_CHECK_PAGE_INVALID"),
-    ],
-)
-def test_large_payload_keeps_release_failing_closed(tmp_path, mode, error):
-    proc = _run(tmp_path, mode)
+def test_ten_full_pages_fail_closed(tmp_path):
+    proc = _run(tmp_path, "page_limit")
     assert proc.returncode != 0
-    assert error in proc.stderr
+    assert "RELEASE_CHECK_PAGE_LIMIT" in proc.stderr
 
 
-def test_workflow_never_passes_unbounded_json_through_jq_argv():
-    """Retain a focused regression for the exact argv failure class."""
+def test_malformed_check_page_fails_closed(tmp_path):
+    proc = _run(tmp_path, "malformed")
+    assert proc.returncode != 0
+    assert "RELEASE_CHECK_PAGE_INVALID" in proc.stderr
+
+
+def test_failed_diagnostic_workflow_remains_diagnostic_under_three_check_policy(tmp_path):
+    proc = _run(tmp_path, "workflow_failed")
+    assert proc.returncode == 0, proc.stderr
+    summary = (tmp_path / "summary.md").read_text()
+    assert "Diagnostic workflow: wow-verify" in summary
+    assert "completed|failure" in summary
+
+
+def test_workflow_uses_stdin_for_large_json_accumulation():
     source = WORKFLOW.read_text(encoding="utf-8")
-    assert '--argjson new "$page_checks"' not in source
+    assert '--argjson old "$all_checks"' not in source
+    assert "printf '%s\\n%s\\n' \"$all_checks\" \"$page_checks\"" in source
