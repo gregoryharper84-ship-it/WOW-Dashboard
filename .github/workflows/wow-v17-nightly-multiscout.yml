@@ -430,7 +430,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/wow-multiscout"
-          python v17/public_news_feed_report.py \
+          python -m v17.public_news_feed_report \
             --input "$RUNNER_TEMP/wow-multiscout/public-gdelt-receipt.json" \
             --output-json "$RUNNER_TEMP/wow-multiscout/public-newsfeed.json" \
             --output-md "$RUNNER_TEMP/wow-multiscout/public-newsfeed.md" \
