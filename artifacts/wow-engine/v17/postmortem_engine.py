@@ -25,6 +25,8 @@ from typing import Any, Callable, Optional
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from v17.slip_construction_postmortem import build_slip_construction_postmortem
+
 CAN_EXECUTE = False
 _POSTMORTEM_NAMESPACE = uuid.UUID("3559d026-2843-4774-86cc-97dc0cba497b")
 _ALLOWED_RESULTS = {"WIN", "LOSS", "PUSH", "VOID"}
@@ -655,6 +657,10 @@ def build_postmortem_payload(
         "positions": normalized_positions,
         "patches": normalized_patches,
         "summary": summary,
+        # Separate process report; never a second sporting probability scorer.
+        "slip_construction_postmortem": build_slip_construction_postmortem(
+            normalized_legs, normalized_positions
+        ),
         "can_execute": False,
     }
 
@@ -733,6 +739,7 @@ def install_postmortem_routes(
             "code": "POSTMORTEM_LEDGER_WRITE_PASS",
             **persisted,
             "summary": payload["summary"],
+            "slip_construction_postmortem": payload["slip_construction_postmortem"],
             "principle": "PRESERVE_REFINE_REGRESSION_CHECK",
             "global_tightening_applied": False,
             "probability_backfill_allowed": False,
@@ -790,6 +797,22 @@ def install_postmortem_routes(
             "legs": legs,
             "positions": positions,
             "patch_candidates": patches,
+            "can_execute": False,
+        }
+
+    @app.get("/v17/postmortem-runs/{research_run_id}/slip-construction", dependencies=[auth_dependency])
+    def get_slip_construction_postmortem(research_run_id: str):
+        """Independent read-only construction retro from existing settlement rows.
+
+        This intentionally reuses the authenticated canonical ledger read,
+        does not create recommendations, and never writes a new outcome/model.
+        """
+        settled = get_postmortem(research_run_id)
+        return {
+            "research_run_id": research_run_id,
+            "slip_construction_postmortem": build_slip_construction_postmortem(
+                settled["legs"], settled["positions"]
+            ),
             "can_execute": False,
         }
 
