@@ -79,7 +79,7 @@ def test_server_capped_healthy_prefix_cannot_hide_failing_cohort():
     original=db.table
     def table(name):
         query=original(name)
-        if name=='wow_nfl_forward_verified_grades':
+        if name=='wow_nfl_forward_verified_grades_v2':
             execute=query.execute
             def capped():
                 result=execute()
@@ -105,7 +105,7 @@ def test_missing_exact_count_cannot_authorize_incomplete_snapshot():
     original=db.table
     def table(name):
         query=original(name)
-        if name=='wow_nfl_forward_verified_grades':
+        if name=='wow_nfl_forward_verified_grades_v2':
             execute=query.execute
             def without_count():
                 result=execute()
