@@ -115,12 +115,15 @@ def test_guard_exits_zero_against_the_current_main_tip():
     assert f"no registry conflict between HEAD and {BASE_REF}" in proc.stdout
 
 
-@pytest.mark.skipif(not MERGE_TREE_SUPPORTED, reason="git merge-tree --write-tree needs git >= 2.38")
-def test_script_exits_nonzero_when_a_registry_row_conflicts(tmp_path):
-    """Both branches add a row to the same document, so the script must fail."""
+@pytest.fixture
+def conflicting_registry_repo(tmp_path):
+    """A repository whose branch and base each add a row to the same registry file.
+
+    The script derives its repository root from its own location, so it is
+    copied in at the path it occupies here; that keeps documented_paths()
+    aligned with the files git reports as conflicting.
+    """
     repo = tmp_path / "repo"
-    # The script takes its repository root from its own location, so it has to
-    # sit where it does in this repository for the watched paths to line up.
     script = repo / "artifacts" / "wow-engine" / "scripts" / "registry_merge_conflict.py"
     doc = repo / "artifacts" / "wow-engine" / "docs" / "failure_codes.md"
     script.parent.mkdir(parents=True)
@@ -147,6 +150,14 @@ def test_script_exits_nonzero_when_a_registry_row_conflicts(tmp_path):
     git("commit", "-qam", "base adds a row elsewhere")
     git("checkout", "-q", "-")
 
+    return repo, script
+
+
+@pytest.mark.skipif(not MERGE_TREE_SUPPORTED, reason="git merge-tree --write-tree needs git >= 2.38")
+def test_script_exits_nonzero_when_a_registry_row_conflicts(conflicting_registry_repo):
+    """Both branches add a row to the same document, so the script must fail."""
+    repo, script = conflicting_registry_repo
+
     proc = subprocess.run(
         (sys.executable, str(script), "--base", "base", "--head", "HEAD"),
         cwd=repo,
@@ -161,30 +172,8 @@ def test_script_exits_nonzero_when_a_registry_row_conflicts(tmp_path):
 
 
 @pytest.mark.skipif(not MERGE_TREE_SUPPORTED, reason="git merge-tree --write-tree needs git >= 2.38")
-def test_conflicting_rows_in_a_real_repository_are_detected(tmp_path):
-    repo = tmp_path / "repo"
-    doc = repo / "artifacts" / "wow-engine" / "docs" / "failure_codes.md"
-    doc.parent.mkdir(parents=True)
-    doc.write_text("| Code |\n|---|\n| `A` |\n", encoding="utf-8")
-
-    def git(*args):
-        return subprocess.run(
-            ("git",) + args, cwd=repo, check=True, capture_output=True, text=True
-        )
-
-    git("init", "-q")
-    git("config", "user.email", "guard@example.com")
-    git("config", "user.name", "Registry Guard")
-    git("add", "-A")
-    git("commit", "-qm", "base")
-    git("branch", "base")
-
-    doc.write_text("| Code |\n|---|\n| `A` |\n| `B` |\n", encoding="utf-8")
-    git("commit", "-qam", "this branch adds a row")
-    git("checkout", "-q", "base")
-    doc.write_text("| Code |\n|---|\n| `A` |\n| `C` |\n", encoding="utf-8")
-    git("commit", "-qam", "base adds a row elsewhere")
-    git("checkout", "-q", "-")
+def test_conflicting_rows_in_a_real_repository_are_detected(conflicting_registry_repo):
+    repo, _ = conflicting_registry_repo
 
     proc = subprocess.run(
         ("git", "merge-tree", "--write-tree", "--name-only", "base", "HEAD"),
