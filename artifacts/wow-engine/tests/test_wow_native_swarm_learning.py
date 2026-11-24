@@ -46,10 +46,11 @@ def test_repeated_identical_event_is_a_hold_not_learning():
     assert report["current_screened_facts"] == 0
 
 
-def test_improvement_really_requires_more_evidence_and_no_new_gaps():
+def test_lower_gap_count_never_certifies_unique_evidence_improvement():
     result = learn(receipt("25", facts=2, missing=19), [receipt("24", facts=0, missing=21)])
-    assert result["status"] == "RESEARCH_EVIDENCE_COVERAGE_IMPROVED"
+    assert result["status"] == "RESEARCH_GAP_COUNT_REDUCED_UNVERIFIED"
     assert result["predictive_accuracy_improvement_verified"] is False
+    assert result["unique_source_evidence_improvement_verified"] is False
 
 
 def test_regression_when_gap_widens_or_facts_disappear():
@@ -183,3 +184,13 @@ def test_history_collector_excludes_verification_events():
     assert "continue-on-error: true" in workflow
     assert '"$valid_count" -lt 8' in workflow
     assert "--pattern 'wow-native-swarm-receipt-*'" in workflow
+
+def test_duplicate_source_rows_cannot_create_verified_learning():
+    # The existing coordinator can count repeated identical observations.
+    # Count increases alone are never independently unique-source evidence.
+    prior = receipt("101", facts=1, missing=9)
+    duplicate = receipt("102", facts=2, missing=9)
+    result = learn(duplicate, [prior])
+    assert result["status"] != "RESEARCH_EVIDENCE_COVERAGE_IMPROVED"
+    assert result["status"] == "REPEATED_RESEARCH_HOLD"
+    assert result["unique_source_evidence_improvement_verified"] is False
