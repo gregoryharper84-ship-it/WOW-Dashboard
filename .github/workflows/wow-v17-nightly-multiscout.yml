@@ -425,6 +425,36 @@ jobs:
               print(f"::warning title=WOW News Feed Degraded::status={status} code={code} articles={articles}")
               raise SystemExit(1)
           PY
+      - name: Build bounded same-run public newsfeed report
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-multiscout"
+          python v17/public_news_feed_report.py \
+            --input "$RUNNER_TEMP/wow-multiscout/public-gdelt-receipt.json" \
+            --output-json "$RUNNER_TEMP/wow-multiscout/public-newsfeed.json" \
+            --output-md "$RUNNER_TEMP/wow-multiscout/public-newsfeed.md" \
+            --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout" / "public-newsfeed.json").read_text())
+          assert report["can_execute"] is False
+          assert report["publisher_facts_verified"] is False
+          assert report["model_rescore_verified"] is False
+          print(f"WOW_PUBLIC_NEWSFEED_STATUS={report['status']} sampled_sport={report['sampled_sport']} headline_groups={len(report['headlines'])}")
+          PY
+      - name: Upload compact public research newsfeed artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-public-newsfeed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/wow-multiscout/public-gdelt-receipt.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.md
+          if-no-files-found: warn
+          retention-days: 90
       - name: Enrich handoff with sport-specialist Scout teams
         if: always()
         shell: bash
@@ -502,6 +532,8 @@ jobs:
           path: |
             ${{ runner.temp }}/wow-multiscout/model-handoff.json
             ${{ runner.temp }}/wow-multiscout/public-gdelt-receipt.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.md
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
             ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
