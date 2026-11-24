@@ -152,6 +152,17 @@ def _http_json(url: str, params: dict[str, Any] | None = None) -> SecondaryResul
         return SecondaryResult(False, code=f"ESPN_{type(exc).__name__}")
 
 
+# ESPN's college scoreboards return a featured/ranked subset unless a division
+# group is requested: 80 = FBS (college football), 50 = Division I (men's
+# college basketball). Without it a full slate can never be established, and
+# the completeness check below (unchanged) holds the day. The group narrows
+# the request to the governed division; it never relaxes that check.
+ESPN_SCOREBOARD_GROUPS: dict[str, str] = {
+    "americanfootball_ncaaf": "80",
+    "basketball_ncaab": "50",
+}
+
+
 def _scoreboard(
     sport_key: str,
     params: dict[str, Any] | None = None,
@@ -192,10 +203,11 @@ def _scoreboard(
     # each provider request day-scoped, then merge deterministically so Scout's
     # exact timestamp window is still enforced after acquisition.
     for date_key in date_keys:
-        result = _http_json(
-            endpoint,
-            {"dates": date_key, "limit": bounded_limit},
-        )
+        request_params: dict[str, Any] = {"dates": date_key, "limit": bounded_limit}
+        group = ESPN_SCOREBOARD_GROUPS.get(sport_key)
+        if group:
+            request_params["groups"] = group
+        result = _http_json(endpoint, request_params)
         if not result.ok:
             return result
         if not isinstance(result.data, dict):

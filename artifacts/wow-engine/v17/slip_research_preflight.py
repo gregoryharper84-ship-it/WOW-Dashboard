@@ -20,6 +20,13 @@ RESEARCH_CLASS = "RESEARCH_ONLY_UNCERTIFIED"
 _TOTALS = {"GAME_TOTAL", "TEAM_TOTAL", "TOTAL", "OVER_UNDER"}
 _PROPS = {"PLAYER_PROP", "PLAYER_POINTS", "PLAYER_REBOUNDS", "PLAYER_ASSISTS", "PROP"}
 _STANDARD_MAX_LEGS = 3
+# Research evidence is never an independently authenticated fitted model.
+# An asserted high-confidence label must be downgraded, regardless of
+# apparently favorable historic hit rates or an expensive favorite price.
+_HIGH_CONFIDENCE_CLAIMS = {
+    "STRONG", "STRONG_CONFIDENCE", "HIGH", "HIGH_CONFIDENCE",
+    "VERY_HIGH", "ELITE", "LOCK", "CERTIFIED", "FULL_MODEL",
+}
 _MARKET_ALIASES = {
     "ML": "MONEYLINE", "MONEYLINE": "MONEYLINE",
     "SPREAD": "POINT_SPREAD", "POINT_SPREAD": "POINT_SPREAD",
@@ -583,6 +590,8 @@ def audit_research_slips(
         if not isinstance(legs, list):
             legs = []
         blockers = []
+        if _text(slip.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+            blockers.append("SLIP_JOINT_CONFIDENCE_UNVERIFIED")
         if slip_id in seen_card_ids:
             blockers.append("RESEARCH_CARD_ID_DUPLICATE")
         seen_card_ids.add(slip_id)
@@ -598,6 +607,8 @@ def audit_research_slips(
                 blockers.append("RESEARCH_LEG_INVALID")
                 continue
             reasons: list[str] = []
+            if _text(leg.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+                reasons.append("RESEARCH_STRONG_CONFIDENCE_CLAIM_UNVERIFIED")
             identity = exact_key(leg)
             start = _time(leg.get("event_start_utc"))
             snapshot = _time(leg.get("source_snapshot_at_utc"))
