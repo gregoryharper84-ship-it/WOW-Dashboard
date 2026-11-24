@@ -24,6 +24,11 @@ MIN_FORWARD_GRADED = 100
 # V2 is required after the private verified-grade view migration; stale V1
 # health snapshots cannot authorize the forward certification admission gate.
 HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V2"
+# Owner decision 2026-11-24 (Greg, #1939): the persisted health receipt is
+# computed on the V2 (LATEST_VALID_PREKICKOFF_V2) verified cohort. A distinct
+# schema version keeps every earlier frozen-V1-cohort receipt from satisfying
+# a consumer that now requires the V2 cohort. Thresholds are unchanged.
+HEALTH_SCHEMA_VERSION_V3 = "NFL_FORWARD_CALIBRATION_HEALTH_V3"
 GRADE_SCHEMA_VERSION = "NFL_FORWARD_SHADOW_GRADE_V1"
 
 PREDICTION_TABLE = "wow_nfl_event_predictions"
@@ -34,11 +39,12 @@ HEALTH_TABLE = "wow_nfl_forward_calibration_health"
 
 # Owner decision 2026-11-21 (#1896 / #1939): grading eligibility is separate
 # from publication eligibility. V1 (latest *publishable* pre-kickoff row) is
-# preserved unchanged as the original historical record and remains the only
-# source of the persisted health receipt / certification admission. V2 grades
-# the latest *valid* pre-kickoff forecast whether or not it is publishable, in
-# its own immutable ledger, one row per event. V2 never publishes, never feeds
-# certification admission, and never changes a probability or bound.
+# preserved unchanged as the original historical record; its scorecard is now
+# diagnostic only. V2 grades the latest *valid* pre-kickoff forecast whether or
+# not it is publishable, in its own immutable ledger, one row per event.
+# Owner decision 2026-11-24 (#1939): the persisted health receipt (schema V3)
+# is computed on the V2 verified cohort. V2 never publishes and never changes a
+# probability or bound; certification still requires the independent registry.
 SELECTION_POLICY_V1 = "LATEST_PUBLISHABLE_PREKICKOFF_V1"
 SELECTION_POLICY_V2 = "LATEST_VALID_PREKICKOFF_V2"
 GRADE_SCHEMA_VERSION_V2 = "NFL_FORWARD_SHADOW_GRADE_V2"
@@ -338,10 +344,11 @@ def calibration_health(
     grades: Sequence[ForwardGrade],
     *,
     min_forward: int = MIN_FORWARD_GRADED,
+    schema_version: str = HEALTH_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     n = len(grades)
     base = {
-        "schema_version": HEALTH_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "sport": "NFL",
         "market_family": "OUTRIGHT_WINNER",
@@ -594,8 +601,8 @@ def run_forward_grading_v2(
 ) -> dict[str, Any]:
     """Grade under LATEST_VALID_PREKICKOFF_V2 into its own immutable ledger.
 
-    The scorecard is diagnostic evidence only: it is returned, never written
-    to the health table, so certification admission is unchanged.
+    Returns the V3 health scorecard for the reconciled V2 verified cohort. The
+    caller persists it as the governed health receipt; it never certifies.
     """
     canonical, report = select_latest_valid_prekickoff_predictions(prediction_rows)
     grades = [
@@ -621,7 +628,9 @@ def run_forward_grading_v2(
     verified = load_verified_grades(
         db, table=VERIFIED_GRADE_TABLE_V2, schema_version=GRADE_SCHEMA_VERSION_V2
     )
-    scorecard = calibration_health(verified, min_forward=min_forward)
+    scorecard = calibration_health(
+        verified, min_forward=min_forward, schema_version=HEALTH_SCHEMA_VERSION_V3
+    )
     return {
         "status": "COMPLETED",
         **report,
@@ -633,9 +642,24 @@ def run_forward_grading_v2(
         "verified_graded_events": len(verified),
         "calibration_cohort_source": VERIFIED_GRADE_TABLE_V2,
         "calibration_scorecard": scorecard,
-        "certification_admission_source": False,
+        "certification_admission_source": True,
         "probability_publishable": False,
         "can_execute": False,
+    }
+
+
+def _v2_cohort_unavailable_health(reason_code: str, min_forward: int) -> dict[str, Any]:
+    return {
+        "schema_version": HEALTH_SCHEMA_VERSION_V3,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "sport": "NFL",
+        "market_family": "OUTRIGHT_WINNER",
+        "graded_n": 0,
+        "minimum_forward_required": int(min_forward),
+        "can_execute": False,
+        "status": "INSUFFICIENT_FORWARD_EVIDENCE",
+        "certification_recommendation": "DO_NOT_CERTIFY_YET",
+        "blockers": [reason_code],
     }
 
 
@@ -657,19 +681,23 @@ def run_forward_shadow(
     grades = grade_forward_predictions(canonical, outcome_rows)
     inserted = persist_new_grades(db, grades)
     # A newly recomputed grade may disagree with an immutable historical row.
-    # Only the reconciled persisted view may contribute to a V2 health receipt.
+    # The frozen V1 view stays readable; its scorecard is diagnostic only.
     verified_grades = load_verified_grades(db)
-    health = calibration_health(verified_grades, min_forward=min_forward)
-    persist_health(db, health)
-    # Publication-independent grading runs after the unchanged V1 receipt so a
-    # V2 failure (e.g. migration not yet applied) can never alter V1 evidence
-    # or certification admission. Its failure is typed, never silent.
+    v1_scorecard = calibration_health(verified_grades, min_forward=min_forward)
+    # The governed health receipt comes from the V2 verified cohort. A V2
+    # failure (e.g. view missing) is typed and persists a non-PASS V3 receipt,
+    # so an earlier PASS can never remain the latest admissible health row.
     try:
         grading_v2 = run_forward_grading_v2(db, prediction_rows, outcome_rows, min_forward=min_forward)
     except NFLForwardShadowError as exc:
         grading_v2 = {"status": "FAILED", "reason_code": f"NFL_FORWARD_V2_{exc}", "can_execute": False}
     except Exception as exc:  # noqa: BLE001 - typed and isolated from V1 grading
         grading_v2 = {"status": "FAILED", "reason_code": f"NFL_FORWARD_V2_{type(exc).__name__.upper()}", "can_execute": False}
+    if grading_v2.get("status") == "COMPLETED":
+        health = grading_v2["calibration_scorecard"]
+    else:
+        health = _v2_cohort_unavailable_health(str(grading_v2["reason_code"]), min_forward)
+    persist_health(db, health)
     feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
     return {
         "status": "COMPLETED",
@@ -679,9 +707,10 @@ def run_forward_shadow(
         "canonical_events": len(canonical),
         "graded_events": len(grades),
         "verified_graded_events": len(verified_grades),
-        "calibration_cohort_source": VERIFIED_GRADE_TABLE,
+        "calibration_cohort_source": VERIFIED_GRADE_TABLE_V2,
         "new_grades_persisted": inserted,
         "calibration_health": health,
+        "v1_frozen_scorecard": v1_scorecard,
         "selection_policy": SELECTION_POLICY_V1,
         "forward_grading_v2": grading_v2,
         "automatic_certification": False,
