@@ -543,7 +543,7 @@ jobs:
                 --workflow wow-v17-nightly-multiscout.yml --event "$event" \
                 --status success --limit 20 --json databaseId \
                 --jq '.[].databaseId' || true
-            done | sort -rn | uniq | head -n 40
+            done | sort -rn | uniq | sed -n '1,40p'
           )"
           valid_count=0
           while IFS= read -r rid; do
