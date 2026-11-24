@@ -570,3 +570,37 @@ def test_typed_invalid_model_output_keeps_output_failure_semantics():
             **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_OUTPUT_INVALID"
+
+
+def test_explicit_replay_now_without_clock_survives_second_pregame_check():
+    """A supplied internal replay instant must not be replaced by wall time."""
+    snapshot = _stored_snapshot()
+    client = _Client(snapshot)
+    observed = []
+    raw = RawNCAAFWinProbability(
+        home_probability=0.62,
+        away_probability=0.38,
+        model_artifact_version="replay-artifact",
+        artifact_id="replay-artifact",
+    )
+    calibrated = SimpleNamespace(
+        calibrated_probability=0.60,
+        calibration_lower_diagnostic=0.41,
+        calibration_upper_diagnostic=0.75,
+    )
+    result = score_current_event_snapshot(
+        client,
+        official_event_id=EVENT_ID,
+        event_start_time=KICKOFF.isoformat(),
+        home_team="Louisville",
+        away_team="Florida State",
+        expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
+        scorer=lambda *args, **kwargs: observed.append("invoked") or raw,
+        calibrator=lambda *args, **kwargs: calibrated,
+        **_score_context(snapshot),
+    )
+    assert observed == ["invoked"]
+    assert result["status"] == "SCORED_HELD"
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False

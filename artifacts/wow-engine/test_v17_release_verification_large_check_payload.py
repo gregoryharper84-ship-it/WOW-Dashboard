@@ -20,8 +20,6 @@ NAMES = (
     ("WOW required-three regression", 15368),
     ("WOW governed probability backend", 15368),
     ("WOW additional required regression", 15368),
-    ("WOW Independent QA exact-head", 5245832),
-    ("WOW Release Authority exact-head", 5245853),
 )
 WORKFLOWS = (
     "wow-verify",
@@ -79,6 +77,9 @@ def _run(tmp_path, mode):
         checks.append(latest)
     elif mode == "stale":
         checks[-2]["head_sha"] = "b" * 40
+    elif mode == "optional_qa_failed":
+        qa = _check(100, "WOW Independent QA exact-head", 5245832)
+        checks.append(dict(qa, conclusion="failure"))
     elif mode == "missing":
         checks.pop()
     page = {"check_runs": None if mode == "malformed" else checks}
@@ -117,18 +118,30 @@ def _run(tmp_path, mode):
 def test_large_page_exact_head_and_app_ids_pass_without_argv_overflow(tmp_path):
     proc = _run(tmp_path, "success")
     assert proc.returncode == 0, proc.stderr
-    assert "five-check evidence verified" in (tmp_path / "summary.md").read_text()
+    assert "native three-required-check evidence verified" in (tmp_path / "summary.md").read_text()
+
+
+@pytest.mark.parametrize(
+    ("mode", "diagnostic"),
+    [
+        ("workflow_failed", "wow-verify.yml -> completed|failure"),
+        ("optional_qa_failed", "WOW Independent QA exact-head -> completed|failure"),
+    ],
+)
+def test_failed_diagnostics_do_not_block_native_required_checks(tmp_path, mode, diagnostic):
+    proc = _run(tmp_path, mode)
+    assert proc.returncode == 0, proc.stderr
+    assert diagnostic in (tmp_path / "summary.md").read_text()
 
 
 @pytest.mark.parametrize(
     ("mode", "error"),
     [
-        ("foreign", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW Independent QA exact-head"),
-        ("failed", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW Independent QA exact-head"),
-        ("stale", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW Independent QA exact-head"),
-        ("missing", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW Release Authority exact-head"),
+        ("foreign", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW governed probability backend"),
+        ("failed", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW governed probability backend"),
+        ("stale", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW governed probability backend"),
+        ("missing", "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:WOW additional required regression"),
         ("malformed", "RELEASE_CHECK_PAGE_INVALID"),
-        ("workflow_failed", "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN"),
     ],
 )
 def test_large_payload_keeps_release_failing_closed(tmp_path, mode, error):

@@ -90,6 +90,7 @@ def test_forward_shadow_refreshes_settlements_before_loading_outcomes(monkeypatc
     monkeypatch.setattr(shadow, "load_outcome_rows", lambda db: calls.append("outcomes") or [])
     monkeypatch.setattr(shadow, "grade_forward_predictions", lambda predictions, outcomes: calls.append("grades") or [])
     monkeypatch.setattr(shadow, "persist_new_grades", lambda db, grades: 0)
+    monkeypatch.setattr(shadow, "load_verified_grades", lambda db: [])
     monkeypatch.setattr(
         shadow,
         "calibration_health",

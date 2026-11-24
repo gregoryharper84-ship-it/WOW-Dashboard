@@ -317,7 +317,24 @@ def evaluate_candidate(candidate: dict[str, Any], *, now: datetime | None = None
     source_family_count = len(source_families)
     independent_source_count = len(independent_sources)
 
-    if contradictions or red_flags:
+    impact = candidate.get("context_change_impact")
+    context_invalid = (
+        isinstance(impact, dict)
+        and impact.get("research_invalidation_requested") is True
+    ) or candidate.get("research_recommendation_status") in {
+        "CONTEXT_STALE_RECALC_REQUIRED",
+        "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
+        "CONTEXT_MATERIAL_EVIDENCE_INVALID",
+        "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH",
+        "CONTEXT_RECEIPT_DIGEST_INVALID",
+    }
+    if context_invalid:
+        status = "QUARANTINED"
+        reason = "CONTEXT_STALE_RECALC_REQUIRED"
+        if "CONTEXT_STALE_RECALC_REQUIRED" not in red_flags:
+            red_flags.append("CONTEXT_STALE_RECALC_REQUIRED")
+    elif contradictions or red_flags:
         status = "QUARANTINED"
         reason = "MATERIAL_CONFLICT_OR_RED_TEAM_FLAG"
     elif not identity_complete:
@@ -386,10 +403,23 @@ def promote_handoff(payload: dict[str, Any], *, now: datetime | None = None) -> 
             candidate = dict(row)
             evaluation = evaluate_candidate(candidate, now=now)
             candidate.update(evaluation)
+            impact = candidate.get("context_change_impact")
+            # Existing evidence-quality research interest cannot override an
+            # event-wide material-context invalidation, including peer roles.
+            # This is a research gate, NOT the governing fitted-score reducer.
+            if (isinstance(impact, dict)
+                    and impact.get("research_invalidation_requested") is True):
+                candidate["research_status"] = "QUARANTINED"
+                candidate["research_context_gate"] = "CONTEXT_STALE_RECALC_REQUIRED"
+                prior = candidate.get("research_blockers")
+                prior = list(prior) if isinstance(prior, list) else []
+                candidate["research_blockers"] = list(dict.fromkeys([
+                    *prior, "CONTEXT_STALE_RECALC_REQUIRED",
+                ]))
             candidate["research_ceiling"] = "RESEARCH_INTEREST"
             candidate["probability_authority"] = False
             candidate["can_execute"] = False
-            counts[evaluation["research_status"]] += 1
+            counts[candidate["research_status"]] += 1
             updated.append(candidate)
         handoff[lane] = updated
     out["model_handoff"] = handoff

@@ -1,3 +1,4 @@
+import pytest
 from v17.scout_secondary_source import espn_event_to_primary_shape, espn_h2h_payload
 
 
@@ -55,3 +56,63 @@ def test_missing_moneyline_fails_closed_instead_of_fabricating_market():
     event = _event()
     event["competitions"][0]["odds"][0]["homeTeamOdds"].pop("moneyLine")
     assert espn_h2h_payload(event, primary_failure="HTTP_401") is None
+
+
+
+def test_espn_missing_odds_update_does_not_invent_fresh_quote_from_kickoff():
+    event = _event()
+    event["competitions"][0]["odds"][0].pop("lastUpdated")
+    payload = espn_h2h_payload(event, primary_failure="ODDS_API_QUOTA_EXHAUSTED")
+    assert payload is not None
+    assert payload["commence_time"] == "2026-09-12T19:00:00Z"
+    assert payload["bookmakers"][0]["last_update"] is None
+    assert payload["bookmakers"][0]["markets"][0]["last_update"] is None
+    assert payload["_wow_secondary_source"]["research_only"] is True
+    assert payload["_wow_secondary_source"]["prediction_authority"] is False
+
+    # A legitimate observed quote timestamp is still preserved unmodified.
+    event["competitions"][0]["odds"][0]["lastUpdated"] = "2026-09-12T17:10:00Z"
+    observed = espn_h2h_payload(event)
+    assert observed["bookmakers"][0]["last_update"] == "2026-09-12T17:10:00Z"
+    assert observed["bookmakers"][0]["markets"][0]["last_update"] == "2026-09-12T17:10:00Z"
+
+
+
+# --- ESPN college division groups (NCAAF/NCAAB daily-row holds) -------------
+
+def _capture_scoreboard_params(monkeypatch, sport_key, events):
+    from v17 import scout_secondary_source as sss
+    seen = []
+
+    def fake_http(endpoint, params):
+        seen.append(dict(params))
+        return sss.SecondaryResult(True, {"events": events}, 200)
+
+    monkeypatch.setattr(sss, "_http_json", fake_http)
+    sss._SCOREBOARD_CACHE.clear()
+    result = sss._scoreboard(sport_key, {"dates": "20261128"})
+    return sss, seen, result
+
+
+@pytest.mark.parametrize("sport_key,group", [
+    ("americanfootball_ncaaf", "80"),
+    ("basketball_ncaab", "50"),
+])
+def test_college_scoreboards_request_the_governed_division(monkeypatch, sport_key, group):
+    _sss, seen, _result = _capture_scoreboard_params(monkeypatch, sport_key, [])
+    assert seen and all(p.get("groups") == group for p in seen)
+
+
+@pytest.mark.parametrize("sport_key", ["americanfootball_nfl", "basketball_nba", "icehockey_nhl"])
+def test_professional_scoreboards_send_no_group(monkeypatch, sport_key):
+    _sss, seen, _result = _capture_scoreboard_params(monkeypatch, sport_key, [])
+    assert seen and all("groups" not in p for p in seen)
+
+
+def test_ncaaf_exactly_25_without_total_still_fails_closed_with_group(monkeypatch):
+    events = [{"id": f"evt-{i}", "date": "2026-11-28T17:00Z"} for i in range(25)]
+    _sss, seen, result = _capture_scoreboard_params(monkeypatch, "americanfootball_ncaaf", events)
+    assert seen[0]["groups"] == "80"
+    # The group does not relax the unchanged completeness heuristic.
+    assert result.ok is True
+    assert result.data["_wow_provider_completeness_unverified"] is True

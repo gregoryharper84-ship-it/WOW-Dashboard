@@ -35,6 +35,7 @@ jobs:
       SCOUT_PERSIST_RECOVERY_MAX_PAGES: "20"
     steps:
       - name: Resolve completed Multi-Scout source run
+        continue-on-error: true
         id: source
         shell: bash
         run: |
@@ -185,7 +186,8 @@ jobs:
               else
                 recovery_rc=$?
                 if [ "$recovery_rc" -eq 2 ]; then
-                  echo "Lossless Scout persistence recovery scan could not prove completeness; fail closed." >&2
+                  echo "::error::SCOUT_PERSISTENCE_RECOVERY_SCAN_INCOMPLETE: Lossless Scout persistence recovery scan could not prove completeness; fail closed."
+                  echo "SCOUT_PERSISTENCE_RECOVERY_SCAN_INCOMPLETE recovery_class=EVIDENCE_PENDING can_execute=false" >> "$GITHUB_STEP_SUMMARY"
                   exit 1
                 fi
                 if recoverable_source=$(resolve_completed_with_discovery_artifact); then
@@ -214,7 +216,8 @@ jobs:
           fi
 
           if [ -z "$source_run_id" ]; then
-            echo "No completed recoverable Multi-Scout run found; fail closed." >&2
+            echo "::error::SCOUT_PERSISTENCE_SOURCE_UNAVAILABLE: No completed recoverable Multi-Scout run found; fail closed."
+            echo "SCOUT_PERSISTENCE_SOURCE_UNAVAILABLE recovery_class=NO_RECOVERABLE_SOURCE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -227,6 +230,8 @@ jobs:
           fi
 
       - name: Verify recoverable discovery artifact exists
+        continue-on-error: true
+        if: steps.source.outputs.run_id != ''
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -235,11 +240,14 @@ jobs:
           discovery_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
             --jq '[.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))] | length')
           if [ "$discovery_count" -lt 1 ]; then
-            echo "Multi-Scout run ${SOURCE_RUN_ID} has no recoverable discovery artifact; refusing to fabricate persistence input." >&2
+            echo "::error::SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE: Multi-Scout run ${SOURCE_RUN_ID} has no recoverable discovery artifact; refusing to fabricate persistence input."
+            echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${SOURCE_RUN_ID} recovery_class=EVIDENCE_PENDING can_execute=false" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
       - name: Capture persistence receipt baseline
+        continue-on-error: true
+        if: steps.source.outputs.run_id != ''
         id: baseline
         shell: bash
         env:
@@ -253,12 +261,14 @@ jobs:
           echo "Persistence receipt baseline for ${SOURCE_RUN_ID}: ${count}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Allow native workflow_run persistence to win first
-        if: steps.source.outputs.force_replay != 'true'
+        continue-on-error: true
+        if: steps.source.outputs.run_id != '' && steps.source.outputs.force_replay != 'true'
         run: sleep 30
 
       - name: Check for existing persistence receipt
+        continue-on-error: true
         id: existing
-        if: steps.source.outputs.force_replay != 'true'
+        if: steps.source.outputs.run_id != '' && steps.source.outputs.force_replay != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -275,8 +285,9 @@ jobs:
           fi
 
       - name: Detect same-source persistence writer state
+        continue-on-error: true
         id: writer
-        if: steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true'
+        if: steps.source.outputs.run_id != '' && (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true')
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -334,6 +345,7 @@ jobs:
           fi
 
       - name: Park automatic Scout persistence recovery during failure cooldown
+        continue-on-error: true
         if: steps.writer.outputs.cooldown == 'true'
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -342,7 +354,8 @@ jobs:
           echo "BLOCKED_WITH_EXACT_REASON: SCOUT_PERSISTENCE_RECOVERY_COOLDOWN_ACTIVE source_run_id=${SOURCE_RUN_ID} failed_run_id=${RECENT_FAILED_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Explicitly resume Scout persistence
-        if: (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true' && steps.writer.outputs.replayed != 'true' && steps.writer.outputs.cooldown != 'true'
+        continue-on-error: true
+        if: steps.source.outputs.run_id != '' && (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true' && steps.writer.outputs.replayed != 'true' && steps.writer.outputs.cooldown != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -352,7 +365,8 @@ jobs:
           echo "Explicitly dispatched governed Scout persistence for source run ${SOURCE_RUN_ID} on current main." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify persistence receipt appears
-        if: steps.writer.outputs.cooldown != 'true'
+        continue-on-error: true
+        if: steps.source.outputs.run_id != '' && steps.writer.outputs.cooldown != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -381,8 +395,9 @@ jobs:
             sleep 15
           done
           if [ "$EXPECT_FRESH_RECEIPT" = "true" ]; then
-            echo "Fresh persistence receipt did not appear for source run ${SOURCE_RUN_ID}; current-main replay acceptance remains open." >&2
+            echo "::error::SCOUT_PERSISTENCE_RECEIPT_UNCONFIRMED: Fresh persistence receipt did not appear for source run ${SOURCE_RUN_ID}; current-main replay acceptance remains open."
           else
-            echo "Persistence receipt did not appear for source run ${SOURCE_RUN_ID}; acceptance remains open." >&2
+            echo "::error::SCOUT_PERSISTENCE_RECEIPT_UNCONFIRMED: Persistence receipt did not appear for source run ${SOURCE_RUN_ID}; acceptance remains open."
           fi
+          echo "SCOUT_PERSISTENCE_RECEIPT_UNCONFIRMED source_run_id=${SOURCE_RUN_ID} recovery_class=RECEIPT_PENDING can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           exit 1

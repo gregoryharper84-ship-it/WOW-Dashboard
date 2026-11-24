@@ -49,7 +49,9 @@ jobs:
           experiment_pr=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
             --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Model-Experiment-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
 
-          priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
+          # Release verification already runs independently at :37 each hour.
+          # Select non-release repair work here to avoid starving the engineering lane.
+          priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority --exclude-release)
           incident=$(jq -r '.incident_id // ""' <<<"$priority")
           state=$(jq -r '.state // "NONE"' <<<"$priority")
           severity=$(jq -r '.severity // "NONE"' <<<"$priority")
@@ -71,13 +73,14 @@ jobs:
             target="$incident"
             reason="Highest-priority incident is in release/production verification."
           elif [ -n "$incident" ]; then
-            action="REPAIR"
-            target="$incident"
-            reason="Highest-priority durable incident still requires engineering closure."
+            # A PM ledger ID is not an admitted numeric GitHub issue ID. Never
+            # pass it to a worker or launch an unbound writer directly.
+            action="REQUEST_ADMITTED_REPAIR"
+            reason="Open PM requires engineering; submit only to the existing provider-fenced GitHub-issue intake, not an exact PM writer target."
           elif [ "$product_health" != "PASS" ]; then
             action="VERIFY_PRODUCT"
             reason="Golden user journey is not PASS; run independent product acceptance before discretionary model research."
-          elif [ -n "$experiment_pr" ]; then
+          elif [ -n "$experiment_pr" ] && [ "$frontier_allowed" = "true" ]; then
             action="RESUME_EXPERIMENT_PR"
             target="$experiment_pr"
             reason="Product health is PASS and a governed model-improvement experiment PR is open; finish or repair it before starting another experiment."
@@ -177,20 +180,31 @@ jobs:
           fi
           gh workflow run wow-v17-release-resume-agent.yml --repo "$GITHUB_REPOSITORY" --ref main
 
-      - name: Dispatch engineering repair
-        if: steps.decision.outputs.action == 'REPAIR'
+      - name: Request vetted engineering repair intake
+        if: steps.decision.outputs.action == 'REQUEST_ADMITTED_REPAIR'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          SEVERITY: ${{ steps.decision.outputs.severity }}
         run: |
           set -euo pipefail
-          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-chatgpt-engineering-worker.yml --limit 10 \
-            --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+          # The manifest-backed P0 planner runs independently every 15 minutes.
+          # Do not infer rapid eligibility from a PM ledger severity: a P0
+          # without an OPEN, RAPID GitHub issue is not an executable P0 target.
+          # Submit all controller repair intake through the existing provider
+          # authority; the scheduled rapid planner supplies real P0 leases.
+          # Neither path accepts a PM ledger ID as a worker target.
+          workflow=wow-v17-engineering-provider-dispatcher.yml
+          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --limit 40 \
+            --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting")] | length')
           if [ "$active" -gt 0 ]; then
-            echo "An engineering worker is already active; preserving the single implementation lease." >> "$GITHUB_STEP_SUMMARY"
+            echo "Admitted repair intake already active; no duplicate provider request." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
+          # This requests authenticated live-issue admission, not an exact
+          # incident dispatch, provider spend authorization, or merge authority.
+          gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main
+          echo "REQUESTED_ADMITTED_REPAIR_INTAKE: $workflow; PM ledger identity is diagnostic only." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify golden product acceptance
         if: steps.decision.outputs.action == 'VERIFY_PRODUCT'

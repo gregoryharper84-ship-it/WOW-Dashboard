@@ -22,8 +22,8 @@ CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 WORKFLOW_NAME = "wow-v17-independent-qa-check"
 WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
 WORKFLOW_ID = 380562324
-PROVIDER_IDENTITY = "openai-codex-action"
-CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
+PROVIDER_IDENTITY = "gemini-generative-api"
+CREDENTIAL_SCOPE = "WOW_QA_REVIEW_GEMINI_API_KEY"
 MAX_REVIEW_AGE = timedelta(minutes=30)
 MAX_DIFF_FILES = 100
 MAX_DIFF_BYTES = 512 * 1024
@@ -1192,6 +1192,31 @@ def resolve_qa_review_policy(
 
     expected_name = f"wow-v17-qa-policy-{run_id}-{run_attempt}"
     matching = [row for row in inventory if row.get("name") == expected_name]
+    # A QA producer that fails before uploading policy (for example
+    # TARGET_PR_IDENTITY_MISMATCH on a draft/retargeted PR) leaves zero
+    # matching artifacts. Strict callers still fail closed. The automatic
+    # main-scoped workflow_run admission opts into allow_superseded_target
+    # so it can exit neutral instead of publishing a failing check on the
+    # unrelated protected-main tip Render's checksPass trigger evaluates.
+    if len(matching) == 0 and allow_superseded_target:
+        # A missing artifact alone cannot authenticate its producer. Reject
+        # forged, incomplete or foreign QA runs before any neutral outcome.
+        _require(
+            _is_qa_workflow_run(run)
+            and run.get("event") in {"workflow_run", "workflow_dispatch"}
+            and run.get("head_branch") == "main"
+            and isinstance(run.get("head_sha"), str)
+            and SHA.fullmatch(run["head_sha"]) is not None
+            and (run.get("repository") or {}).get("full_name") == repository
+            and (run.get("head_repository") or {}).get("full_name") == repository
+            and run.get("status") == "completed"
+            and run.get("conclusion") in {"success", "failure"},
+            "QA_POLICY_RUN_PROVENANCE_MISMATCH",
+        )
+        return {
+            "disposition": "neutral",
+            "reason": "RELEASE_QA_POLICY_ARTIFACT_ABSENT",
+        }
     _require(len(matching) == 1, "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING")
     metadata = matching[0]
     artifact_id = _positive_int(metadata.get("id"), "QA_POLICY_ARTIFACT_ID")

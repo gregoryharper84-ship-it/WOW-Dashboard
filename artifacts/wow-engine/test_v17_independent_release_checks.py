@@ -683,6 +683,46 @@ def test_qa_source_superseded_is_neutral_only_for_verified_workflow_run(state, c
     }
 
 
+def test_qa_draft_at_exact_event_head_is_neutral_only_for_verified_workflow_run():
+    """Mirrors Release --neutral-if-draft-target (2026-11-20: draft #2738 caused
+    21 of 27 failing qa jobs on main e9d7b057, blocking Render checksPass)."""
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": True, "merged_at": None,
+            "head": {"sha": HEAD, "ref": "draft/x", "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    assert m.targets(REPO, workflow_run_prs=event_pr, neutral_superseded=True, fetch=routes) == {
+        "targets": [], "errors": [], "disposition": "neutral", "reason": "QA_SOURCE_PR_DRAFT",
+    }
+    # Without the automatic-callback flag the draft is still evaluated (QA_PR_DRAFT HOLD).
+    strict = m.targets(REPO, workflow_run_prs=event_pr, fetch=routes)
+    assert strict["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
+    # Manual dispatch never neutralizes a draft.
+    assert m.targets(REPO, pr="7", fetch=routes)["targets"] == [
+        {"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
+    # Multi-PR events stay strict.
+    two = event_pr + [{"number": 8, "head": {"sha": OLD}, "base": {"ref": "main"}}]
+    multi = m.targets(REPO, workflow_run_prs=two, neutral_superseded=True,
+                      fetch=Fake({f"repos/{REPO}/pulls/7": (200, live),
+                                  f"repos/{REPO}/pulls/8": (404, {})}))
+    assert multi.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize("change", [
+    {"head": {"sha": HEAD, "repo": {"full_name": "foreign/WOW-Dashboard"}}},
+    {"base": {"ref": "development", "repo": {"full_name": REPO}}},
+    {"merged_at": "2026-11-20T00:00:00Z"},
+])
+def test_qa_draft_rule_never_masks_foreign_or_invalid_identity(change):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": True, "merged_at": None,
+            "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}, **change}
+    out = m.targets(REPO, workflow_run_prs=event_pr, neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out.get("reason") != "QA_SOURCE_PR_DRAFT"
+
+
 @pytest.mark.parametrize(("field", "value"), [
     ("head.repo", {"full_name": "foreign/WOW-Dashboard"}),
     ("base.ref", "development"),
@@ -718,12 +758,36 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
         "Upload immutable QA review-policy receipt",
         "Decide at exact head (read-only)",
     ):
-        assert steps[name]["if"] == "steps.target.outputs.pr_number != ''"
+        # The empty-pr_number skip is unchanged; the added conjunct only makes
+        # the step run less often (fail-fast under step-level isolation).
+        assert steps[name]["if"] == (
+            "steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')")
     # The original Release classifier already neutralizes a successful QA
     # job whose terminal outcome upload is deliberately skipped.
     assert steps["Upload terminal QA outcome"]["if"].startswith(
         "always() && steps.target.outputs.pr_number != ''"
     )
+
+
+
+@pytest.mark.parametrize(("status", "body", "suffix"), [
+    (403, {"message": "You have exceeded a secondary rate limit"}, "403:SECONDARY_RATE_LIMIT"),
+    (403, {"message": "API rate limit exceeded"}, "403:RATE_LIMIT"),
+    (403, {"message": "Resource not accessible by integration"}, "403:APP_PERMISSION_DENIED"),
+    (403, {"message": "Bad credentials"}, "403:CREDENTIAL_REJECTED"),
+    (403, {"message": "unclassified 403 secret=private-value"}, "403"),
+    (429, {"message": "Rate limit reached"}, "429:RATE_LIMIT"),
+    (404, {"message": "Not Found"}, "404"),
+])
+def test_qa_pr_unreadable_fails_closed_with_safe_http_classification(status, body, suffix):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    routes = Fake({f"repos/{REPO}/pulls/7": (status, body)})
+    out = m.targets(REPO, workflow_run_prs=event_pr,
+                    neutral_superseded=True, fetch=routes)
+    assert out == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:7:{suffix}"]}
+    assert "private-value" not in str(out)
+    dispatch = m.targets(REPO, pr="7", fetch=routes)
+    assert dispatch == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:{suffix}"]}
 
 
 def test_dispatch_target_is_validated_and_resolved():
@@ -766,6 +830,37 @@ def _source_review_resolver(**kwargs):
         author="bot",
         pr_number=kwargs["pr_number"],
     )
+
+
+@pytest.mark.parametrize(("operation", "previous", "must_hold"), [
+    ("added", None, False),
+    ("modified", None, False),
+    ("changed", None, False),
+    ("removed", None, True),
+    ("renamed", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+    ("copied", None, True),
+    ("unchanged", None, True),
+    ("modified", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+])
+def test_zero_credit_gather_rejects_disallowed_file_operations(operation, previous, must_hold):
+    item = {"filename": "artifacts/wow-engine/learning/README.md", "status": operation}
+    if previous is not None:
+        item["previous_filename"] = previous
+    qa_policy = {"mode": "zero_credit", "target": {
+        "pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830",
+    }}
+    ev = m.gather(
+        REPO, 7, HEAD, fetch=Fake(_gather_routes(files=[item])),
+        qa_review_policy=qa_policy, independent_review_active=False,
+        zero_credit_enabled=True,
+    )
+    findings = m.qa_findings(ev)
+    if must_hold:
+        assert ev["zero_credit_disallowed_file_operations"]
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
+    else:
+        assert ev["zero_credit_disallowed_file_operations"] == []
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" not in findings
 
 
 def test_gather_collects_exact_head_evidence():
@@ -1403,7 +1498,8 @@ def _qa_target_output_enables_publish(pr_number):
     """
     workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
     steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
-    assert steps["Mint checks-only App token"]["if"] == "steps.target.outputs.pr_number != ''"
+    assert steps["Mint checks-only App token"]["if"] == (
+        "steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')")
     assert steps["Publish exact-head check"]["if"] == "always() && steps.target.outputs.pr_number != ''"
     return pr_number != ""
 
@@ -2135,6 +2231,7 @@ def test_publish_failure_is_typed(fake_gh):
 
 
 def test_every_phase_c_code_is_registered():
+    # CI retrigger: Phase-C registry scrape stays RELEASE_QA_* only for policy_resolver.
     emitted = set(re.findall(r'"((?:QA|RELEASE|TARGET)_[A-Z_]+)', MODULE.read_text()))
     emitted |= set(re.findall(r'f"((?:QA|RELEASE|TARGET)_[A-Z_]+)[:"]', MODULE.read_text()))
     # Release's authenticated QA-policy resolver is a separate protected

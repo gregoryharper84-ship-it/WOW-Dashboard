@@ -157,44 +157,123 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     """Independent cohort and champion certification, never automatic promotion."""
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
-            "artifact_id,active,promoted,probability_publishable"
+            "artifact_id,artifact_checksum,model_artifact_version,model_family,feature_schema_version,calibrator_id,active,promoted,probability_publishable"
         ).eq("artifact_id", row["model_artifact_id"]).limit(2).execute().data
         health = db.table("wow_nfl_forward_calibration_health").select(
-            "graded_n,minimum_forward_required,status,certification_recommendation,blockers"
+            "schema_version,graded_n,minimum_forward_required,status,certification_recommendation,blockers"
         ).order("generated_at", desc=True).limit(1).execute().data
+        # The model registry intentionally forces its publication flag false.
+        # Only the independent immutable specialist certification can lift the
+        # *terminal* ceiling; this check never changes the fitted artifact.
+        certificate = db.rpc("wow_v17_active_team_event_certification", {
+            "p_sport": "NFL", "p_league_scope": "NFL",
+        }).execute().data
     except Exception:
         return False
-    if not isinstance(models, list) or len(models) != 1 or not isinstance(health, list) or len(health) != 1:
+    if (not isinstance(models, list) or len(models) != 1
+            or not isinstance(health, list) or len(health) != 1
+            or not isinstance(certificate, Mapping)):
         return False
     model, assessment = models[0], health[0]
+    try:
+        calibrators = db.table("wow_calibrators").select(
+            "calibrator_id,calibration_method,fit_metrics_json,active,promoted,validation_status,health_status"
+        ).eq("calibrator_id", model["calibrator_id"]).limit(2).execute().data
+    except Exception:
+        return False
+    if not isinstance(calibrators, list) or len(calibrators) != 1:
+        return False
+    cal = calibrators[0]
+    cal_metrics = cal.get("fit_metrics_json")
+    cal_sha = (cal_metrics.get("calibration_artifact_sha256")
+               if isinstance(cal_metrics, Mapping) else None)
+    # An absent/malformed calibrator digest cannot be replaced with a
+    # dataset hash or a caller-supplied string.
+    cert_at = _instant(certificate.get("certified_at"))
+    model_at = _instant(row.get("model_timestamp"))
+    if (not isinstance(cal_sha, str) or len(cal_sha) != 64
+            or any(c not in "0123456789abcdef" for c in cal_sha)
+            or cert_at is None or model_at is None or cert_at > model_at):
+        return False
+    certified_identity = (
+        certificate.get("ok") is True
+        and certificate.get("certification_status") == "CERTIFIED"
+        and certificate.get("independent_verification_status") == "PASS"
+        and certificate.get("probability_publishable") is True
+        and certificate.get("can_execute") is False
+        and certificate.get("sport") == "NFL"
+        and certificate.get("league_scope") == "NFL"
+        and certificate.get("controlling_specialist") == "wow.nfl-game-win-probability-expert"
+        and certificate.get("model_family") == model.get("model_family")
+        and certificate.get("model_version") == model.get("model_artifact_version")
+        and str(certificate.get("artifact_id")) == str(row.get("model_artifact_id"))
+        and certificate.get("artifact_sha256") == model.get("artifact_checksum")
+        and certificate.get("feature_schema_version") == model.get("feature_schema_version")
+        and str(certificate.get("calibration_artifact_id")) == str(cal.get("calibrator_id"))
+        and certificate.get("calibration_method") == cal.get("calibration_method")
+        and certificate.get("calibration_sha256") == cal_sha
+        and cal.get("active") is True
+        and cal.get("promoted") is True
+        and cal.get("validation_status") == "PASS"
+        and cal.get("health_status") == "PASS"
+    )
+    if not certified_identity:
+        return False
     minimum = assessment.get("minimum_forward_required")
     # Health is a global snapshot. Verify that its cohort actually contains
     # enough unique prospective grades for this prediction's exact model version.
     # A different champion's 100 games can never authorize this model.
+    # Legacy V1 health predates historical-grade revalidation. Require a
+    # newly computed V2 PASS after the private verified-grade view is deployed.
     if not isinstance(minimum, int) or minimum < 100:
         return False
     try:
-        grade_result = (
-            db.table("wow_nfl_forward_shadow_grades")
-            .select("official_event_id")
-            .eq("model_version", str(row["model_version"]))
-            .limit(minimum * 2)
-            .execute()
-        )
-        grades = grade_result.data
-        if not isinstance(grades, list):
+        from v17.nfl_forward_shadow import ForwardGrade, calibration_health
+        saved_checksum = (row.get("model_output_snapshot") or {}).get("artifact_checksum")
+        if (not saved_checksum or model.get("artifact_checksum") != saved_checksum
+            or model.get("model_artifact_version") != row["model_version"]):
             return False
-        unique_games = {
-            str(g.get("official_event_id"))
-            for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
-        }
+        # Recompute the unchanged health thresholds on the complete reconciled
+        # cohort for this exact artifact and version. Global PASS is diagnostic
+        # context; it cannot lend calibration quality to a failing specialist.
+        cohort = []
+        seen = set()
+        # One database snapshot, with an exact server count. A configured
+        # PostgREST row cap must produce HOLD rather than a healthy prefix.
+        # Owner decision 2026-11-24 (#1939): the exact cohort is the V2
+        # LATEST_VALID_PREKICKOFF_V2 verified view, matching the V3 health row.
+        result = (db.table("wow_nfl_forward_verified_grades_v2").select("*", count="exact")
+                  .eq("model_version", str(row["model_version"]))
+                  .eq("model_artifact_id", str(row["model_artifact_id"]))
+                  .order("official_event_id").execute())
+        batch = result.data
+        if (not isinstance(batch, list) or type(result.count) is not int
+            or result.count != len(batch)):
+            return False
+        for grade in batch:
+            event_id = grade.get("official_event_id")
+            if (not event_id or event_id in seen
+                or grade.get("model_version") != row["model_version"]
+                or str(grade.get("model_artifact_id")) != str(row["model_artifact_id"])
+                or grade.get("artifact_checksum") != saved_checksum
+                or grade.get("schema_version") != "NFL_FORWARD_SHADOW_GRADE_V2"
+                or grade.get("selection_policy") != "LATEST_VALID_PREKICKOFF_V2"):
+                return False
+            seen.add(event_id)
+            cohort.append(ForwardGrade(**{field: grade[field] for field in ForwardGrade.__dataclass_fields__}))
+        exact_health = calibration_health(cohort, min_forward=minimum)
+        if exact_health.get("status") != "PASS":
+            return False
+        unique_games = seen
     except Exception:
         return False
     return bool(
         len(unique_games) >= minimum
+        and assessment.get("schema_version") == "NFL_FORWARD_CALIBRATION_HEALTH_V3"
         and model.get("active") is True
         and model.get("promoted") is True
-        and model.get("probability_publishable") is True
+        # Registry stays nonpublishing; independently certified terminal authority
+        # is checked above and at the database reducer.
         and isinstance(assessment.get("graded_n"), int)
         and isinstance(assessment.get("minimum_forward_required"), int)
         and assessment["minimum_forward_required"] >= 100
@@ -266,8 +345,10 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
             reasons.append("NFL_STAGE_PROOF_STALE_MODEL")
 
         if any(row.get(flag) is not True for flag in (
-            "model_package_valid", "provenance_complete", "model_probability_publishable"
+            "model_package_valid", "provenance_complete"
         )) or row.get("can_execute") is not False:
+            # A false stored publication bit is expected for a fitted candidate.
+            # It cannot publish without the independent certificate and reducer.
             reasons.append("NFL_STAGE_PROOF_MODEL_PACKAGE_NOT_CERTIFIED")
 
         p, lower, upper = (_number(row.get(name)) for name in (

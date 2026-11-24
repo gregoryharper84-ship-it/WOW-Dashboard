@@ -227,3 +227,118 @@ def test_reference_backlog_failure_for_one_sport_does_not_block_others(monkeypat
 
     monkeypatch.setattr(history, "materialize_captured_references", flaky)
     assert history.materialize_reference_backlog(object(), now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc)) == 2
+
+def test_no_open_or_close_from_quote_first_seen_after_event_start():
+    """Even an old provider-updated timestamp is not a historical observation."""
+    late = _row(key="late", odds=-170, updated="2026-09-24T17:00:00Z")
+    late["fetched_at"] = "2026-09-24T18:05:00Z"
+    refs = history.derive_captured_reference_rows(
+        [late], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert refs == []
+
+
+def test_close_uses_last_prestart_observed_not_backdated_late_snapshot():
+    early = _row(key="early", odds=-110, updated="2026-09-24T17:30:00Z")
+    middle = _row(key="middle", odds=-125, updated="2026-09-24T17:55:00Z")
+    # This provider time is later than the legitimate middle quote but the
+    # price was actually fetched only after kickoff; the old algorithm
+    # incorrectly selected -200 as CLOSE.
+    late = _row(key="late", odds=-200, updated="2026-09-24T17:58:00Z")
+    late["fetched_at"] = "2026-09-24T18:12:00Z"
+    refs = history.derive_captured_reference_rows(
+        [early, late, middle], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert [r["snapshot_kind"] for r in refs] == ["OPEN", "CLOSE"]
+    assert refs[0]["american_odds"] == -110
+    assert refs[1]["american_odds"] == -125
+    assert refs[1]["fetched_at"] == "2026-09-24T17:55:00Z"
+
+
+def test_unobserved_quote_and_future_provider_update_are_held():
+    unknown = _row(key="unknown", odds=-100, updated="2026-09-24T17:00:00Z")
+    unknown["fetched_at"] = None
+    future_update = _row(key="future", odds=-150, updated="2026-09-24T18:15:00Z")
+    future_update["fetched_at"] = "2026-09-24T17:55:00Z"
+    refs = history.derive_captured_reference_rows(
+        [unknown, future_update], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert refs == []
+    assert history.CAN_EXECUTE is False
+
+
+def test_capture_exactly_at_kickoff_cannot_be_claimed_as_pregame_open_or_close():
+    quote = _row(key="start-equal", odds=-110, updated="2026-09-24T18:00:00Z")
+    assert history.derive_captured_reference_rows(
+        [quote], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    ) == []
+
+
+def test_reference_not_materialized_before_its_first_seen_capture_time():
+    future = _row(key="future", odds=-120, updated="2026-09-24T17:30:00Z")
+    assert history.derive_captured_reference_rows(
+        [future], now=datetime(2026, 9, 24, 17, 0, tzinfo=timezone.utc)
+    ) == []
+
+
+def test_persisted_late_close_cannot_suppress_new_valid_capture_reference():
+    valid = _row(key="valid", odds=-120, updated="2026-09-24T17:45:00Z")
+    stale = _row(key="stale", odds=-200, updated="2026-09-24T17:50:00Z", snapshot_kind="CLOSE")
+    stale["fetched_at"] = "2026-09-24T18:15:00Z"  # persisted legacy post-start quote
+    refs = history.derive_captured_reference_rows(
+        [valid, stale], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert [(row["snapshot_kind"], row["american_odds"]) for row in refs] == [
+        ("OPEN", -120), ("CLOSE", -120)
+    ]
+    assert all(row["can_execute"] is False for row in refs)
+
+
+def test_history_reference_clock_is_refreshed_after_collection(monkeypatch):
+    start = datetime(2026, 10, 9, 15, 0, tzinfo=timezone.utc)
+    finish = datetime(2026, 10, 9, 15, 1, tzinfo=timezone.utc)
+
+    class TwoTickClock(datetime):
+        ticks = iter((start, finish))
+
+        @classmethod
+        def now(cls, tz=None):
+            return next(cls.ticks)
+
+    monkeypatch.setattr(history, "datetime", TwoTickClock)
+    monkeypatch.setattr(history, "_read_budget", lambda *_a, **_k: {"calls": 0, "datapoints": 0})
+    monkeypatch.setattr(history, "resolve_collection_scope", lambda _c: {
+        "status": "READY", "market_ids": ("1",), "affiliate_ids": ("19",), "book_names": ["Pinnacle"]
+    })
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb",))
+    monkeypatch.setattr(history.ingestor, "collect_snapshot", lambda *_a, **_k: {
+        "status": "COMPLETE", "provider_calls": 1, "datapoints": 0, "rows_written": 1
+    })
+    monkeypatch.setattr(history, "_write_budget", lambda *_a, **_k: None)
+    observed = []
+    monkeypatch.setattr(history, "materialize_reference_backlog",
+                        lambda _c, *, now: observed.append(now) or 0)
+    result = history.collect_history_once(object())
+    assert observed == [finish]
+    assert result["can_execute"] is False
+
+
+def test_legacy_open_close_ordered_by_provider_time_cannot_override_capture_order():
+    """Both legacy references pass individual chronology but select opposite captures."""
+    kickoff = "2026-09-24T19:00:00Z"
+    early = _row(key="a", odds=-110, updated="2026-09-24T17:00:00Z", event_start=kickoff)
+    early["price_updated_at"] = "2026-09-24T16:30:00Z"
+    late = _row(key="b", odds=-135, updated="2026-09-24T18:00:00Z", event_start=kickoff)
+    late["price_updated_at"] = "2026-09-24T16:00:00Z"
+    legacy_open = {**late, "observation_key": "legacy-open", "snapshot_kind": "OPEN"}
+    legacy_close = {**early, "observation_key": "legacy-close", "snapshot_kind": "CLOSE"}
+
+    references = history.derive_captured_reference_rows(
+        [early, late, legacy_open, legacy_close],
+        now=datetime(2026, 9, 24, 20, 0, tzinfo=timezone.utc),
+    )
+    assert [(row["snapshot_kind"], row["american_odds"]) for row in references] == [
+        ("OPEN", -110),
+        ("CLOSE", -135),
+    ]
+    assert all(row["can_execute"] is False for row in references)
