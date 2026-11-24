@@ -124,3 +124,45 @@ def test_verification_requires_exact_approved_protection_payload():
 def test_original_seven_check_ruleset_is_not_misreported_as_migrated():
     with pytest.raises(m.MigrationBlocked, match="FIVE_CHECK_TARGET_NOT_ACTIVE"):
         m.verify_target(current_ruleset())
+
+
+def test_three_check_live_ruleset_restores_exact_five_app_pinned_checks():
+    # Reproduces observed live ruleset #24907422 after a partial migration.
+    source = current_ruleset()
+    source["rules"][3]["parameters"]["required_status_checks"] = [
+        {"context": name, "integration_id": app}
+        for name, app in m.TO_KEEP.items() if app == m.ACTIONS_APP
+    ]
+    original = copy.deepcopy(source)
+    result = m.plan_migration(source)
+    assert source == original
+    restored = {**source, **result}
+    m.verify_target(restored, approved_payload=result)
+    assert m._contexts(restored) == m.TO_KEEP
+    assert restored["rules"][:3] == original["rules"][:3]
+    assert restored["rules"][3]["parameters"]["strict_required_status_checks_policy"] is True
+    assert restored["bypass_actors"] == []
+
+
+def test_five_check_ruleset_is_a_readonly_idempotent_noop():
+    source = current_ruleset()
+    source["rules"][3]["parameters"]["required_status_checks"] = [
+        {"context": name, "integration_id": app} for name, app in m.TO_KEEP.items()
+    ]
+    result = m.plan_migration(source)
+    assert {**source, **result} == source
+    m.verify_target(source, approved_payload=result)
+
+
+@pytest.mark.parametrize("extra", [
+    {"context": "Foreign unsigned gate", "integration_id": 15368},
+    {"context": "WOW Independent QA exact-head", "integration_id": 15368},
+])
+def test_three_check_recovery_does_not_accept_partial_or_foreign_source(extra):
+    source = current_ruleset()
+    source["rules"][3]["parameters"]["required_status_checks"] = [
+        {"context": name, "integration_id": app}
+        for name, app in m.TO_KEEP.items() if app == m.ACTIONS_APP
+    ] + [extra]
+    with pytest.raises(m.MigrationBlocked, match="LIVE_REQUIRED_CHECK_INVENTORY_DRIFT"):
+        m.plan_migration(source)
