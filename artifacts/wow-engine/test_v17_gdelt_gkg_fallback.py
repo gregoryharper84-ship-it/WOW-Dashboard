@@ -209,3 +209,68 @@ def test_all_inventory_sports_still_have_queries():
         keys = runner.active_sport_keys(NOW.replace(month=month, day=15))
         assert keys
         assert set(keys).issubset(set(runner.SPORT_QUERY_MAP))
+
+
+def test_http_candidates_do_not_starve_later_https_headlines():
+    # Codex P2: normalize_articles used to inspect only the first 30 raw rows.
+    http_rows = [
+        _gkg_row(
+            url=f"http://www.espn.com/nba/story/_/id/{i}/http-only",
+            title=f"NBA http placeholder {i}",
+            stamp="20261124161500",
+        )
+        for i in range(news.MAX_NEWS_ITEMS)
+    ]
+    https_row = _gkg_row(
+        url="https://www.espn.com/nba/story/_/id/999/valid-https",
+        title="NBA valid https after http noise",
+    )
+    csv = "\n".join(http_rows + [https_row]) + "\n"
+    articles = gkg.parse_gkg_articles(csv.encode(), sport_key="basketball_nba",
+                                      observed_at=NOW)
+    assert len(articles) == 1
+    assert articles[0]["source_url"].startswith("https://")
+    assert "valid-https" in articles[0]["source_url"]
+
+
+def test_nba_host_match_does_not_accept_wnba_domain():
+    wnba = _gkg_row(
+        url="https://www.wnba.com/news/injury-report",
+        title="Injury report posted for tonight",
+    )
+    nba = _gkg_row(
+        url="https://www.nba.com/news/injury-report",
+        title="Injury report posted for tonight",
+    )
+    assert gkg.parse_gkg_articles(wnba.encode() + b"\n", sport_key="basketball_nba",
+                                  observed_at=NOW) == []
+    kept = gkg.parse_gkg_articles(nba.encode() + b"\n", sport_key="basketball_nba",
+                                  observed_at=NOW)
+    assert len(kept) == 1
+    assert "nba.com" in kept[0]["source_url"]
+
+
+def test_partial_gkg_recovery_survives_later_slice_timeout(monkeypatch):
+    monkeypatch.setattr(gkg, "_now", lambda: NOW)
+    zip_payload = _zip_bytes(NBA_ROW + "\n")
+    lastupdate = (
+        "200 bbb http://data.gdeltproject.org/gdeltv2/20261124161500.gkg.csv.zip\n"
+        "200 ccc http://data.gdeltproject.org/gdeltv2/20261124160000.gkg.csv.zip\n"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("lastupdate.txt"):
+            return httpx.Response(200, stream=httpx.ByteStream(lastupdate))
+        if path.endswith("20261124161500.gkg.csv.zip"):
+            return httpx.Response(200, stream=httpx.ByteStream(zip_payload))
+        if path.endswith("20261124160000.gkg.csv.zip"):
+            raise httpx.TimeoutException("slice timeout", request=request)
+        return httpx.Response(404, stream=httpx.ByteStream(b""))
+
+    with httpx.Client(transport=httpx.MockTransport(handler),
+                      follow_redirects=False) as client:
+        result = gkg.fetch_gdelt_gkg_news("basketball_nba", client=client, at=NOW)
+    assert result.ok and result.code == "SOURCE_FETCH_OK"
+    assert result.data["articles"][0]["title"].startswith("Spurs rule")
+    assert "SOURCE_TIMEOUT" in (result.data.get("later_slice_errors") or [])
