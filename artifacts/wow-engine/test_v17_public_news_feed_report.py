@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -143,3 +145,20 @@ def test_cli_outputs_nonempty_on_real_shape_fixture(monkeypatch, tmp_path):
     assert main() == 0
     assert json.loads(j.read_text())["status"] == "SOURCE_NONEMPTY_RESEARCH_ONLY"
     assert "Potential NHL goalie update" in m.read_text()
+
+
+
+def test_workflow_module_invocation_runs_from_engine_root(tmp_path):
+    # The production workflows run from artifacts/wow-engine and must use
+    # -m, not a script path that shadows its parent package import.
+    root = Path(__file__).resolve().parent
+    j, m = tmp_path / "newsfeed.json", tmp_path / "newsfeed.md"
+    result = subprocess.run(
+        [sys.executable, "-m", "v17.public_news_feed_report",
+         "--input", str(tmp_path / "missing"), "--output-json", str(j),
+         "--output-md", str(m), "--run-id", "ci-test-1"],
+        cwd=root, capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(j.read_text())["status"] == "SOURCE_RECEIPT_MISSING"
+    assert "SOURCE_RECEIPT_MISSING" in m.read_text()
