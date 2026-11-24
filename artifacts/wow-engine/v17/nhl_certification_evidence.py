@@ -120,6 +120,9 @@ def _replay_certification_bound_calibrator(
     )
     # Prefer the candidate's frozen fit-end so the payload hash is bit-exact.
     fit_end = fit_end_timestamp if fit_end_timestamp is not None else default_fit_end
+    # Fit-end must not precede the last calibration-block event start.
+    if _iso(fit_end) < _iso(default_fit_end):
+        raise ValueError("NHL_REPLAY_FIT_END_BEFORE_CALIBRATION_BLOCK_END")
     try:
         bound = build_nhl_certification_bound_calibrator(
             probabilities,
@@ -378,7 +381,13 @@ def verify_nhl_candidate_certification_evidence(db: Any, candidate_id: str) -> d
             if version != str(c.get("model_artifact_version") or ""):
                 replay_blockers.append("MODEL_ARTIFACT_VERSION_IDENTITY_MISMATCH")
         except Exception as exc:  # research verifier: never bypass invalid training
-            replay_blockers.append("DETERMINISTIC_REPLAY_FAILED:" + type(exc).__name__)
+            # Prefer the typed ValueError code (e.g. NHL_REPLAY_CALIBRATION_SPLIT_INVALID)
+            # over a bare exception class name so operators can diagnose the gate.
+            detail = str(exc).strip() if isinstance(exc, ValueError) else ""
+            code = detail.split(":", 1)[0].strip() if detail else type(exc).__name__
+            if not code:
+                code = type(exc).__name__
+            replay_blockers.append("DETERMINISTIC_REPLAY_FAILED:" + code)
     else:
         replay_blockers.append("DETERMINISTIC_REPLAY_PREREQUISITES_FAILED")
 
