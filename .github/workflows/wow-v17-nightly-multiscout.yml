@@ -104,6 +104,7 @@ on:
 
 permissions:
   contents: read
+  actions: read  # read-only exact upstream deploy artifact; no deploy/write permission
 
 # PR verification gets its own group so it never queues behind (or cancels) live runs.
 concurrency:
@@ -113,6 +114,8 @@ concurrency:
 jobs:
   verify:
     name: Verify Multi-Scout contract
+    outputs:
+      deploy_admitted: ${{ steps.deploy_receipt.outputs.admitted }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -161,15 +164,61 @@ jobs:
         run: |
           pip install -r requirements.txt
           pytest -q
+      - name: Retrieve authenticated completed deploy receipt
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.name == 'wow-v17-required-checks-deploy'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          name: wow-v17-required-checks-deploy-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/wow-deploy-attestation
+      - name: Admit only matching LIVE and HEALTHY deployed revision
+        id: deploy_receipt
+        shell: bash
+        env:
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RECEIPT: ${{ runner.temp }}/wow-deploy-attestation/wow-v17-required-checks-deploy.json
+        run: |
+          set -euo pipefail
+          echo "admitted=false" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" != "workflow_run" ] ||
+             [ "$SOURCE_WORKFLOW" = "wow-v17-render-production-deploy" ]; then
+            # Existing schedule/manual and legacy deploy behavior is unchanged.
+            echo "admitted=true" >> "$GITHUB_OUTPUT"
+          elif [ "$SOURCE_WORKFLOW" = "wow-v17-required-checks-deploy" ] &&
+               [ "$SOURCE_BRANCH" = "main" ] &&
+               [ "$SOURCE_CONCLUSION" = "success" ] &&
+               jq -e --arg sha "$SOURCE_SHA" '
+                 .can_execute == false and
+                 .status == "DEPLOY_LIVE_AND_HEALTHY" and
+                 .target_sha == $sha and .main_sha == $sha and
+                 .readback.can_execute == false and
+                 .readback.status == "WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED" and
+                 .readback.target_sha == $sha and
+                 .readback.observed_main_sha == $sha and
+                 .readback.health_live == "HTTP_200" and
+                 (.readback.web_deploy_id | type == "string" and length > 0) and
+                 (.readback.worker_deploy_id | type == "string" and length > 0)
+               ' "$RECEIPT" >/dev/null; then
+            echo "admitted=true" >> "$GITHUB_OUTPUT"
+            echo "Verified exact-SHA deploy receipt; live Scout may advance."
+          else
+            echo "::notice::SCOUT_DEPLOY_RECEIPT_NOT_LIVE: discovery remains disabled"
+          fi
 
   market-evidence-acceptance:
     name: Credentialed provider acceptance (captured_rows > 0)
     if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      needs.verify.result == 'success' &&
+      needs.verify.outputs.deploy_admitted == 'true' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -239,11 +288,13 @@ jobs:
   nightly-discovery:
     name: Nightly all-sport discovery and governed specialist handoff
     if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      needs.verify.result == 'success' &&
+      needs.verify.outputs.deploy_admitted == 'true' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 120
