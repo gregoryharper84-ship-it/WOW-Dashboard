@@ -179,11 +179,14 @@ def learn(current: dict[str, Any], history: list[dict[str, Any]],
     features_ranked = sorted(canonical, key=lambda key: (-feature_counts[key], key))
     if latest is None:
         status = "BASELINE_ESTABLISHED"
-    elif sample["facts"] > latest["facts"] and sample["missing"] <= latest["missing"]:
-        status = "RESEARCH_EVIDENCE_COVERAGE_IMPROVED"
     elif sample["facts"] < latest["facts"] or sample["missing"] > latest["missing"]:
         status = "RESEARCH_EVIDENCE_COVERAGE_REGRESSED"
-    elif sample["status"] == "RESEARCH_ONLY_HOLD" and sample["facts"] == latest["facts"]:
+    elif sample["missing"] < latest["missing"]:
+        # A reduced gap count is a useful diagnostic, NOT independently
+        # verified improvement: duplicate or repackaged source observations
+        # can inflate screened-fact counts without any new information.
+        status = "RESEARCH_GAP_COUNT_REDUCED_UNVERIFIED"
+    elif sample["status"] == "RESEARCH_ONLY_HOLD":
         status = "REPEATED_RESEARCH_HOLD"
     else:
         status = "RESEARCH_EVIDENCE_STABLE"
@@ -214,6 +217,7 @@ def learn(current: dict[str, Any], history: list[dict[str, Any]],
         "next_research_action": next_action,
         "learning_scope": "ADVISORY_RESEARCH_SOURCE_COVERAGE_ONLY",
         "predictive_accuracy_improvement_verified": False,
+        "unique_source_evidence_improvement_verified": False,
         "may_fit_probability": False,
         "may_certify_or_qualify": False,
         "may_modify_model_or_release": False,
