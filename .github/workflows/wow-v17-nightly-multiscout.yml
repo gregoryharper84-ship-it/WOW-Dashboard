@@ -183,11 +183,11 @@ jobs:
           RECEIPT: ${{ runner.temp }}/wow-deploy-attestation/wow-v17-required-checks-deploy.json
         run: |
           set -euo pipefail
-          echo "admitted=false" >> "$GITHUB_OUTPUT"
+          admitted=false
           if [ "$GITHUB_EVENT_NAME" != "workflow_run" ] ||
              [ "$SOURCE_WORKFLOW" = "wow-v17-render-production-deploy" ]; then
             # Existing schedule/manual and legacy deploy behavior is unchanged.
-            echo "admitted=true" >> "$GITHUB_OUTPUT"
+            admitted=true
           elif [ "$SOURCE_WORKFLOW" = "wow-v17-required-checks-deploy" ] &&
                [ "$SOURCE_BRANCH" = "main" ] &&
                [ "$SOURCE_CONCLUSION" = "success" ] &&
@@ -203,11 +203,12 @@ jobs:
                  (.readback.web_deploy_id | type == "string" and length > 0) and
                  (.readback.worker_deploy_id | type == "string" and length > 0)
                ' "$RECEIPT" >/dev/null; then
-            echo "admitted=true" >> "$GITHUB_OUTPUT"
+            admitted=true
             echo "Verified exact-SHA deploy receipt; live Scout may advance."
           else
             echo "::notice::SCOUT_DEPLOY_RECEIPT_NOT_LIVE: discovery remains disabled"
           fi
+          echo "admitted=$admitted" >> "$GITHUB_OUTPUT"
 
   market-evidence-acceptance:
     name: Credentialed provider acceptance (captured_rows > 0)
