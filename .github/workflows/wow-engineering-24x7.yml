@@ -100,10 +100,13 @@ jobs:
             gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$shadow_sha/check-runs?per_page=100&filter=all&check_name=WOW%20Independent%20Security%20Review" \
               --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/shadow-qa-history.json"
             jq -s '.[0] + .[1]' "$RUNNER_TEMP/shadow-latest.json" "$RUNNER_TEMP/shadow-qa-history.json" > "$RUNNER_TEMP/shadow-checks.json"
+            # WOW Ship observes review metadata only; no new dispatch or approval authority.
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$shadow_pr/reviews?per_page=100" | jq -s 'add // []' > "$RUNNER_TEMP/shadow-reviews.json"
+            gh api "/repos/$GITHUB_REPOSITORY/pulls/$shadow_pr" > "$RUNNER_TEMP/shadow-pr.json"
             python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
               --pr "$RUNNER_TEMP/shadow-pr.json" \
               --checks "$RUNNER_TEMP/shadow-checks.json" \
-              --head-sha "$shadow_sha" --output "$RUNNER_TEMP/shadow-decision.json"
+              --reviews "$RUNNER_TEMP/shadow-reviews.json" --head-sha "$shadow_sha" --output "$RUNNER_TEMP/shadow-decision.json"
             {
               echo "### Real PR resume evidence (SHADOW ONLY)"
               echo '~~~json'
@@ -240,9 +243,12 @@ jobs:
           gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/check-runs?per_page=100&filter=all&check_name=WOW%20Independent%20Security%20Review" \
             --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/qa-history.json"
           jq -s '.[0] + .[1]' "$RUNNER_TEMP/latest-checks.json" "$RUNNER_TEMP/qa-history.json" > "$RUNNER_TEMP/checks.json"
+          # WOW Ship observes review metadata only; no new dispatch or approval authority.
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$TARGET_PR/reviews?per_page=100" | jq -s 'add // []' > "$RUNNER_TEMP/reviews.json"
+          gh api "/repos/$GITHUB_REPOSITORY/pulls/$TARGET_PR" > "$RUNNER_TEMP/pr.json"
           python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
             --pr "$RUNNER_TEMP/pr.json" --checks "$RUNNER_TEMP/checks.json" \
-            --head-sha "$TARGET_SHA" --output "$RUNNER_TEMP/delivery-decision.json"
+            --reviews "$RUNNER_TEMP/reviews.json" --head-sha "$TARGET_SHA" --output "$RUNNER_TEMP/delivery-decision.json"
           decision=$(jq -r '.decision' "$RUNNER_TEMP/delivery-decision.json")
           action=$(jq -r '.next_action' "$RUNNER_TEMP/delivery-decision.json")
           trigger=$(jq -r '.reentry_trigger' "$RUNNER_TEMP/delivery-decision.json")
@@ -253,6 +259,10 @@ jobs:
             echo "- Decision: $decision"
             echo "- Next action: $action"
             echo "- Re-entry trigger: $trigger"
+            echo "### WOW Ship observation (no dispatch authority)"
+            echo '~~~json'
+            jq '.wow_ship' "$RUNNER_TEMP/delivery-decision.json"
+            echo '~~~'
             echo "- Independent security, release, CODEOWNER and merge rules unchanged."
             echo "- No reviewer invocation, second writer, protected merge, deploy or wager."
             if [ "$decision" = "EVIDENCE_PENDING" ]; then
