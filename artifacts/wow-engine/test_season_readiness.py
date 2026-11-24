@@ -171,3 +171,37 @@ def test_readiness_board_reconciles_all_fourteen_declared_categories():
     }
     assert _row(board, "NCAAW")["readiness"]["ready"] is False
     assert board["can_execute"] is False
+
+
+def test_sport_lookup_does_not_lose_active_league_due_to_unrelated_bad_calendar():
+    nba = {**_ACTIVE_SPEC, "engine": "LLP", "calendar_sources": [{"url": "https://example.com/nba", "verified_at": "2026-05-01"}]}
+    registry = {"version": "1.0", "sports": {"NBA": nba, "WNBA": None}}
+    assert readiness.new_work_admission_for_sport(registry, "NBA", date(2026, 8, 1)) == (True, "REGULAR_SEASON")
+    assert readiness.new_work_admission_for_sport(registry, "WNBA", date(2026, 8, 1)) == (False, "CALENDAR_UNVERIFIED")
+
+
+def test_sport_lookup_requires_registry_version_and_registered_sport():
+    assert readiness.new_work_admission_for_sport({"version": "2.0", "sports": {"NBA": _ACTIVE_SPEC}}, "NBA", date(2026, 8, 1)) == (False, "CALENDAR_UNVERIFIED")
+    assert readiness.new_work_admission_for_sport({"version": "1.0", "sports": {}}, "NBA", date(2026, 8, 1)) == (False, "CALENDAR_UNVERIFIED")
+
+
+def test_sport_lookup_rejects_calendar_verified_after_target_day():
+    spec = {**_ACTIVE_SPEC, "calendar_sources": [{"url": "https://example.com/schedule", "verified_at": "2026-08-02"}]}
+    assert readiness.new_work_admission_for_sport({"version": "1.0", "sports": {"NBA": spec}}, "NBA", date(2026, 8, 1)) == (False, "CALENDAR_UNVERIFIED")
+
+
+@pytest.mark.parametrize("sport,exit_code,reason", [
+    ("NFL", 0, None),
+    ("MLB", 3, "CALENDAR_REFRESH_REQUIRED"),
+    ("WNBA", 3, "CALENDAR_REFRESH_REQUIRED"),
+    ("NCAAW", 3, "COMPETITION_CALENDAR_REQUIRED"),
+    ("UNREGISTERED", 3, "CALENDAR_UNVERIFIED"),
+])
+def test_scheduler_cli_fails_closed_without_fabricating_season_state(sport, exit_code, reason, capsys):
+    import json
+    assert readiness.main(["admission", "--sport", sport, "--date", "2026-11-24"]) == exit_code
+    row = json.loads(capsys.readouterr().out)
+    assert row["new_work_allowed"] is (exit_code == 0)
+    if reason is not None:
+        assert row["reason"] == reason
+    assert row["can_execute"] is False

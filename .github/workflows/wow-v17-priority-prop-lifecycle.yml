@@ -52,6 +52,10 @@ jobs:
       MAX_CANDIDATES: ${{ matrix.max_candidates }}
       ROUTES_JSON: ${{ matrix.routes_json }}
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Assert fail-closed context
         shell: bash
         run: |
@@ -143,9 +147,19 @@ jobs:
 
           wait_for_live
 
+          today="$(TZ=America/Chicago date +%F)"
+          tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
+          today_admission=0
+          tomorrow_admission=3
+          python artifacts/wow-engine/v17/season_readiness.py admission --sport "${SPORT}" --date "${today}" || today_admission=$?
+          if [ "${POST_DEPLOY_SMOKE}" != "true" ]; then
+            tomorrow_admission=0
+            python artifacts/wow-engine/v17/season_readiness.py admission --sport "${SPORT}" --date "${tomorrow}" || tomorrow_admission=$?
+          fi
+
           wnba_bridge_ready=1
           wnba_schedule_file=/tmp/wnba-official-schedule.json
-          if [ "${SPORT}" = "WNBA" ]; then
+          if [ "${SPORT}" = "WNBA" ] && { [ "${today_admission}" -eq 0 ] || [ "${tomorrow_admission}" -eq 0 ]; }; then
             set +e
             curl --silent --show-error --fail --location --compressed \
               --connect-timeout 15 --max-time 30 \
@@ -268,12 +282,18 @@ jobs:
           PY
           }
 
-          today="$(TZ=America/Chicago date +%F)"
-          tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
           seed_failures=0
-          if ! seed_date "${today}"; then seed_failures=$((seed_failures + 1)); fi
+          seed_if_admitted() {
+            local slate_date="$1" admission="$2"
+            case "${admission}" in
+              0) seed_date "${slate_date}" ;;
+              3) echo "SEASON_DEFERRED sport=${SPORT} date=${slate_date}; settlement and audit continue"; return 0 ;;
+              *) echo "SEASON_ADMISSION_FAILED sport=${SPORT} date=${slate_date} rc=${admission}" >&2; return 1 ;;
+            esac
+          }
+          if ! seed_if_admitted "${today}" "${today_admission}"; then seed_failures=$((seed_failures + 1)); fi
           if [ "${POST_DEPLOY_SMOKE}" != "true" ]; then
-            if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
+            if ! seed_if_admitted "${tomorrow}" "${tomorrow_admission}"; then seed_failures=$((seed_failures + 1)); fi
           fi
 
           settlement_failures=0

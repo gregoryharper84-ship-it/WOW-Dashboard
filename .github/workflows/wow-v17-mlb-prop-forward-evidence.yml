@@ -23,6 +23,10 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Assert fail-closed context
         shell: bash
         run: |
@@ -60,6 +64,13 @@ jobs:
           tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
 
           for slate_date in "${today}" "${tomorrow}"; do
+            admission=0
+            python artifacts/wow-engine/v17/season_readiness.py admission --sport MLB --date "${slate_date}" || admission=$?
+            case "${admission}" in
+              0) ;;
+              3) echo "SEASON_DEFERRED sport=MLB date=${slate_date}"; continue ;;
+              *) echo "SEASON_ADMISSION_FAILED sport=MLB date=${slate_date} rc=${admission}" >&2; exit 1 ;;
+            esac
             body="$(printf '{"requested_date":"%s","requested_timezone":"America/Chicago","candidate_offset":%s,"max_candidates":24}' "${slate_date}" "${candidate_offset}")"
             oidc_token="$(issue_oidc_token)"
             http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 180 \

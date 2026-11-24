@@ -518,12 +518,10 @@ def run_basketball_model_maintenance(
     reported_base_seasons = explicit_seasons or default_seasons(now=clock)
     seasons_by_sport: dict[str, list[int]] = {}
     results: list[dict[str, Any]] = []
-    season_specs: dict[str, Any] = {}
+    season_registry: dict[str, Any] = {}
     if active_only:
         try:
-            registry = season_readiness.load_json(season_readiness._default_registry_path())
-            if not season_readiness.validate_registry(registry):
-                season_specs = registry["sports"]
+            season_registry = season_readiness.load_json(season_readiness._default_registry_path())
         except (OSError, ValueError, TypeError, KeyError):
             pass  # Missing or malformed calendar never authorizes new work.
 
@@ -534,8 +532,8 @@ def run_basketball_model_maintenance(
             continue
 
         if active_only:
-            allowed, phase = season_readiness.new_work_admission(
-                season_specs.get(sport), clock.astimezone(ZoneInfo("America/Chicago")).date(),
+            allowed, phase = season_readiness.new_work_admission_for_sport(
+                season_registry, sport, clock.astimezone(ZoneInfo("America/Chicago")).date(),
             )
             if not allowed:
                 results.append({
