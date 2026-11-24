@@ -178,3 +178,72 @@ def test_research_report_never_claims_verified_economics_from_user_reported_stak
     assert report["modeled_expected_value"] is None
     assert report["accepted_quote_verified"] is False
     assert report["realized_roi_verified"] is False
+
+
+def test_authenticated_slip_construction_route_reuses_ledger_read_without_writes():
+    from types import SimpleNamespace
+
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+    from v17.postmortem_engine import install_postmortem_routes
+
+    fixture = build_postmortem_payload(_batch())
+    run_id = fixture["run"]["postmortem_run_id"]
+    tables = {
+        "wow_postmortem_runs": [{
+            "postmortem_run_id": run_id, "research_run_id": "synthetic-nov23-slip-process"
+        }],
+        "wow_postmortem_legs": fixture["legs"],
+        "wow_postmortem_positions": fixture["positions"],
+        "wow_postmortem_patch_candidates": [],
+    }
+    calls = []
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = list(rows)
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, name, value):
+            self.rows = [x for x in self.rows if x.get(name) == value]
+            return self
+
+        def limit(self, count):
+            self.rows = self.rows[:count]
+            return self
+
+        def order(self, name):
+            self.rows.sort(key=lambda x: str(x.get(name) or ""))
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=self.rows)
+
+    class Client:
+        def table(self, table):
+            calls.append(table)
+            return Query(tables[table])
+
+        def rpc(self, *_args, **_kwargs):
+            raise AssertionError("read-only endpoint must not use Supabase RPC")
+
+    app = FastAPI()
+    install_postmortem_routes(
+        app, auth_dependency=Depends(lambda: None), get_client_fn=Client
+    )
+    response = TestClient(app).get(
+        "/v17/postmortem-runs/synthetic-nov23-slip-process/slip-construction"
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["can_execute"] is False
+    report = result["slip_construction_postmortem"]
+    assert report["position_count"] == 3
+    assert report["shared_losing_hinge_count"] == 1
+    assert report["authenticated_submission_verified"] is False
+    assert calls == [
+        "wow_postmortem_runs", "wow_postmortem_legs",
+        "wow_postmortem_positions", "wow_postmortem_patch_candidates",
+    ]
