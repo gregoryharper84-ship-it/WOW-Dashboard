@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import os
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any
 
 CAN_EXECUTE = False
@@ -58,7 +59,8 @@ def _bounded_int(name: str, default: int, *, minimum: int = 0, maximum: int = 10
 
 def source_mode() -> str:
     value = str(os.environ.get("WOW_V17_SOURCE_MODE", MODE_HYBRID)).strip().upper()
-    return value if value in VALID_MODES else MODE_HYBRID
+    # An explicitly configured typo must never accidentally enable paid calls.
+    return value if value in VALID_MODES else MODE_FREE_CORE
 
 
 def free_core_enabled() -> bool:
@@ -92,6 +94,7 @@ class PaidCallBudget:
     discovery_used: int = 0
     initial_enrichment_used: int = 0
     final_refresh_used: int = 0
+    _lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
     @classmethod
     def from_env(cls) -> "PaidCallBudget":
@@ -124,7 +127,7 @@ class PaidCallBudget:
         if self.remaining <= 0:
             return False, BLOCK_BUDGET
         if (
-            normalized == STAGE_INITIAL_ENRICHMENT
+            normalized in {STAGE_DISCOVERY, STAGE_INITIAL_ENRICHMENT}
             and self.remaining <= self.final_refresh_reserve
         ):
             return False, BLOCK_RESERVED
@@ -141,6 +144,26 @@ class PaidCallBudget:
             self.initial_enrichment_used += 1
         else:
             self.final_refresh_used += 1
+
+    def try_consume(
+        self,
+        stage: str,
+        *,
+        model_preflight_passed: bool = False,
+    ) -> tuple[bool, str | None]:
+        """Atomically check and reserve a paid request within one shared scan.
+
+        Existing callers may still use check/record_attempt individually, but
+        multi-source acquisition should prefer this single atomic operation.
+        This is a per-scan guard, not a global provider-quota guarantee.
+        """
+        with self._lock:
+            allowed, blocker = self.check(
+                stage, model_preflight_passed=model_preflight_passed
+            )
+            if allowed:
+                self.record_attempt(stage)
+            return allowed, blocker
 
     def receipt(self) -> dict[str, Any]:
         return {

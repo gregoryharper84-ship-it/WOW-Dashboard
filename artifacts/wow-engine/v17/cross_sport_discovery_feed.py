@@ -349,6 +349,7 @@ def rundown_board_feed(
     *,
     slate_date: str,
     opener: Any = None,
+    paid_call_guard: Callable[[], tuple[bool, str | None]] | None = None,
 ) -> Callable[..., Iterable[Mapping[str, Any]]]:
     """Discovery over a quota-bounded TheRundown current board.
 
@@ -393,6 +394,7 @@ def rundown_board_feed(
             affiliate_ids=rundown_discovery_affiliate_ids(),
             main_line=True,
             hide_closed=True,
+            before_provider_fetch=paid_call_guard,
         )
         if not result.ok:
             code = str(result.code or "RUNDOWN_DISCOVERY_FAILED")
