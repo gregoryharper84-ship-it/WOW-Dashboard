@@ -142,3 +142,19 @@ def test_direct_cli_from_engine_root_loads_canonical_profile(tmp_path):
     ], cwd=root, capture_output=True, text=True, timeout=20)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(output.read_text())["missing_features"] == ["confirmed_starting_goalies"]
+
+def test_conflicting_same_run_digests_are_quarantined(tmp_path):
+    first = receipt("100")
+    altered = receipt("100")
+    altered["summary"]["receipt_sha256"] = "b" * 64
+    left, right = tmp_path / "one" / "native-swarm-receipt.json", tmp_path / "two" / "native-swarm-receipt.json"
+    left.parent.mkdir()
+    right.parent.mkdir()
+    left.write_text(json.dumps(first))
+    right.write_text(json.dumps(altered))
+    prior, rejected = _history([left, right], "101")
+    assert prior == []
+    assert rejected >= 1
+    report = learn(receipt("101"), [first, altered])
+    assert report["prior_unique_runs"] == 0
+    assert report["status"] == "BASELINE_ESTABLISHED"
