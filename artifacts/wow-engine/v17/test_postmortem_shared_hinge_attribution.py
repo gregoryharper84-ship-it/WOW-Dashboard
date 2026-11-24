@@ -82,6 +82,9 @@ def test_shared_losing_hinge_deduplicates_unique_outcomes_not_card_occurrences()
     assert summary["all_leg_clear_positions"] == 1
     assert summary["calibration_eligible_count"] == 0
     assert summary["roi"] is None
+    assert summary["non_losing_positions"] == 0
+    assert summary["profitable_positions"] == 0
+    assert summary["reported_positive_entry_positions"] == 0
     assert payload["can_execute"] is False
 
 
