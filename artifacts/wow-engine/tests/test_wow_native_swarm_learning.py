@@ -1,6 +1,8 @@
 """Regression contracts for bounded, non-fitted WOW Swarm learning."""
 import json
 from pathlib import Path
+import subprocess
+import sys
 import pytest
 from tools.wow_native_swarm_learning import _receipt, _history, learn, main
 
@@ -123,3 +125,20 @@ def test_cli_writes_report_from_real_enriched_shape(tmp_path, monkeypatch):
     assert report["source_run_id"] == "101"
     assert report["status"] == "BASELINE_ESTABLISHED"
     assert "confirmed_starting_goalies" in report["missing_features"]
+
+def test_direct_cli_from_engine_root_loads_canonical_profile(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    current = tmp_path / "current.json"
+    history = tmp_path / "old"
+    history.mkdir()
+    output = tmp_path / "learning.json"
+    value = receipt()
+    value["canonical_missing_features"] = ["confirmed_starting_goalies"]
+    current.write_text(json.dumps(value))
+    proc = subprocess.run([
+        sys.executable, "tools/wow_native_swarm_learning.py",
+        "--current", str(current), "--history-dir", str(history),
+        "--output", str(output),
+    ], cwd=root, capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(output.read_text())["missing_features"] == ["confirmed_starting_goalies"]
