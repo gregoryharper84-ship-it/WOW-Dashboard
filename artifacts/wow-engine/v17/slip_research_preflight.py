@@ -554,8 +554,65 @@ def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> 
             or _text(news.get("sport")).upper() != _text(leg.get("sport")).upper()
             or _text(news.get("official_event_id")) != _text(leg.get("official_event_id"))):
         return ["NEWS_PREGAME_VERIFICATION_UNVERIFIED"]
-    if news.get("material_change") is True and not _text(news.get("new_model_receipt_id")):
-        return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+    # A free-text receipt ID is not evidence that the fitted model saw the
+    # post-change lineup/role. This is a downgrade-only, research-level shape
+    # audit: even a passing caller-supplied receipt is NOT authenticated proof.
+    if news.get("material_change") is True:
+        receipt = news.get("new_model_receipt")
+        if not isinstance(receipt, Mapping):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        frozen = _time(receipt.get("frozen_at_utc"))
+        if (not _text(news.get("new_model_receipt_id"))
+                or _text(receipt.get("immutable_pregame_receipt_id")) != _text(news.get("new_model_receipt_id"))
+                or not _text(receipt.get("fitted_model_hash"))
+                or not _text(receipt.get("calibration_receipt_id"))
+                or _text(receipt.get("consumed_news_review_receipt_id")) != _text(news.get("independent_review_receipt_id"))
+                or frozen is None or frozen < seen or frozen > as_of or frozen >= start
+                or _text(receipt.get("sport")).upper() != _text(leg.get("sport")).upper()
+                or _text(receipt.get("official_event_id")) != _text(leg.get("official_event_id"))
+                or _market(receipt.get("market_family")) != _market(leg.get("market_family"))
+                or _text(receipt.get("market_period")).upper() != _text(leg.get("market_period")).upper()
+                or _text(receipt.get("side")).upper() != _text(leg.get("side")).upper()
+                or _text(receipt.get("settlement_basis")).upper() != _text(leg.get("settlement_basis")).upper()
+                or _line_key(receipt.get("exact_line")) != _line_key(leg.get("exact_line"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        market = _market(leg.get("market_family"))
+        if market in _PROPS and (
+                not _text(leg.get("official_player_id")) or not _text(leg.get("stat_type"))
+                or _text(receipt.get("official_player_id")) != _text(leg.get("official_player_id"))
+                or _text(receipt.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        if market == "TEAM_TOTAL" and (
+                not _text(leg.get("selected_team_id"))
+                or _text(receipt.get("selected_team_id")) != _text(leg.get("selected_team_id"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+    return []
+
+
+def _context_impact_blockers(leg: Mapping[str, Any]) -> list[str]:
+    """Hold research candidates when event-wide news invalidation is pending.
+
+    Never use caller-supplied flags as proof that a fitted scorer consumed the
+    update. They may only downgrade the research card, not clear an invalidation.
+    """
+    impact = leg.get("context_change_impact")
+    recommendation_status = _text(leg.get("research_recommendation_status"))
+    impact_status = ""
+    if isinstance(impact, Mapping):
+        impact_status = _text(impact.get("impact_status"))
+        if impact.get("research_invalidation_requested") is True:
+            return ["CONTEXT_STALE_RECALC_REQUIRED"]
+    # Neither caller-supplied assessment can clear the other. A newer
+    # NO_MATERIAL_EVENT_RECEIPT is NOT a verified fitted rescore or a release
+    # of an earlier peer-derived stale recommendation.
+    stale_states = {
+        "CONTEXT_STALE_RECALC_REQUIRED", "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "CONTEXT_MATERIAL_EVIDENCE_INVALID", "CONTEXT_RECEIPT_DIGEST_INVALID",
+        "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
+        "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH", "CONTEXT_SPORT_NOT_MAPPED",
+    }
+    if recommendation_status in stale_states or impact_status in stale_states:
+        return ["CONTEXT_STALE_RECALC_REQUIRED"]
     return []
 
 
@@ -606,7 +663,7 @@ def audit_research_slips(
                 leg_reports.append({"index": i, "blockers": ["RESEARCH_LEG_INVALID"]})
                 blockers.append("RESEARCH_LEG_INVALID")
                 continue
-            reasons: list[str] = []
+            reasons: list[str] = _context_impact_blockers(leg)
             if _text(leg.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
                 reasons.append("RESEARCH_STRONG_CONFIDENCE_CLAIM_UNVERIFIED")
             identity = exact_key(leg)
