@@ -484,6 +484,18 @@ def test_live_scout_workflow_explicit_optin_and_archived_bounded_receipt():
     assert "NATIVE_SWARM_PILOT_RECEIPT_MISSING" in workflow
 
 
+def test_pilot_wakes_on_the_actual_protected_deploy_controller():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-nightly-multiscout.yml").read_text()
+    controller = (root / ".github/workflows/wow-v17-required-checks-deploy.yml").read_text()
+    assert 'workflows: ["wow-v17-render-production-deploy", "wow-v17-required-checks-deploy"]' in workflow
+    assert 'github.event.workflow_run.conclusion == \'success\'' in workflow
+    assert 'github.event.workflow_run.head_branch == \'main\'' in workflow
+    assert 'name: wow-v17-required-checks-deploy' in controller
+    assert 'Deploy exact current main SHA once required checks are green' in controller
+
+
 def test_direct_cli_verified_pilot_generates_real_research_hold(tmp_path):
     import json
     import os
