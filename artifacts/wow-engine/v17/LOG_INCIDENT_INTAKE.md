@@ -8,20 +8,18 @@ second repair controller, auto-create issues, acquire a writer lease, or grant
 merge, deployment, probability or execution authority. Never treat a successful
 GitHub Action or a candidate finding as a verified production repair.
 
-## Trigger and credentials
+## Trigger and credentials — RETIRED (2026-11-22, #1021)
 
-Workflow .github/workflows/wow-v17-log-incident-intake.yml polls the last two
-hours hourly (intentional one-hour overlap) **only** when repository variable
-WOW_V17_LOG_INTAKE_ENABLED is exactly true. GitHub secrets
-WOW_DATADOG_LOG_READ_API_KEY and WOW_DATADOG_LOG_READ_APP_KEY must contain a
-read-only Datadog API/application key pair and must never be copied to source
-or a report. Optional WOW_DATADOG_SITE must match a fixed allowlist.
+Datadog is no longer a WOW source. Workflow
+.github/workflows/wow-v17-log-incident-intake.yml runs only the pull_request
+offline security/regression job. It has no scheduled, manual or
+variable-gated fetch job and references no Datadog credential. The resident
+Reporter stays off unless WOW_V17_LOG_REPORTER_ENABLED is exactly true; with
+no producer run it holds as REPORTER_RUN_PROVENANCE_UNVERIFIED and does not
+block engineering dispatch. Do not reconnect, retry or pay for Datadog.
 
-Missing credentials, timeout, HTTP 429, invalid schema, incomplete pagination
-or oversized page produce SOURCE_UNAVAILABLE and a nonzero workflow result,
-not a false NO_ACTION. Disabled workflow does not mean telemetry is healthy.
-The GitHub Action produces a 7-day redacted evidence artifact; it cannot
-write incidents or dispatch workers.
+The sections below describe the retired producer and are kept as forensic
+reference for v17/log_incident_intake.py and the Reporter consumer contract.
 
 ## Typed candidate evidence and independent admission
 
