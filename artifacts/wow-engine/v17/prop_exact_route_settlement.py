@@ -9,6 +9,7 @@ Currently wired official adapters:
 * MLB pitcher strikeouts, pitching outs, strikes thrown, balls thrown;
 * MLB batter plate appearances;
 * WNBA points, rebounds, assists, three-pointers made.
+* NBA exact P/R/A scalar and composite stats, from verified final NBA CDN boxscores.
 
 MLB 1IP and Fantasy Score keep separate typed settlement blockers until their
 exact event-tree/component settlement contracts are wired.
@@ -28,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from v17.cross_sport_certification_inventory import CERTIFICATION_SPORTS
 from v17.prop_capability_manifest import DECLARED_PROP_LANES, normalize_prop_sport
 from v17.prop_universal_forward_evidence import route_key, route_token
+from v17.nba_exact_scalar_settlement import NBA_SCALAR_STATS, evaluate_nba_scalar_outcome
 from v17.fantasy_score_forward_cohort_runtime import LANE_SPECS
 from wnba_prop_auto_hydration import STAT_COLUMNS as WNBA_STAT_COLUMNS
 
@@ -54,7 +56,8 @@ WNBA_SUPPORTED = frozenset({
     ("WNBA", "ASSISTS"),
     ("WNBA", "THREE_POINTERS_MADE"),
 })
-SUPPORTED_SETTLEMENT_ROUTES = MLB_SUPPORTED | WNBA_SUPPORTED
+NBA_SUPPORTED = frozenset(("NBA", stat) for stat in NBA_SCALAR_STATS)
+SUPPORTED_SETTLEMENT_ROUTES = MLB_SUPPORTED | WNBA_SUPPORTED | NBA_SUPPORTED
 SEPARATE_SETTLEMENT_ROUTES = frozenset({("MLB", "1ST_INNING_PITCHES_THROWN")})
 FANTASY_SETTLEMENT_ROUTES = frozenset((spec.sport, spec.stat_type) for spec in LANE_SPECS.values())
 
@@ -89,6 +92,8 @@ def _route_status(key: tuple[str, str]) -> tuple[str, str | None, str | None]:
         return SETTLEMENT_READY, "MLB_STATS_API_OFFICIAL_GAME_FEED", None
     if key in WNBA_SUPPORTED:
         return SETTLEMENT_READY, "WNBA_OFFICIAL_CDN_PLUS_STATS_LEAGUE_GAME_LOG", None
+    if key in NBA_SUPPORTED:
+        return SETTLEMENT_READY, "NBA_OFFICIAL_CDN_FINAL_BOXSCORE_EXACT_PREGAME_IDENTITY", None
     if key in SEPARATE_SETTLEMENT_ROUTES:
         return SEPARATE_SETTLEMENT_REQUIRED, None, "MLB_1IP_EXACT_EVENT_TREE_SETTLEMENT_REQUIRED"
     if key in FANTASY_SETTLEMENT_ROUTES:
@@ -452,6 +457,29 @@ def settle_wnba_scalar(
     }
 
 
+def settle_nba_scalar(
+    prediction: Mapping[str, Any],
+    snapshot: Mapping[str, Any],
+    *,
+    http_get: Callable[..., Any] = httpx.get,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Grade only verified official NBA results; no probability authority."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    proof = evaluate_nba_scalar_outcome(prediction, snapshot, http_get=http_get, now=now)
+    if proof["status"] not in {"SETTLED", "SETTLED_VOID_DNP"}:
+        return proof
+    actual = proof.get("actual_stat") if proof["status"] == "SETTLED" else None
+    outcome = _settlement_result(
+        prediction=prediction,
+        actual_stat=actual,
+        source=proof["official_source"],
+        now=now,
+        void_reason=proof.get("void_reason"),
+    )
+    return {"status": proof["status"], "outcome": outcome, "can_execute": False}
+
+
 def _db_call(boundary: str, call: Callable[[], Any]) -> Any:
     try:
         return call()
@@ -563,6 +591,8 @@ def run_exact_route_settlement(
             result = settle_mlb_scalar(prediction, snapshot, http_get=http_get, now=now)
         elif key in WNBA_SUPPORTED:
             result = settle_wnba_scalar(prediction, snapshot, http_get=http_get, now=now)
+        elif key in NBA_SUPPORTED:
+            result = settle_nba_scalar(prediction, snapshot, http_get=http_get, now=now)
         else:
             result = {"status": "EXACT_ROUTE_SETTLEMENT_ADAPTER_REQUIRED", "can_execute": False}
         outcome = result.get("outcome") if isinstance(result.get("outcome"), dict) else None
@@ -602,10 +632,12 @@ __all__ = [
     "CAN_EXECUTE",
     "ExactRouteSettlementRequest",
     "MLB_SUPPORTED",
+    "NBA_SUPPORTED",
     "SUPPORTED_SETTLEMENT_ROUTES",
     "WNBA_SUPPORTED",
     "build_settlement_inventory",
     "run_exact_route_settlement",
     "settle_mlb_scalar",
+    "settle_nba_scalar",
     "settle_wnba_scalar",
 ]
