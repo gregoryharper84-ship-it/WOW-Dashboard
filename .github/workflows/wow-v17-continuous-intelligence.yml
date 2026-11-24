@@ -32,7 +32,7 @@ jobs:
       - name: Test learning contracts
         env:
           PYTHONPATH: artifacts/wow-engine
-        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py artifacts/wow-engine/tests/test_v17_learning_observer_receipt_contract.py artifacts/wow-engine/v17/test_learning_capture_guard.py artifacts/wow-engine/v17/test_learning_capture_runtime.py artifacts/wow-engine/v17/test_learning_distribution_diagnostics.py
   learn:
     name: Refresh settled forecasts and advisory hypotheses
     needs: verify
@@ -55,11 +55,31 @@ jobs:
           import json, os, urllib.request, urllib.error
           from pathlib import Path
 
+          def blocked(code):
+              # Optional observer check must stay green on protected main,
+              # but every failed research cycle MUST leave a typed artifact.
+              safe = {
+                  "schema_version": "WOW17_LEARNING_OBSERVER_RECEIPT_V1",
+                  "status": "BLOCKED",
+                  "blocker": code,
+                  "stages": [],
+                  "can_execute": False,
+                  "automatic_promotion_allowed": False,
+              }
+              (Path(os.environ["RUNNER_TEMP"]) / "wow-v17-learning-receipt.json").write_text(
+                  json.dumps(safe, indent=2, sort_keys=True) + "\n"
+              )
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+                  out.write("## V17 Advisory Learning\n\n")
+                  out.write(f"BLOCKED: {code}\n\n")
+                  out.write("No learning evidence, model mutation or execution claimed.\n")
+              raise SystemExit(code)
+
           token = os.environ.get("WOW_ACTION_API_KEY", "")
           if not token:
-              raise SystemExit("LEARNING_CREDENTIAL_NOT_CONFIGURED")
+              blocked("LEARNING_CREDENTIAL_NOT_CONFIGURED")
           if os.environ["WOW_CAN_EXECUTE"] != "false" or os.environ["WOW_DRY_RUN_ONLY"] != "true":
-              raise SystemExit("LEARNING_SAFETY_ENV_INVALID")
+              blocked("LEARNING_SAFETY_ENV_INVALID")
           url = (os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
                  + "/v17/intelligence/continuous-cycle"
                  + "?max_outcomes=1000&min_samples=30&max_observations=5000")
@@ -71,11 +91,17 @@ jobs:
               with urllib.request.urlopen(request, timeout=90) as response:
                   result = json.load(response)
           except urllib.error.HTTPError as err:
-              raise SystemExit(f"LEARNING_BACKEND_HTTP_{err.code}") from None
+              blocked(f"LEARNING_BACKEND_HTTP_{err.code}")
           except Exception as err:
-              raise SystemExit(f"LEARNING_BACKEND_{type(err).__name__}") from None
+              blocked(f"LEARNING_BACKEND_{type(err).__name__}")
 
-          stages = result.get("stages") or []
+          if not isinstance(result, dict):
+              blocked("LEARNING_BACKEND_RESPONSE_INVALID")
+          stages = result.get("stages")
+          if not isinstance(stages, list) or len(stages) != 4 or not all(
+              isinstance(stage, dict) for stage in stages
+          ):
+              blocked("LEARNING_STAGE_RECEIPT_FAILED")
           stage_names = ["PROP_CAPTURE", "EVENT_CAPTURE", "COHORT_SUMMARY", "COMPOUNDING_MEMORY"]
           valid = (
               result.get("schema_version") == "WOW17_CONTINUOUS_INTELLIGENCE_V1"
@@ -100,15 +126,24 @@ jobs:
               "can_execute": False,
               "automatic_promotion_allowed": False,
           }
+          if not valid:
+              blocked("LEARNING_STAGE_RECEIPT_FAILED")
+          capture_values = [stage.get("observation_n") for stage in stages[:2]]
+          if any(type(count) is not int or count < 0 for count in capture_values):
+              blocked("LEARNING_CAPTURE_COUNT_INVALID")
+          capture_n = sum(capture_values)
+          if capture_n == 0:
+              blocked("LEARNING_ZERO_CAPTURE_NOT_VERIFIED")
+          # PASS must only be persisted once the full evidence and nonzero
+          # capture counts have passed validation, not before int conversion.
           (Path(os.environ["RUNNER_TEMP"]) / "wow-v17-learning-receipt.json").write_text(
               json.dumps(safe, indent=2, sort_keys=True) + "\n"
           )
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
-              out.write(f"## V17 Advisory Learning\n\nStatus: {safe['status']}\n\n")
+              out.write("## V17 Advisory Learning\n\nStatus: PASS_WITH_CAPTURE\n\n")
               out.write(f"Completed: {result.get('completed_stages')}/4\n\n")
+              out.write(f"Observed source rows this cycle: {capture_n}\n\n")
               out.write("No model-parameter changes, automatic promotion or wager execution.\n")
-          if not valid:
-              raise SystemExit("LEARNING_STAGE_RECEIPT_FAILED")
           print("LEARNING_CYCLE_VERIFIED")
       - name: Upload aggregate research receipt
         continue-on-error: true

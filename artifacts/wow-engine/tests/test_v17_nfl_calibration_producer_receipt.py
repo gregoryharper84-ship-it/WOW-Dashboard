@@ -201,7 +201,7 @@ class _Query:
 
 
 class _CertifiedDb:
-    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None, *, verified_games=None, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V2", view_present=True):
+    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None, *, verified_games=None, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V3", view_present=True, grade_schema="NFL_FORWARD_SHADOW_GRADE_V2"):
         self.model = {
             "active": True, "promoted": True,
             # Fitted model registry remains nonpublishing, even when the
@@ -263,7 +263,8 @@ class _CertifiedDb:
                 "brier": (.7 - int(i % 10 < 7)) ** 2,
                 "log_loss": -math.log(.7 if i % 10 < 7 else .3),
                 "source_game_id": f"nfl-game-{i}",
-                "schema_version": "NFL_FORWARD_SHADOW_GRADE_V1", "can_execute": False,
+                "schema_version": grade_schema, "can_execute": False,
+                "selection_policy": "LATEST_VALID_PREKICKOFF_V2",
             }
             for i in range(count)
         ]
@@ -280,7 +281,7 @@ class _CertifiedDb:
             return _Query([self.model])
         if name == "wow_nfl_forward_calibration_health":
             return _Query([self.health])
-        if name == "wow_nfl_forward_verified_grades":
+        if name == "wow_nfl_forward_verified_grades_v2":
             if not self.view_present:
                 raise RuntimeError("private reconciliation view not yet installed")
             return _Query(self.grades if self.verified_games is None else self.grades[:self.verified_games], filter_field="model_version")
@@ -302,6 +303,10 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
     assert _forward_certification_proven(_CertifiedDb(True, 100, verified_games=99), row) is False
     # A historical PASS predating reconciliation cannot authorize admission.
     assert _forward_certification_proven(_CertifiedDb(True, 100, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V1"), row) is False
+    # Owner decision 2026-11-24: a frozen-V1-cohort (schema V2) PASS no longer admits.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V2"), row) is False
+    # V1-schema grade rows cannot stand in for the V2 verified cohort.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, grade_schema="NFL_FORWARD_SHADOW_GRADE_V1"), row) is False
     # Missing/unapplied view or absent SELECT privilege must fail closed.
     assert _forward_certification_proven(_CertifiedDb(True, 100, view_present=False), row) is False
     # Never borrow a global PASS from another fitted model's settled events.

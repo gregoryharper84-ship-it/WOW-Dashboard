@@ -5,7 +5,8 @@ on:
     - cron: "0 10 * * *"
   workflow_dispatch:
   workflow_run:
-    workflows: ["wow-v17-render-production-deploy"]
+    # Active checked deploy controller is required-checks-deploy; retain legacy.
+    workflows: ["wow-v17-render-production-deploy", "wow-v17-required-checks-deploy"]
     types: [completed]
     branches: [main]
   push:
@@ -36,6 +37,8 @@ on:
       - "artifacts/wow-engine/v17/morning_scout_report.py"
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
+      - "artifacts/wow-engine/tools/wow_native_swarm_learning.py"
+      - "artifacts/wow-engine/tests/test_wow_native_swarm_learning.py"
       - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
       - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/v17/scout_research_ledger.py"
@@ -103,6 +106,7 @@ on:
 
 permissions:
   contents: read
+  actions: read  # read-only exact upstream deploy artifact; no deploy/write permission
 
 # PR verification gets its own group so it never queues behind (or cancels) live runs.
 concurrency:
@@ -112,6 +116,8 @@ concurrency:
 jobs:
   verify:
     name: Verify Multi-Scout contract
+    outputs:
+      deploy_admitted: ${{ steps.deploy_receipt.outputs.admitted }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -145,6 +151,7 @@ jobs:
           test_v17_scout_source_degradation.py
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
+          tests/test_wow_native_swarm_learning.py
           test_v17_news_scout_receipt_bridge.py
           test_v17_news_active_slate.py
           tests/test_v17_market_evidence_sources.py
@@ -160,15 +167,62 @@ jobs:
         run: |
           pip install -r requirements.txt
           pytest -q
+      - name: Retrieve authenticated completed deploy receipt
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.name == 'wow-v17-required-checks-deploy'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          name: wow-v17-required-checks-deploy-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/wow-deploy-attestation
+      - name: Admit only matching LIVE and HEALTHY deployed revision
+        id: deploy_receipt
+        shell: bash
+        env:
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RECEIPT: ${{ runner.temp }}/wow-deploy-attestation/wow-v17-required-checks-deploy.json
+        run: |
+          set -euo pipefail
+          admitted=false
+          if [ "$GITHUB_EVENT_NAME" != "workflow_run" ] ||
+             [ "$SOURCE_WORKFLOW" = "wow-v17-render-production-deploy" ]; then
+            # Existing schedule/manual and legacy deploy behavior is unchanged.
+            admitted=true
+          elif [ "$SOURCE_WORKFLOW" = "wow-v17-required-checks-deploy" ] &&
+               [ "$SOURCE_BRANCH" = "main" ] &&
+               [ "$SOURCE_CONCLUSION" = "success" ] &&
+               jq -e --arg sha "$SOURCE_SHA" '
+                 .can_execute == false and
+                 .status == "DEPLOY_LIVE_AND_HEALTHY" and
+                 .target_sha == $sha and .main_sha == $sha and
+                 .readback.can_execute == false and
+                 .readback.status == "WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED" and
+                 .readback.target_sha == $sha and
+                 .readback.observed_main_sha == $sha and
+                 .readback.health_live == "HTTP_200" and
+                 (.readback.web_deploy_id | type == "string" and length > 0) and
+                 (.readback.worker_deploy_id | type == "string" and length > 0)
+               ' "$RECEIPT" >/dev/null; then
+            admitted=true
+            echo "Verified exact-SHA deploy receipt; live Scout may advance."
+          else
+            echo "::notice::SCOUT_DEPLOY_RECEIPT_NOT_LIVE: discovery remains disabled"
+          fi
+          echo "admitted=$admitted" >> "$GITHUB_OUTPUT"
 
   market-evidence-acceptance:
     name: Credentialed provider acceptance (captured_rows > 0)
     if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      needs.verify.result == 'success' &&
+      needs.verify.outputs.deploy_admitted == 'true' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -238,17 +292,20 @@ jobs:
   nightly-discovery:
     name: Nightly all-sport discovery and governed specialist handoff
     if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      needs.verify.result == 'success' &&
+      needs.verify.outputs.deploy_admitted == 'true' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
       id-token: write
+      actions: read  # read-only bounded historic Swarm artifact retrieval
     defaults:
       run:
         working-directory: artifacts/wow-engine
@@ -372,6 +429,36 @@ jobs:
               print(f"::warning title=WOW News Feed Degraded::status={status} code={code} articles={articles}")
               raise SystemExit(1)
           PY
+      - name: Build bounded same-run public newsfeed report
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-multiscout"
+          python -m v17.public_news_feed_report \
+            --input "$RUNNER_TEMP/wow-multiscout/public-gdelt-receipt.json" \
+            --output-json "$RUNNER_TEMP/wow-multiscout/public-newsfeed.json" \
+            --output-md "$RUNNER_TEMP/wow-multiscout/public-newsfeed.md" \
+            --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout" / "public-newsfeed.json").read_text())
+          assert report["can_execute"] is False
+          assert report["publisher_facts_verified"] is False
+          assert report["model_rescore_verified"] is False
+          print(f"WOW_PUBLIC_NEWSFEED_STATUS={report['status']} sampled_sport={report['sampled_sport']} headline_groups={len(report['headlines'])}")
+          PY
+      - name: Upload compact public research newsfeed artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-public-newsfeed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/wow-multiscout/public-gdelt-receipt.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.md
+          if-no-files-found: warn
+          retention-days: 90
       - name: Enrich handoff with sport-specialist Scout teams
         if: always()
         shell: bash
@@ -379,7 +466,8 @@ jobs:
           test -f "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
           python v17/sport_scout_enrichment.py \
             --input "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
-            --output "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json"
+            --output "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json" \
+            --native-swarm-verified-pilot
           mv "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json" "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
           python - <<'PY'
           import json, os
@@ -388,6 +476,50 @@ jobs:
           data = json.loads(p.read_text())
           assert data.get("can_execute") is False
           assert data.get("sport_scout_registry", {}).get("can_execute") is False
+          pilot = data.get("native_swarm_pilot", {})
+          assert pilot.get("can_execute") is False
+          assert pilot.get("may_publish_or_qualify") is False
+          assert pilot.get("paid_provider_calls") == 0
+          assert pilot.get("requested_count") in (0, 1)
+          opted = [r for lane in ("team_event_candidates", "prop_candidates")
+                   for r in data.get("model_handoff", {}).get(lane, [])
+                   if r.get("native_swarm_requested") is True]
+          assert len(opted) == pilot["requested_count"]
+          summary = opted[0].get("native_swarm_summary") if opted else None
+          if summary is not None:
+              assert summary.get("can_execute") is False
+              assert summary.get("may_publish_or_qualify") is False
+              assert summary.get("paid_provider_calls") == 0
+              assert summary.get("external_llm_calls") == 0
+          elif opted:
+              raise AssertionError("NATIVE_SWARM_PILOT_RECEIPT_MISSING")
+          # Compact, canonical research-gap labels only. Never export source
+          # values, auth material, bookmaker observations or worker payloads.
+          from v17.matchup_discovery import feature_requirements
+          if opted:
+              profile = feature_requirements(opted[0].get("sport_key", ""))
+              allowed_features = {feature for names in profile.values() for feature in names}
+              audit = opted[0].get("matchup_discovery") or {}
+              missing_critical = audit.get("missing_critical_features", []) if isinstance(audit, dict) else []
+              canonical_gaps = sorted({feature for feature in missing_critical
+                  if isinstance(feature, str) and feature in allowed_features})[:32]
+          else:
+              canonical_gaps = []
+          receipt = {
+              "schema_version": "wow.v17.native_swarm_production_readback.v1",
+              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "source_revision": os.environ.get("GITHUB_SHA"),
+              "canonical_missing_features": canonical_gaps,
+              "pilot": pilot,
+              "summary": summary,
+              "can_execute": False,
+              "may_publish_or_qualify": False,
+          }
+          (p.parent / "native-swarm-receipt.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print("native Swarm pilot:", pilot.get("status"),
+                "workers:", (summary or {}).get("workers_completed", 0),
+                "research facts:", (summary or {}).get("research_facts_screened", 0))
           for lane in ("team_event_candidates", "prop_candidates"):
               for row in data.get("model_handoff", {}).get(lane, []):
                   assert row.get("research_ceiling") == "RESEARCH_INTEREST"
@@ -395,6 +527,70 @@ jobs:
                   assert row.get("can_execute") is False
                   assert row.get("controlling_specialist_route") in {"LLP_TEAM_BETTING_ENGINE", "WOW_PROP_LANE"}
           PY
+      - name: Read bounded prior Swarm receipts (existing GitHub artifacts only)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-swarm-prior"
+          # Match LIVE-eligible triggers; pull_request/push verification runs
+          # do not execute native research and cannot teach anything.
+          candidate_runs="$(
+            for event in workflow_run workflow_dispatch schedule; do
+              gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-nightly-multiscout.yml --event "$event" \
+                --status success --limit 20 --json databaseId \
+                --jq '.[].databaseId' || true
+            done | sort -rn | uniq | sed -n '1,40p'
+          )"
+          valid_count=0
+          while IFS= read -r rid; do
+            [ -n "$rid" ] || continue
+            [ "$rid" != "$GITHUB_RUN_ID" ] || continue
+            dst="$RUNNER_TEMP/wow-swarm-prior/$rid"
+            if gh run download "$rid" --repo "$GITHUB_REPOSITORY" \
+                 --pattern 'wow-native-swarm-receipt-*' --dir "$dst" 2>/dev/null; then
+              receipt="$(find "$dst" -type f -name native-swarm-receipt.json -print -quit)"
+              if [ -n "$receipt" ] && jq -e '
+                  .schema_version == "wow.v17.native_swarm_production_readback.v1" and
+                  .can_execute == false and
+                  .may_publish_or_qualify == false and
+                  .pilot.status == "VERIFIED_EVENT_OPTED_IN" and
+                  .pilot.requested_count == 1 and
+                  .summary.workers_completed == 5 and
+                  .summary.can_execute == false and
+                  .summary.paid_provider_calls == 0
+                ' "$receipt" >/dev/null 2>&1; then
+                valid_count=$((valid_count + 1))
+              fi
+            fi
+            [ "$valid_count" -lt 8 ] || break
+          done <<< "$candidate_runs"
+          echo "Validated past live native Swarm receipts retrieved: $valid_count (max 8)"
+      - name: Generate bounded research-only Swarm learning report
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          base="$RUNNER_TEMP/wow-multiscout"
+          if [ -f "$base/native-swarm-receipt.json" ]; then
+            python tools/wow_native_swarm_learning.py \
+              --current "$base/native-swarm-receipt.json" \
+              --history-dir "$RUNNER_TEMP/wow-swarm-prior" \
+              --output "$base/swarm-learning.json"
+          fi
+      - name: Persist compact research receipts for next-run learning
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-native-swarm-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
+            ${{ runner.temp }}/wow-multiscout/swarm-learning.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Stamp recoverable Scout run identity and manifest
         id: delivery
         if: always()
@@ -417,7 +613,10 @@ jobs:
           path: |
             ${{ runner.temp }}/wow-multiscout/model-handoff.json
             ${{ runner.temp }}/wow-multiscout/public-gdelt-receipt.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.json
+            ${{ runner.temp }}/wow-multiscout/public-newsfeed.md
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
+            ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
           if-no-files-found: error
@@ -564,6 +763,8 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
+            ${{ runner.temp }}/wow-multiscout/native-swarm-receipt.json
+            ${{ runner.temp }}/wow-multiscout/swarm-learning.json
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
             ${{ runner.temp }}/wow-multiscout/terminal-acceptance-receipt.json
             ${{ runner.temp }}/wow-multiscout/market-evidence.json

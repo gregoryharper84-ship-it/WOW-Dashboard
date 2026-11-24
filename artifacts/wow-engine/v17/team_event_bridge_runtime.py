@@ -39,6 +39,7 @@ from v17.team_event_capability_manifest import (
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
 from v17.matchup_discovery import discover_matchup, matchup_consumption_audit
+from v17.context_change_impact import hold_scored_after_material_change
 from v17.team_event_producer_adoption import inspect_team_event_producer_adoption
 from v17.cross_sport_evidence_integrity import (
     CRITICAL_STATUS_CONTRACT,
@@ -400,7 +401,13 @@ def _attach_feature_consumption_receipt(
             *prior, "TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED", *audit.get("blockers", [])
         ]))
     out["can_execute"] = False
-    return out
+    # Downgrade-only chronology check for every registered team/event scorer.
+    # Exact fitted feature consumption remains separately uncertified and must
+    # not be inferred from a later model timestamp alone.
+    return hold_scored_after_material_change(
+        out,
+        latest_material_update_timestamp=getattr(req, "latest_material_update_timestamp", None),
+    )
 
 
 def score_registered_team_event_request(

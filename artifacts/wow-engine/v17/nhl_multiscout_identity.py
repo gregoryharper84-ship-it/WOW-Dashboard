@@ -90,6 +90,21 @@ def resolve_multiscout_nhl_identity(
         out["can_execute"] = False
         return out
 
+    match_sha = resolution.get("identity_match_sha256")
+    if (
+        not isinstance(match_sha, str)
+        or len(match_sha) != 64
+        or any(char not in "0123456789abcdef" for char in match_sha)
+    ):
+        out["official_event_id"] = None
+        out["official_event_identity_verified"] = False
+        out["canonical_event_id"] = None
+        out["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        out["canonical_identity_blocker"] = "NHL_IDENTITY_MATCH_DIGEST_INVALID"
+        out["prediction_authority"] = False
+        out["can_execute"] = False
+        return out
+
     # Provider discovery id stays distinct from the league fixture id.
     out["official_event_id"] = canonical_event_id
     out["canonical_event_id"] = canonical_event_id
@@ -100,6 +115,7 @@ def resolve_multiscout_nhl_identity(
     )
     out["canonical_identity_resolution"] = "OFFICIAL_NHL_SCHEDULE_EXACT_MATCH"
     out["canonical_identity_verified_at"] = resolution.get("identity_verified_at")
+    out["canonical_identity_match_sha256"] = match_sha
     official_start = resolution.get("event_start_time")
     out["canonical_identity_event_start_utc"] = official_start
     # Authoritative pregame cutoff is the official schedule start, not the
@@ -112,6 +128,8 @@ def resolve_multiscout_nhl_identity(
         "identity_provider": resolution.get("identity_provider"),
         "identity_source": resolution.get("identity_source"),
         "identity_verified_at": resolution.get("identity_verified_at"),
+        "identity_match_sha256": match_sha,
+        "identity_match": resolution.get("identity_match"),
         "event_id": canonical_event_id,
         "event_start_time": official_start,
         "home_team": resolution.get("home_team"),

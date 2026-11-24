@@ -12,12 +12,21 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Mapping, Sequence
 
+from v17.niche_prop_research import classify_niche_prop
+
 CAN_EXECUTE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 RESEARCH_CLASS = "RESEARCH_ONLY_UNCERTIFIED"
 _TOTALS = {"GAME_TOTAL", "TEAM_TOTAL", "TOTAL", "OVER_UNDER"}
 _PROPS = {"PLAYER_PROP", "PLAYER_POINTS", "PLAYER_REBOUNDS", "PLAYER_ASSISTS", "PROP"}
 _STANDARD_MAX_LEGS = 3
+# Research evidence is never an independently authenticated fitted model.
+# An asserted high-confidence label must be downgraded, regardless of
+# apparently favorable historic hit rates or an expensive favorite price.
+_HIGH_CONFIDENCE_CLAIMS = {
+    "STRONG", "STRONG_CONFIDENCE", "HIGH", "HIGH_CONFIDENCE",
+    "VERY_HIGH", "ELITE", "LOCK", "CERTIFIED", "FULL_MODEL",
+}
 _MARKET_ALIASES = {
     "ML": "MONEYLINE", "MONEYLINE": "MONEYLINE",
     "SPREAD": "POINT_SPREAD", "POINT_SPREAD": "POINT_SPREAD",
@@ -75,6 +84,80 @@ def exact_key(leg: Mapping[str, Any]) -> tuple[str, ...] | None:
             _text(leg.get("stat_type")).upper(),
             _text(leg.get("selected_team_id")).upper(),
             _text(leg.get("settlement_basis")).upper())
+
+
+def _fixture_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Screen caller-supplied official fixture provenance, without authenticating it.
+
+    A sportsbook quote, player matchup narrative or yesterday's fixture cannot
+    supply the required scheduled official event for this research card.
+    """
+    fixture = leg.get("official_fixture_evidence")
+    if not isinstance(fixture, Mapping):
+        return ["OFFICIAL_FIXTURE_EVIDENCE_MISSING"]
+    observed = _time(fixture.get("verified_at_utc"))
+    scheduled = _time(fixture.get("event_start_utc"))
+    if (not _text(fixture.get("official_source_id"))
+            or not _text(fixture.get("manifest_receipt_id"))
+            or observed is None or observed > as_of or observed >= start
+            or scheduled != start
+            or _text(fixture.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(fixture.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or any(_text(fixture.get(k)) != _text(leg.get(k))
+                   for k in ("home_team_id", "away_team_id")
+                   if _text(leg.get(k)))):
+        return ["OFFICIAL_FIXTURE_IDENTITY_OR_CHRONOLOGY_UNVERIFIED"]
+    if _text(fixture.get("event_status")).upper() not in {"SCHEDULED", "NOT_STARTED"}:
+        return ["OFFICIAL_FIXTURE_NOT_SCHEDULED"]
+    return []
+
+
+def _price_edge_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Contradiction screening only; this cannot authorize a positive-EV claim."""
+    value = leg.get("research_value_evidence")
+    asserted = _text(leg.get("value_claim")).upper() in {"POSITIVE_VALUE", "STRONG_VALUE", "ELITE_VALUE"}
+    if not isinstance(value, Mapping):
+        return ["RESEARCH_VALUE_CLAIM_UNSUPPORTED"] if asserted else []
+    recorded = _time(value.get("observed_at_utc"))
+    p = _number(value.get("estimated_selection_probability"), minimum=0)
+    if (recorded is None or recorded > as_of or recorded >= start
+            or not _text(value.get("source_id")) or p is None or p > 1
+            or _text(value.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(value.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _market(value.get("market_family")) != _market(leg.get("market_family"))
+            or _text(value.get("market_period")).upper() != _text(leg.get("market_period")).upper()
+            or _text(value.get("side")).upper() != _text(leg.get("side")).upper()
+            or _text(value.get("settlement_basis")).upper() != _text(leg.get("settlement_basis")).upper()
+            or _line_key(value.get("exact_line")) != _line_key(leg.get("exact_line"))):
+        return ["RESEARCH_VALUE_EVIDENCE_UNVERIFIED"]
+    # Research forecasts must bind to the *same* market selection, not just
+    # the same game/line. Otherwise another player's stat or the other team's
+    # total can be laundered into an apparently favorable quoted edge.
+    market = _market(leg.get("market_family"))
+    if market in _PROPS and (
+            not _text(leg.get("official_player_id"))
+            or not _text(leg.get("stat_type"))
+            or _text(value.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(value.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+        return ["RESEARCH_VALUE_PLAYER_STAT_MISMATCH"]
+    if market == "TEAM_TOTAL" and (
+            not _text(leg.get("selected_team_id"))
+            or _text(value.get("selected_team_id")) != _text(leg.get("selected_team_id"))):
+        return ["RESEARCH_VALUE_TEAM_MISMATCH"]
+    quote = leg.get("market_quote")
+    if not isinstance(quote, Mapping):
+        return ["RESEARCH_VALUE_PRICE_UNVERIFIED"]
+    decimal = _number(quote.get("decimal_odds"), minimum=1.00000001)
+    if decimal is None:
+        american = quote.get("american_odds")
+        if type(american) is not int or -100 < american < 100:
+            return ["RESEARCH_VALUE_PRICE_UNVERIFIED"]
+        decimal = 1 + (100 / -american if american < 0 else american / 100)
+    # Even a caller-claimed forecast greater than market breakeven is not
+    # independently authenticated or a calibrated sporting probability.
+    if p <= 1 / decimal:
+        return ["RESEARCH_PRICE_EDGE_NOT_SUPPORTED"]
+    return []
 
 
 def _quote_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
@@ -199,6 +282,25 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
     )
 
 
+def _prop_context_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Require sourced opportunity, matchup, game-script and tail context for props."""
+    evidence = leg.get("prop_matchup_evidence")
+    if not isinstance(evidence, Mapping):
+        return ["PROP_MATCHUP_CONTEXT_MISSING"]
+    required = ("source_receipt_id", "opponent_efficiency_source_id",
+                "role_minutes_source_id", "usage_source_id",
+                "pace_game_script_source_id", "tail_scenario_source_id")
+    observed = _time(evidence.get("observed_at_utc"))
+    if (any(not _text(evidence.get(k)) for k in required)
+            or observed is None or observed > as_of or observed >= start
+            or _text(evidence.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(evidence.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _text(evidence.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(evidence.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+        return ["PROP_MATCHUP_CONTEXT_UNVERIFIED"]
+    return []
+
+
 def _player_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
     if not _text(leg.get("official_player_id")):
         return ["PROP_PLAYER_ID_UNVERIFIED"]
@@ -221,6 +323,226 @@ def _player_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -
     return []
 
 
+def _opportunity_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Research-shape gate for workload and current availability, not a fitted forecast.
+
+    A raw last-ten hit rate is not a workload distribution. All values here
+    remain caller-supplied and unauthenticated; they can only block research.
+    """
+    evidence = leg.get("opportunity_evidence")
+    if not isinstance(evidence, Mapping):
+        return ["PROP_OPPORTUNITY_EVIDENCE_MISSING", "PROP_AVAILABILITY_NOT_CONFIRMED"]
+    reasons: list[str] = []
+    observed = _time(evidence.get("observed_at_utc"))
+    if (observed is None or observed > as_of or observed >= start
+            or _text(evidence.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(evidence.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _text(evidence.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(evidence.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
+            or not _text(evidence.get("source_receipt_id"))
+            or not _text(evidence.get("lineup_scenario_source_id"))
+            or not _text(evidence.get("role_source_id"))):
+        reasons.append("PROP_OPPORTUNITY_IDENTITY_OR_FRESHNESS_UNVERIFIED")
+    availability = _text(evidence.get("availability")).upper()
+    if availability in {"OUT", "DNP", "RULED_OUT", "INACTIVE"}:
+        reasons.append("PROP_PLAYER_RULED_OUT")
+    elif availability != "ACTIVE_CONFIRMED":
+        reasons.append("PROP_AVAILABILITY_NOT_CONFIRMED")
+    expected = _number(evidence.get("expected_opportunities"), minimum=0)
+    low = _number(evidence.get("opportunity_p10"), minimum=0)
+    high = _number(evidence.get("opportunity_p90"), minimum=0)
+    method = _text(evidence.get("forecast_method")).upper()
+    if (not _text(evidence.get("opportunity_unit"))
+            or not method or method in {"LAST_10", "LAST_10_HIT_RATE", "HIT_RATE_ONLY"}
+            or expected is None or low is None or high is None
+            or not low <= expected <= high):
+        reasons.append("PROP_WORKLOAD_DISTRIBUTION_UNVERIFIED")
+    # If availability changed after the workload snapshot, the previous
+    # opportunities cannot be treated as a current pregame scenario.
+    news = leg.get("news_evidence")
+    if isinstance(news, Mapping) and news.get("material_change") is True:
+        reviewed = _time(news.get("last_reviewed_at_utc"))
+        if reviewed is None or observed is None or observed < reviewed:
+            reasons.append("PROP_OPPORTUNITY_RESCENARIO_REQUIRED")
+    return reasons
+
+
+def _prizepicks_offer_binding(offer: Any) -> dict[str, str] | None:
+    """Canonical exact lineup identity; missing pieces cannot match a payout.
+
+    Not an independent provider authentication. The receipt must come from
+    a separately verified current provider response before publication.
+    """
+    if not isinstance(offer, Mapping):
+        return None
+    result = {
+        "source_receipt_id": _text(offer.get("source_receipt_id")),
+        "sport": _text(offer.get("sport")).upper(),
+        "official_event_id": _text(offer.get("official_event_id")),
+        "official_player_id": _text(offer.get("official_player_id")),
+        "stat_type": _text(offer.get("stat_type")).upper(),
+        "direction": _text(offer.get("direction")).upper(),
+        "exact_line": _line_key(offer.get("exact_line")),
+        "projection_type": _text(offer.get("projection_type")).upper(),
+    }
+    return result if all(result.values()) else None
+
+
+def _prizepicks_offer_blockers(
+    leg: Mapping[str, Any], as_of: datetime, start: datetime,
+) -> list[str]:
+    """Check exact player/stat/side/line/tier bindings for a PrizePicks offer.
+
+    The asserted offer and model receipt are not independently authenticated
+    here. An apparent PASS never makes a bet/payout or certified model claim.
+    """
+    offer = leg.get("platform_offer")
+    if not isinstance(offer, Mapping):
+        return ["PRIZEPICKS_EXACT_OFFER_MISSING"]
+    reasons: list[str] = []
+    if (not _text(offer.get("source_receipt_id"))
+            or _text(offer.get("platform")).upper() != "PRIZEPICKS"
+            or _text(offer.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(offer.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _text(offer.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(offer.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
+            or _text(offer.get("direction")).upper() != _text(leg.get("side")).upper()
+            or _line_key(offer.get("exact_line")) != _line_key(leg.get("exact_line"))):
+        reasons.append("PRIZEPICKS_EXACT_OFFER_IDENTITY_MISMATCH")
+    tier = _text(offer.get("projection_type")).upper()
+    if tier not in {"STANDARD", "GOBLIN", "DEMON"}:
+        reasons.append("PRIZEPICKS_PROJECTION_TYPE_UNVERIFIED")
+    if _text(offer.get("status")).upper() != "ACTIVE":
+        reasons.append("PRIZEPICKS_OFFER_NOT_ACTIVE")
+    seen = _time(offer.get("captured_at_utc"))
+    if (seen is None or seen > as_of or seen >= start
+            or (as_of - seen).total_seconds() > 15 * 60):
+        reasons.append("PRIZEPICKS_OFFER_STALE_OR_NOT_PREGAME")
+    receipt = leg.get("sporting_receipt_binding")
+    if not isinstance(receipt, Mapping):
+        reasons.append("PRIZEPICKS_EXACT_MODEL_RECEIPT_MISSING")
+    elif (not _text(receipt.get("immutable_prediction_id"))
+          or _text(receipt.get("sport")).upper() != _text(leg.get("sport")).upper()
+          or _text(receipt.get("official_event_id")) != _text(leg.get("official_event_id"))
+          or _text(receipt.get("official_player_id")) != _text(leg.get("official_player_id"))
+          or _text(receipt.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
+          or _text(receipt.get("direction")).upper() != _text(leg.get("side")).upper()
+          or _line_key(receipt.get("exact_line")) != _line_key(leg.get("exact_line"))
+          or _time(receipt.get("frozen_at_utc")) is None
+          or _time(receipt.get("frozen_at_utc")) > as_of
+          or _time(receipt.get("frozen_at_utc")) >= start):
+        reasons.append("PRIZEPICKS_EXACT_MODEL_RECEIPT_MISMATCH_RESCORING_REQUIRED")
+    news = leg.get("news_evidence")
+    if isinstance(news, Mapping) and news.get("material_change") is True:
+        latest_news = _time(news.get("last_reviewed_at_utc"))
+        frozen = _time(receipt.get("frozen_at_utc")) if isinstance(receipt, Mapping) else None
+        expected_id = _text(news.get("new_model_receipt_id"))
+        bound_id = _text(receipt.get("immutable_prediction_id")) if isinstance(receipt, Mapping) else ""
+        if (latest_news is None or frozen is None or frozen < latest_news
+                or not expected_id or expected_id != bound_id):
+            reasons.append("PRIZEPICKS_MATERIAL_NEWS_PREDICTION_STALE")
+    return reasons
+
+
+def _prizepicks_lineup_blockers(
+    slip: Mapping[str, Any], as_of: datetime, legs: list[Any],
+) -> list[str]:
+    """Fail closed unless the payout quote binds to *these exact offers*.
+
+    Caller-supplied receipt metadata is research context, not authenticated
+    payout evidence. An optimizer replacement invalidates the old lineup quote.
+    """
+    receipt = slip.get("platform_lineup_payout")
+    if not isinstance(receipt, Mapping):
+        return ["PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISSING"]
+    observed = _time(receipt.get("captured_at_utc"))
+    actual_offers = [
+        leg.get("platform_offer") if isinstance(leg, Mapping) else None
+        for leg in legs
+    ]
+    actual_types = [
+        _text(offer.get("projection_type")).upper() if isinstance(offer, Mapping) else ""
+        for offer in actual_offers
+    ]
+    expected_bindings = [_prizepicks_offer_binding(offer) for offer in actual_offers]
+    raw_bindings = receipt.get("ordered_offer_bindings")
+    supplied_bindings = (
+        [_prizepicks_offer_binding(item) for item in raw_bindings]
+        if isinstance(raw_bindings, list) else []
+    )
+    offer_times = [
+        _time(offer.get("captured_at_utc")) if isinstance(offer, Mapping) else None
+        for offer in actual_offers
+    ]
+    starts = [
+        _time(leg.get("event_start_utc")) if isinstance(leg, Mapping) else None
+        for leg in legs
+    ]
+    if (not _text(receipt.get("source_receipt_id"))
+            or _text(receipt.get("platform")).upper() != "PRIZEPICKS"
+            or _text(receipt.get("structure")).upper() != _text(slip.get("structure")).upper()
+            or type(receipt.get("leg_count")) is not int or receipt.get("leg_count") != len(legs)
+            or receipt.get("projection_types") != actual_types
+            or len(supplied_bindings) != len(legs)
+            or any(binding is None for binding in expected_bindings + supplied_bindings)
+            or supplied_bindings != expected_bindings
+            or _number(receipt.get("gross_payout_multiple"), minimum=1.000001) is None
+            or observed is None or observed > as_of
+            or (as_of - observed).total_seconds() > 15 * 60
+            or any(t is None or observed < t for t in offer_times)
+            or any(t is None or observed >= t for t in starts)):
+        return ["PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH"]
+    return []
+
+
+def _longest_reception_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Hold research when a longest-reception tail scenario is unverified.
+
+    One 24+ yard play wins the OVER; 1/7 last-game hit rates are insufficient
+    to authorize a strong UNDER. Caller-supplied evidence remains untrusted,
+    never a calibrated sporting probability or executable price.
+    """
+    sport = _text(leg.get("sport")).upper()
+    stat = _text(leg.get("stat_type")).upper().replace(" ", "_")
+    if sport != "NFL" or stat not in {
+        "LONGEST_RECEPTION", "LONGEST_RECEPTION_YARDS", "LONGEST_REC",
+        "LONGEST_REC_YDS", "LONGEST_RECEIVING_PLAY",
+    }:
+        return []
+    context = leg.get("longest_reception_tail_evidence")
+    if not isinstance(context, Mapping):
+        return ["LONGEST_RECEPTION_TAIL_SCENARIOS_UNVERIFIED"]
+    sources = (
+        "route_depth_distribution_source_id",
+        "explosive_target_source_id",
+        "yards_after_catch_distribution_source_id",
+        "opponent_coverage_source_id",
+        "single_play_tail_scenario_source_id",
+        "source_receipt_id",
+    )
+    seen = _time(context.get("observed_at_utc"))
+    consistent = (
+        all(_text(context.get(field)) for field in sources)
+        and seen is not None and seen <= as_of and seen < start
+        and _text(context.get("sport")).upper() == sport
+        and _text(context.get("official_event_id")) == _text(leg.get("official_event_id"))
+        and _text(context.get("official_player_id")) == _text(leg.get("official_player_id"))
+        and _text(context.get("stat_type")).upper().replace(" ", "_") == stat
+        and _line_key(context.get("exact_line")) == _line_key(leg.get("exact_line"))
+        and _text(context.get("side")).upper() == _text(leg.get("side")).upper()
+    )
+    reasons: list[str] = []
+    if not consistent:
+        reasons.append("LONGEST_RECEPTION_TAIL_SCENARIOS_UNVERIFIED")
+    if context.get("return_from_injury") is True:
+        if not _text(context.get("return_to_play_workload_scenario_id")):
+            reasons.append("LONGEST_RECEPTION_RETURN_TO_PLAY_SCENARIO_UNVERIFIED")
+        news = leg.get("news_evidence")
+        updated = _time(news.get("last_reviewed_at_utc")) if isinstance(news, Mapping) else None
+        if updated is None or seen is None or seen < updated:
+            reasons.append("LONGEST_RECEPTION_CONTEXT_STALE_AFTER_MATERIAL_NEWS")
+    return reasons
+
 def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
     news = leg.get("news_evidence")
     if not isinstance(news, Mapping):
@@ -232,8 +554,65 @@ def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> 
             or _text(news.get("sport")).upper() != _text(leg.get("sport")).upper()
             or _text(news.get("official_event_id")) != _text(leg.get("official_event_id"))):
         return ["NEWS_PREGAME_VERIFICATION_UNVERIFIED"]
-    if news.get("material_change") is True and not _text(news.get("new_model_receipt_id")):
-        return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+    # A free-text receipt ID is not evidence that the fitted model saw the
+    # post-change lineup/role. This is a downgrade-only, research-level shape
+    # audit: even a passing caller-supplied receipt is NOT authenticated proof.
+    if news.get("material_change") is True:
+        receipt = news.get("new_model_receipt")
+        if not isinstance(receipt, Mapping):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        frozen = _time(receipt.get("frozen_at_utc"))
+        if (not _text(news.get("new_model_receipt_id"))
+                or _text(receipt.get("immutable_pregame_receipt_id")) != _text(news.get("new_model_receipt_id"))
+                or not _text(receipt.get("fitted_model_hash"))
+                or not _text(receipt.get("calibration_receipt_id"))
+                or _text(receipt.get("consumed_news_review_receipt_id")) != _text(news.get("independent_review_receipt_id"))
+                or frozen is None or frozen < seen or frozen > as_of or frozen >= start
+                or _text(receipt.get("sport")).upper() != _text(leg.get("sport")).upper()
+                or _text(receipt.get("official_event_id")) != _text(leg.get("official_event_id"))
+                or _market(receipt.get("market_family")) != _market(leg.get("market_family"))
+                or _text(receipt.get("market_period")).upper() != _text(leg.get("market_period")).upper()
+                or _text(receipt.get("side")).upper() != _text(leg.get("side")).upper()
+                or _text(receipt.get("settlement_basis")).upper() != _text(leg.get("settlement_basis")).upper()
+                or _line_key(receipt.get("exact_line")) != _line_key(leg.get("exact_line"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        market = _market(leg.get("market_family"))
+        if market in _PROPS and (
+                not _text(leg.get("official_player_id")) or not _text(leg.get("stat_type"))
+                or _text(receipt.get("official_player_id")) != _text(leg.get("official_player_id"))
+                or _text(receipt.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        if market == "TEAM_TOTAL" and (
+                not _text(leg.get("selected_team_id"))
+                or _text(receipt.get("selected_team_id")) != _text(leg.get("selected_team_id"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+    return []
+
+
+def _context_impact_blockers(leg: Mapping[str, Any]) -> list[str]:
+    """Hold research candidates when event-wide news invalidation is pending.
+
+    Never use caller-supplied flags as proof that a fitted scorer consumed the
+    update. They may only downgrade the research card, not clear an invalidation.
+    """
+    impact = leg.get("context_change_impact")
+    recommendation_status = _text(leg.get("research_recommendation_status"))
+    impact_status = ""
+    if isinstance(impact, Mapping):
+        impact_status = _text(impact.get("impact_status"))
+        if impact.get("research_invalidation_requested") is True:
+            return ["CONTEXT_STALE_RECALC_REQUIRED"]
+    # Neither caller-supplied assessment can clear the other. A newer
+    # NO_MATERIAL_EVENT_RECEIPT is NOT a verified fitted rescore or a release
+    # of an earlier peer-derived stale recommendation.
+    stale_states = {
+        "CONTEXT_STALE_RECALC_REQUIRED", "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "CONTEXT_MATERIAL_EVIDENCE_INVALID", "CONTEXT_RECEIPT_DIGEST_INVALID",
+        "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
+        "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH", "CONTEXT_SPORT_NOT_MAPPED",
+    }
+    if recommendation_status in stale_states or impact_status in stale_states:
+        return ["CONTEXT_STALE_RECALC_REQUIRED"]
     return []
 
 
@@ -242,6 +621,7 @@ def audit_research_slips(
     *,
     as_of_utc: str,
     max_distinct_slips_per_leg: int = 1,
+    max_distinct_slips_per_event: int = 2,
     max_standard_legs: int = _STANDARD_MAX_LEGS,
 ) -> dict[str, Any]:
     """Evaluate all proposed slips as one portfolio; input remains unchanged.
@@ -253,9 +633,11 @@ def audit_research_slips(
     at = _time(as_of_utc)
     if at is None:
         raise ValueError("RESEARCH_PREFLIGHT_AS_OF_INVALID")
-    if max_distinct_slips_per_leg < 1 or max_standard_legs < 2:
+    if max_distinct_slips_per_leg < 1 or max_distinct_slips_per_event < 1 or max_standard_legs < 2:
         raise ValueError("RESEARCH_PREFLIGHT_LIMIT_INVALID")
     seen_exact: dict[tuple[str, ...], set[str]] = {}
+    seen_events: dict[tuple[str, str], set[str]] = {}
+    seen_card_ids: set[str] = set()
     reports: list[dict[str, Any]] = []
     for idx, slip in enumerate(slips):
         if not isinstance(slip, Mapping):
@@ -265,6 +647,11 @@ def audit_research_slips(
         if not isinstance(legs, list):
             legs = []
         blockers = []
+        if _text(slip.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+            blockers.append("SLIP_JOINT_CONFIDENCE_UNVERIFIED")
+        if slip_id in seen_card_ids:
+            blockers.append("RESEARCH_CARD_ID_DUPLICATE")
+        seen_card_ids.add(slip_id)
         if len(legs) < 2:
             blockers.append("RESEARCH_SLIP_TOO_FEW_LEGS")
         if len(legs) > max_standard_legs:
@@ -276,7 +663,9 @@ def audit_research_slips(
                 leg_reports.append({"index": i, "blockers": ["RESEARCH_LEG_INVALID"]})
                 blockers.append("RESEARCH_LEG_INVALID")
                 continue
-            reasons: list[str] = []
+            reasons: list[str] = _context_impact_blockers(leg)
+            if _text(leg.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+                reasons.append("RESEARCH_STRONG_CONFIDENCE_CLAIM_UNVERIFIED")
             identity = exact_key(leg)
             start = _time(leg.get("event_start_utc"))
             snapshot = _time(leg.get("source_snapshot_at_utc"))
@@ -287,31 +676,63 @@ def audit_research_slips(
             if _text(leg.get("market_family")).upper() not in _TOTALS | _PROPS | {"MONEYLINE", "ML", "POINT_SPREAD", "SPREAD"}:
                 reasons.append("MARKET_FAMILY_UNSUPPORTED")
             market = _market(leg.get("market_family"))
+            niche_research = classify_niche_prop(leg)
+            if (niche_research["stat_type"] == "FIELD_GOALS_MADE_COMBO"
+                    and _text(leg.get("sport")).upper() == "NFL"):
+                # The fitted prop manifest has no dedicated first-quarter
+                # two-kicker combo route. Never launder a combo into the
+                # individual-player prop contract, even with a plausible quote.
+                reasons.append("NFL_KICKER_COMBO_SPECIALIST_NOT_DECLARED")
+                if market == "PLAYER_PROP":
+                    reasons.append("NFL_KICKER_COMBO_NOT_SINGLE_PLAYER_PROP")
+                reasons.extend("NICHE_" + gap for gap in niche_research["identity_gaps"])
             if market in _TOTALS | _PROPS | {"POINT_SPREAD", "SPREAD"} and _number(leg.get("exact_line")) is None:
                 reasons.append("EXACT_LINE_MISSING")
             if not _text(leg.get("settlement_basis")):
                 reasons.append("EXACT_SETTLEMENT_RULE_MISSING")
             if start is not None:
+                reasons.extend(_fixture_blockers(leg, at, start))
                 reasons.extend(_quote_blockers(leg, at, start))
+                reasons.extend(_price_edge_blockers(leg, at, start))
                 reasons.extend(_news_blockers(leg, at, start))
+                card_platform = _text(slip.get("platform")).upper()
+                leg_platform = _text(leg.get("platform")).upper()
+                if card_platform and leg_platform and card_platform != leg_platform:
+                    reasons.append("SLIP_CARD_LEG_PLATFORM_CONFLICT")
+                if market in _PROPS:
+                    reasons.extend(_opportunity_blockers(leg, at, start))
+                    reasons.extend(_longest_reception_blockers(leg, at, start))
+                    if card_platform == "PRIZEPICKS" or leg_platform == "PRIZEPICKS":
+                        reasons.extend(_prizepicks_offer_blockers(leg, at, start))
                 if market in _TOTALS:
                     reasons.extend(_total_blockers(leg, at, start))
                 if market in _PROPS:
                     reasons.extend(_player_blockers(leg, at, start))
+                    reasons.extend(_prop_context_blockers(leg, at, start))
             if identity:
                 previous = seen_exact.setdefault(identity, set())
                 if any(x != slip_id for x in previous) and len(previous) >= max_distinct_slips_per_leg:
                     reasons.append("CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE")
                 previous.add(slip_id)
                 if identity[0] and identity[1]:
-                    event_counts[(identity[0], identity[1])] += 1
+                    event_key = (identity[0], identity[1])
+                    prior_cards = seen_events.setdefault(event_key, set())
+                    if slip_id not in prior_cards and len(prior_cards) >= max_distinct_slips_per_event:
+                        reasons.append("CROSS_SLIP_EVENT_HINGE_CONCENTRATION")
+                    prior_cards.add(slip_id)
+                    event_counts[event_key] += 1
             reasons = list(dict.fromkeys(reasons))
             leg_reports.append({"index": i, "row_id": leg.get("row_id"),
                                 "blockers": reasons, "research_only": True,
+                                "niche_prop_research": niche_research,
                                 "quote_independently_authenticated": False,
                                 "news_independently_authenticated": False,
                                 "model_probability_verified": False})
             blockers.extend(reasons)
+        if (_text(slip.get("platform")).upper() == "PRIZEPICKS"
+                or any(isinstance(l, Mapping) and _text(l.get("platform")).upper() == "PRIZEPICKS"
+                       for l in legs)):
+            blockers.extend(_prizepicks_lineup_blockers(slip, at, legs))
         if any(x > 1 for x in event_counts.values()):
             blockers.append("SAME_EVENT_JOINT_DEPENDENCE_UNVERIFIED")
         if len({exact_key(l) for l in legs if isinstance(l, Mapping)}) < len(legs):
@@ -322,6 +743,10 @@ def audit_research_slips(
             "status": "RESEARCH_HOLD" if blockers else "RESEARCH_CONTEXT_REVIEWABLE_UNCERTIFIED",
             "blockers": blockers,
             "legs": leg_reports,
+            "niche_category_counts": dict(sorted(Counter(
+                item["niche_prop_research"]["category"]
+                for item in leg_reports if "niche_prop_research" in item
+            ).items())),
             "can_publish_as_certified": False,
             "model_rescore_verified": False,
             "joint_probability": None,
@@ -336,6 +761,9 @@ def audit_research_slips(
         "cards": reports,
         "cross_slip_exact_exposure_counts": {
             "|".join(key): len(value) for key, value in sorted(seen_exact.items())
+        },
+        "cross_slip_event_exposure_counts": {
+            "|".join(key): len(value) for key, value in sorted(seen_events.items())
         },
         "research_only": True,
         "fitted_model_changed": False,
