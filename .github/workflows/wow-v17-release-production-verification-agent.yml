@@ -139,7 +139,7 @@ jobs:
               echo "RELEASE_CHECK_PAGE_INVALID" >&2; exit 1;
             }
             count=$(jq 'length' <<<"$page_checks")
-            all_checks=$(jq -cn --argjson old "$all_checks" --argjson new "$page_checks" '$old + $new')
+            all_checks=$(printf '%s\n%s\n' "$all_checks" "$page_checks" | jq -cs '.[0] + .[1]')
             [ "$count" -lt 100 ] && break
             [ "$page" -lt 10 ] || { echo "RELEASE_CHECK_PAGE_LIMIT" >&2; exit 1; }
           done
