@@ -17,9 +17,9 @@ STEP_NAME = "      - name: Locate recoverable Scout discovery artifact\n"
 STUB = r"""
 gh() {
   case "$2" in
-    */artifacts) printf '%s\\n' '' ;;
+    */artifacts) printf '%s\n' '' ;;
     */jobs?per_page=100) printf '%s' "$MOCK_JOBS" | jq -r "$4" ;;
-    */actions/runs/*) printf '%s\\n' "$MOCK_EVENT" ;;
+    */actions/runs/*) printf '%s\n' "$MOCK_EVENT" ;;
     *) return 2 ;;
   esac
 }
