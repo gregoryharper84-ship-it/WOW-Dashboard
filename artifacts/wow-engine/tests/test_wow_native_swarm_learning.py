@@ -102,9 +102,7 @@ def test_history_contains_only_canonical_safe_research_keys():
     result = learn(receipt("30"), [], missing_features=[
         "confirmed_starting_goalies", "confirmed_starting_goalies",
         "api_key", "predicted_winner", "x/../secrets"])
-    assert result["missing_features"] == [
-        "api_key", "confirmed_starting_goalies", "predicted_winner"
-    ]
+    assert result["missing_features"] == ["confirmed_starting_goalies"]
     assert "x/../secrets" not in str(result)
 
 
