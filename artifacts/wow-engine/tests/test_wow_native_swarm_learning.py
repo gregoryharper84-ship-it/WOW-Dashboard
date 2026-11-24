@@ -108,24 +108,15 @@ def test_history_contains_only_canonical_safe_research_keys():
 
 def test_cli_writes_report_from_real_enriched_shape(tmp_path, monkeypatch):
     current = tmp_path / "current.json"
-    handoff = tmp_path / "handoff.json"
     out = tmp_path / "learning.json"
     history = tmp_path / "history"
     history.mkdir()
     current.write_text(json.dumps(receipt()))
-    handoff.write_text(json.dumps({
-        "can_execute": False, "model_handoff": {
-            "team_event_candidates": [{
-                "sport_key": "icehockey_nhl", "official_event_id": "2026020385",
-                "native_swarm_requested": True,
-                "matchup_discovery": {"missing_critical_features": [
-                    "confirmed_starting_goalies", "exact_current_quote",
-                ]},
-            }], "prop_candidates": [],
-        },
-    }))
+    source = receipt()
+    source["canonical_missing_features"] = [
+        "confirmed_starting_goalies", "exact_current_quote", "api_key"]
+    current.write_text(json.dumps(source))
     monkeypatch.setattr("sys.argv", ["learner", "--current", str(current),
-                                    "--handoff", str(handoff),
                                     "--history-dir", str(history), "--output", str(out)])
     assert main() == 0
     report = json.loads(out.read_text())
