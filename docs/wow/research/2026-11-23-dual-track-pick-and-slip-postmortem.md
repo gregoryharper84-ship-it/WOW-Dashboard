@@ -9,7 +9,7 @@ production-deployed improvement, and not verified prediction lift.
 | Lane | Source of truth | May report | Must never claim |
 | --- | --- | --- | --- |
 | **Sporting pick / model postmortem** | Existing `v17.postmortem_engine`, independently settled exact-event pick and any genuinely immutable pregame fitted specialist receipt | Unique selections, settled outcomes, source and opportunity/role misses; Brier/log loss only when genuine time-correct calibrated probabilities exist | That anecdotal tips, VIP consensus, odds or postgame-derived percentages were certified probabilities |
-| **Slip-construction retrospective** | New pure `v17.slip_construction_postmortem` built from already-normalized settled legs and position records; same authenticated ledger read for API | Repeated losing hinges, exposed all-or-nothing positions, same-event dependency, concentrated 4+ leg structures, missing prelock quote/payout/joint evidence | A new sport predictor, independent marginal product as joint probability, submission/profit claims, or model-promotion authority |
+| **Slip-construction retrospective** | New pure `v17.slip_construction_postmortem` built from already-normalized settled legs and position records; same authenticated ledger read for API | Repeated losing hinges, exposed all-or-nothing positions, same-event and same-player dependence, component/composite overlap (points plus PRA), concentrated 4+ leg structures, missing prelock quote/payout/joint evidence | A new sport predictor, independent marginal product as joint probability, submission/profit claims, or model-promotion authority |
 
 The core postmortem persistence remains unchanged. The new read-only API is
 `GET /v17/postmortem-runs/{research_run_id}/slip-construction` (existing auth).
