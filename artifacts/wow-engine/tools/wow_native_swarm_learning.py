@@ -21,6 +21,17 @@ MAX_FILE_BYTES = 65536
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_FEATURE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
+def _safe_feature(name: Any) -> bool:
+    if not isinstance(name, str) or not _SAFE_FEATURE.fullmatch(name):
+        return False
+    prohibited = (
+        "api_key", "password", "secret", "token", "probability",
+        "confidence", "predicted_", "model_prediction",
+        "stake", "wager", "order", "estimated_edge",
+    )
+    return not any(fragment in name for fragment in prohibited)
+
+
 
 def _load(path: Path) -> dict[str, Any]:
     if path.stat().st_size > MAX_FILE_BYTES:
@@ -99,7 +110,7 @@ def _features(handoff: Any, sport: str, event_id: str) -> list[str]:
     if not isinstance(missing, list):
         return []
     return sorted({x for x in missing if isinstance(x, str)
-                   and _SAFE_FEATURE.fullmatch(x) and x in known})[:32]
+                   and _safe_feature(x) and x in known})[:32]
 
 
 def _history(paths: list[Path], current_run: str) -> tuple[list[dict[str, Any]], int]:
@@ -121,7 +132,7 @@ def _history(paths: list[Path], current_run: str) -> tuple[list[dict[str, Any]],
                     if isinstance(features, list):
                         prior["missing_features"] = [
                             x for x in features[:32]
-                            if isinstance(x, str) and _SAFE_FEATURE.fullmatch(x)
+                            if _safe_feature(x)
                         ]
             run = prior["run_id"]
             if run in valid and valid[run]["digest"] != prior["digest"]:
@@ -158,7 +169,7 @@ def learn(current: dict[str, Any], history: list[dict[str, Any]],
     for row in recent_by_event.values():
         feature_counts.update(set(row.get("missing_features", [])))
     canonical = sorted({x for x in (missing_features or []) if isinstance(x, str)
-                        and _SAFE_FEATURE.fullmatch(x)})[:32]
+                        and _safe_feature(x)})[:32]
     features_ranked = sorted(canonical, key=lambda key: (-feature_counts[key], key))
     if latest is None:
         status = "BASELINE_ESTABLISHED"
