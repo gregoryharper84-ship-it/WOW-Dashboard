@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/gdelt-public-news"
-          python v17/public_news_feed_report.py \
+          python -m v17.public_news_feed_report \
             --input "$RUNNER_TEMP/gdelt-public-news/receipt.json" \
             --output-json "$RUNNER_TEMP/gdelt-public-news/newsfeed.json" \
             --output-md "$RUNNER_TEMP/gdelt-public-news/newsfeed.md" \
