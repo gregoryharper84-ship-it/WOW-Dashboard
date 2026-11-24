@@ -12,12 +12,16 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any
 
 SCHEMA = "wow.v17.native_swarm_learning.v1"
 RECEIPT_SCHEMA = "wow.v17.native_swarm_production_readback.v1"
 MAX_HISTORY = 12
 MAX_FILE_BYTES = 65536
+_ENGINE_ROOT = str(Path(__file__).resolve().parents[1])
+if _ENGINE_ROOT not in sys.path:
+    sys.path.insert(0, _ENGINE_ROOT)
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_FEATURE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
