@@ -61,12 +61,34 @@ jobs:
               print(f"::warning title=WOW News Feed Degraded::news_status={status} code={code} articles={articles}")
               raise SystemExit(1)
           PY
+      - name: Build user-readable research newsfeed and coverage receipt
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/gdelt-public-news"
+          python v17/public_news_feed_report.py \
+            --input "$RUNNER_TEMP/gdelt-public-news/receipt.json" \
+            --output-json "$RUNNER_TEMP/gdelt-public-news/newsfeed.json" \
+            --output-md "$RUNNER_TEMP/gdelt-public-news/newsfeed.md" \
+            --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "gdelt-public-news" / "newsfeed.json").read_text())
+          assert report["can_execute"] is False
+          assert report["probability_authority"] is False
+          assert report["model_rescore_verified"] is False
+          print(f"WOW_PUBLIC_NEWSFEED_STATUS={report['status']} sampled_sport={report['sampled_sport']} headline_groups={len(report['headlines'])}")
+          PY
       - name: Upload public news evidence receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-gdelt-public-news-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/gdelt-public-news/receipt.json
+          path: |
+            ${{ runner.temp }}/gdelt-public-news/receipt.json
+            ${{ runner.temp }}/gdelt-public-news/newsfeed.json
+            ${{ runner.temp }}/gdelt-public-news/newsfeed.md
           if-no-files-found: warn
           retention-days: 90
       - name: Check source credentials
