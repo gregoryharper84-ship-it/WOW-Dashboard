@@ -187,6 +187,108 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
                    "EXACT_HEAD_PROTECTED_MERGE", pr=number, sha=expected_sha)
 
 
+def ship_observation(pr: dict, checks: list, reviews: list, expected_sha: str) -> dict:
+    """Read-only stewardship evidence. Never grants dispatch or release authority.
+
+    Inputs must be complete trusted GitHub snapshots. Review prose is deliberately
+    ignored. Existing signed gate and writer admission remain authoritative.
+    """
+    result = {"status": "EVIDENCE_INVALID", "head_sha": expected_sha,
+              "pr": None, "failed_check_ids": [], "pending_check_ids": [],
+              "requested_change_review_ids": [], "stale_review_ids": [],
+              "dispatch_authorized": False, "merge_authorized": False,
+              "can_execute": False}
+    if not isinstance(pr, dict) or not _valid_pr(pr, expected_sha):
+        result["status"] = "SOURCE_HEAD_UNSTABLE"
+        return result
+    result["pr"] = pr["number"]
+    labels = pr.get("labels")
+    if not isinstance(labels, list) or any(
+        not isinstance(x, dict) or not isinstance(x.get("name"), str) for x in labels
+    ):
+        return result
+    if {x["name"].lower() for x in labels} & {
+        "needs-owner", "blocked", "security-hold", "do-not-automate",
+        "no-autobuild", "no-auto-build", "duplicate", "wontfix", "wow-ship-stop"
+    }:
+        result["status"] = "STOPPED"
+        return result
+    if not isinstance(checks, list) or len(checks) > 1000 or not isinstance(reviews, list) or len(reviews) > 1000:
+        return result
+    newest = {}
+    by_id = {}
+    for row in checks:
+        if not isinstance(row, dict):
+            return result
+        app = row.get("app")
+        cid = row.get("id")
+        name = row.get("name")
+        if (type(cid) is not int or cid <= 0 or not isinstance(app, dict)
+                or type(app.get("id")) is not int or app["id"] <= 0
+                or not isinstance(name, str) or not name
+                or row.get("head_sha") != expected_sha
+                or row.get("status") not in {"queued", "in_progress", "completed", "waiting", "requested", "pending"}):
+            return result
+        key = (app["id"], name)
+        signature = (key, row["status"], row.get("conclusion"))
+        if cid in by_id and by_id[cid] != signature:
+            return result
+        by_id[cid] = signature
+        if key not in newest or cid > newest[key]["id"]:
+            newest[key] = row
+    # Gate failures belong to the existing independent delivery reducer.
+    gate_names = {QA_CHECK, INDEPENDENT_QA_CHECK, RELEASE_CHECK}
+    for row in newest.values():
+        if row["name"] in gate_names:
+            continue
+        if row["status"] != "completed":
+            result["pending_check_ids"].append(row["id"])
+        elif row.get("conclusion") in {"failure", "timed_out", "action_required", "cancelled", "startup_failure", "stale"}:
+            result["failed_check_ids"].append(row["id"])
+        elif row.get("conclusion") not in {"success", "neutral", "skipped"}:
+            return result
+    latest_reviews = {}
+    seen_reviews = set()
+    for row in reviews:
+        if not isinstance(row, dict):
+            return result
+        user = row.get("user")
+        rid = row.get("id")
+        state = row.get("state")
+        commit = row.get("commit_id")
+        if (type(rid) is not int or rid <= 0 or rid in seen_reviews
+                or not isinstance(user, dict) or type(user.get("id")) is not int
+                or user["id"] <= 0 or state not in {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"}
+                or not isinstance(commit, str) or not SHA.fullmatch(commit)):
+            return result
+        seen_reviews.add(rid)
+        if state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            uid = user["id"]
+            if uid not in latest_reviews or rid > latest_reviews[uid]["id"]:
+                latest_reviews[uid] = row
+    for row in latest_reviews.values():
+        if row["state"] == "CHANGES_REQUESTED":
+            field = "requested_change_review_ids" if row["commit_id"] == expected_sha else "stale_review_ids"
+            result[field].append(row["id"])
+    for field in ("failed_check_ids", "pending_check_ids", "requested_change_review_ids", "stale_review_ids"):
+        result[field].sort()
+    if pr.get("mergeable_state") == "dirty" and pr.get("mergeable") is False:
+        result["status"] = "MERGE_CONFLICT_REVIEW_REQUIRED"
+    elif result["failed_check_ids"]:
+        result["status"] = "CI_FAILURE_DIAGNOSIS_REQUIRED"
+    elif result["requested_change_review_ids"]:
+        result["status"] = "REVIEW_FINDING_TRIAGE_REQUIRED"
+    elif result["stale_review_ids"]:
+        result["status"] = "REVIEW_REFRESH_REQUIRED"
+    elif result["pending_check_ids"]:
+        result["status"] = "CI_PENDING"
+    elif pr.get("mergeable") is not True or not newest:
+        result["status"] = "EVIDENCE_PENDING"
+    else:
+        result["status"] = "FOLLOW_EXISTING_DELIVERY_GATES"
+    return result
+
+
 def reduce_completion(*, merge_sha: str | None, live_sha: str | None,
                       verified_sha: str | None, healthy_route: bool,
                       persisted_result: bool) -> dict:
@@ -204,6 +306,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pr", type=Path, required=True)
     parser.add_argument("--checks", type=Path, required=True)
+    parser.add_argument("--reviews", type=Path)
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -213,6 +316,14 @@ def main() -> None:
     except (ValueError, TypeError):
         decision = _result("REVIEW_EVIDENCE_INVALID",
                            "RECHECK_REVIEW_EVIDENCE", "VALID_REVIEW_EVIDENCE")
+    if args.reviews is not None:
+        try:
+            decision["wow_ship"] = ship_observation(
+                json.loads(args.pr.read_text()), json.loads(args.checks.read_text()),
+                json.loads(args.reviews.read_text()), args.head_sha)
+        except (ValueError, TypeError, OSError, AttributeError):
+            decision["wow_ship"] = {"status": "EVIDENCE_INVALID", "can_execute": False,
+                                    "dispatch_authorized": False, "merge_authorized": False}
     args.output.write_text(json.dumps(decision, sort_keys=True) + "\n")
     print(json.dumps(decision, sort_keys=True))
 
