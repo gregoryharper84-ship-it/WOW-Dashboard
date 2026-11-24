@@ -542,3 +542,53 @@ def test_identity_calibrator_remains_forbidden_even_with_frozen_corpus(monkeypat
     assert result["status"] != "CERTIFICATION_EVIDENCE_PASS"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+def test_replay_except_preserves_valueerror_code_not_type_name(monkeypatch):
+    """Incident #1952: DETERMINISTIC_REPLAY_FAILED must keep the typed code."""
+    train_n, cal_n, test_n = _patch_small_split(monkeypatch)
+    _ready_source(monkeypatch)
+    training_rows, record = _wilson_bound_corpus(train_n + cal_n + test_n)
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("NHL_REPLAY_CALIBRATION_SPLIT_INVALID")
+
+    # Raise after research fit so the except handler is the path under test.
+    monkeypatch.setattr(nhl, "_calibration_block_raw_probabilities", _boom)
+    db = _Database(candidates=[record], training_rows=training_rows)
+    result = nhl.verify_nhl_candidate_certification_evidence(db, "nhl-wilson-1")
+    assert "DETERMINISTIC_REPLAY_FAILED:NHL_REPLAY_CALIBRATION_SPLIT_INVALID" in result["blockers"]
+    assert "DETERMINISTIC_REPLAY_FAILED:ValueError" not in result["blockers"]
+    assert result["replay_status"] == "FAIL"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_fit_end_before_last_calibration_row_start_blocks_replay(monkeypatch):
+    """Incident #1952: early fit_end_timestamp vs last cal-row start is a hard fail."""
+    from datetime import datetime, timedelta, timezone
+
+    train_n, cal_n, test_n = _patch_small_split(monkeypatch)
+    _ready_source(monkeypatch)
+    training_rows, record = _wilson_bound_corpus(train_n + cal_n + test_n)
+    early = deepcopy(record)
+    payload = dict(early["calibrator_payload"])
+    # Last calibration row starts at corpus base + (cal_end-1) hours; push fit_end earlier.
+    last_cal_start = datetime.fromisoformat(
+        training_rows[int(early["artifact_payload"]["calibration_end_index"]) - 1][
+            "event_start_time"
+        ]
+    )
+    if last_cal_start.tzinfo is None:
+        last_cal_start = last_cal_start.replace(tzinfo=timezone.utc)
+    payload["fit_end_timestamp"] = (last_cal_start - timedelta(hours=2)).isoformat()
+    early["calibrator_payload"] = payload
+    db = _Database(candidates=[early], training_rows=training_rows)
+    result = nhl.verify_nhl_candidate_certification_evidence(db, "nhl-wilson-1")
+    assert (
+        "DETERMINISTIC_REPLAY_FAILED:NHL_REPLAY_FIT_END_BEFORE_CALIBRATION_BLOCK_END"
+        in result["blockers"]
+    )
+    assert result["replay_status"] == "FAIL"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
