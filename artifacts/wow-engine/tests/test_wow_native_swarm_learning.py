@@ -158,3 +158,28 @@ def test_conflicting_same_run_digests_are_quarantined(tmp_path):
     report = learn(receipt("101"), [first, altered])
     assert report["prior_unique_runs"] == 0
     assert report["status"] == "BASELINE_ESTABLISHED"
+
+def test_cli_reads_bounded_prior_run_without_false_baseline(tmp_path, monkeypatch):
+    new = tmp_path / "current.json"
+    history = tmp_path / "history" / "older"
+    history.mkdir(parents=True)
+    output = tmp_path / "learning.json"
+    new.write_text(json.dumps(receipt("101")))
+    (history / "native-swarm-receipt.json").write_text(json.dumps(receipt("100")))
+    monkeypatch.setattr("sys.argv", ["learner", "--current", str(new),
+                                    "--history-dir", str(tmp_path / "history"),
+                                    "--output", str(output)])
+    assert main() == 0
+    report = json.loads(output.read_text())
+    assert report["prior_unique_runs"] == 1
+    assert report["status"] == "REPEATED_RESEARCH_HOLD"
+
+
+def test_history_collector_excludes_verification_events():
+    workflow = (Path(__file__).resolve().parents[3] / ".github" / "workflows"
+                / "wow-v17-nightly-multiscout.yml").read_text()
+    assert "for event in workflow_run workflow_dispatch schedule" in workflow
+    assert "--event \"$event\"" in workflow
+    assert "continue-on-error: true" in workflow
+    assert '"$valid_count" -lt 8' in workflow
+    assert "--pattern 'wow-native-swarm-receipt-*'" in workflow
