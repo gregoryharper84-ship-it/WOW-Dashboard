@@ -247,7 +247,7 @@ def test_nba_host_match_does_not_accept_wnba_domain():
     kept = gkg.parse_gkg_articles(nba.encode() + b"\n", sport_key="basketball_nba",
                                   observed_at=NOW)
     assert len(kept) == 1
-    assert "nba.com" in kept[0]["source_url"]
+    assert kept[0]["source_url"].startswith("https://www.nba.com/")
 
 
 def test_stream_error_is_not_shadowed_by_http_error(monkeypatch):
