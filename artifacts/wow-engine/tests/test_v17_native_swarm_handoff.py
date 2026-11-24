@@ -484,6 +484,68 @@ def test_live_scout_workflow_explicit_optin_and_archived_bounded_receipt():
     assert "NATIVE_SWARM_PILOT_RECEIPT_MISSING" in workflow
 
 
+def test_pilot_wakes_on_the_actual_protected_deploy_controller():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-nightly-multiscout.yml").read_text()
+    controller = (root / ".github/workflows/wow-v17-required-checks-deploy.yml").read_text()
+    assert 'workflows: ["wow-v17-render-production-deploy", "wow-v17-required-checks-deploy"]' in workflow
+    assert 'github.event.workflow_run.conclusion == \'success\'' in workflow
+    assert 'github.event.workflow_run.head_branch == \'main\'' in workflow
+    assert 'name: wow-v17-required-checks-deploy' in controller
+    assert 'Deploy exact current main SHA once required checks are green' in controller
+
+
+def test_controller_receipt_admission_rejects_no_deploy_and_foreign_sha():
+    """Execute the actual production jq admission contract on negative receipts."""
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    if not shutil.which("jq"):
+        pytest.skip("jq required to execute GitHub Actions receipt predicate")
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-nightly-multiscout.yml").read_text()
+    assert "needs.verify.outputs.deploy_admitted == 'true'" in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "github.event.workflow_run.id" in workflow
+    # Single source of truth: extract the jq expression used in verify.
+    expression = workflow.split("jq -e --arg sha \"$SOURCE_SHA\" '", 1)[1].split(
+        "' \"$RECEIPT\"", 1)[0]
+    expected = "a" * 40
+    valid = {
+        "status": "DEPLOY_LIVE_AND_HEALTHY",
+        "main_sha": expected, "target_sha": expected,
+        "can_execute": False,
+        "readback": {
+            "status": "WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED",
+            "observed_main_sha": expected, "target_sha": expected,
+            "can_execute": False, "health_live": "HTTP_200",
+            "web_deploy_id": "dep-web", "worker_deploy_id": "dep-worker",
+        },
+    }
+    def accepted(receipt, *, sha=expected):
+        result = subprocess.run(
+            ["jq", "-e", "--arg", "sha", sha, expression],
+            input=json.dumps(receipt), text=True, capture_output=True,
+            timeout=15, check=False,
+        )
+        return result.returncode == 0
+    assert accepted(valid)
+    for mutation in (
+        {"status": "REQUIRED_CHECKS_PENDING_NO_DEPLOY"},
+        {"status": "DEPLOY_ALREADY_PRESENT"},
+        {"target_sha": "b" * 40},
+        {"can_execute": True},
+        {"readback": {**valid["readback"], "health_live": "HTTP_503"}},
+        {"readback": {**valid["readback"], "observed_main_sha": "b" * 40}},
+        {"readback": {**valid["readback"], "worker_deploy_id": ""}},
+    ):
+        assert not accepted({**valid, **mutation})
+    assert not accepted(valid, sha="b" * 40)
+
+
 def test_direct_cli_verified_pilot_generates_real_research_hold(tmp_path):
     import json
     import os
