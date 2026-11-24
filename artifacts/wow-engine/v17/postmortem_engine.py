@@ -562,8 +562,19 @@ def build_postmortem_payload(
         "reused_selection_extra_positions": sum(n - 1 for n in reused_position_counts),
         "max_selection_position_exposure": max((len(p) for p in selection_positions.values()), default=0),
         "cross_position_exposure_basis": "EXACT_OBSERVED_FIELDS_ONLY_NOT_CERTIFIED_IDENTITY",
-        "profitable_positions": sum(1 for pos in normalized_positions if pos["net_profit"] > 0),
-        "non_losing_positions": sum(1 for pos in normalized_positions if pos["net_profit"] >= 0),
+        # Zero-dollar hypothetical slips are not verified economic outcomes.
+        # Never count those as non-losing positions merely because 0 >= 0.
+        "profitable_positions": sum(
+            1 for pos in normalized_positions
+            if pos["entry_cost"] > 0 and pos["net_profit"] > 0
+        ),
+        "non_losing_positions": sum(
+            1 for pos in normalized_positions
+            if pos["entry_cost"] > 0 and pos["net_profit"] >= 0
+        ),
+        "reported_positive_entry_positions": sum(
+            1 for pos in normalized_positions if pos["entry_cost"] > 0
+        ),
         "total_entry": total_entry,
         "total_return": total_return,
         "net_profit": net_profit,
