@@ -59,6 +59,8 @@ def capture_nhl_pregame_gamecenter(
     as_of_utc: datetime,
     get: Callable[..., Any] = requests.get,
     timeout_seconds: float = 8.0,
+    snapshot_write: Callable[[bytes, Mapping[str, Any]], str] | None = None,
+    snapshot_read: Callable[[str], bytes] | None = None,
 ) -> dict[str, Any]:
     """Capture official gamecenter bytes with a strict pregame and identity gate.
 
@@ -147,9 +149,42 @@ def capture_nhl_pregame_gamecenter(
         return _held("NHL_GAMECENTER_START_TIME_MISMATCH", event_id=event_id)
     if source_start <= now or payload.get("gameState") != "FUT":
         return _held("NHL_EVENT_NOT_PREGAME", event_id=event_id)
+    # A cryptographic digest alone is not durable provenance. An authorized
+    # server-owned store must return an ID, and a separate exact-byte readback
+    # must verify the original gamecenter response before attesting persistence.
+    snapshot_id = None
+    persistence = "NOT_PERSISTED"
+    if (snapshot_write is None) != (snapshot_read is None):
+        return _held("NHL_SOURCE_SNAPSHOT_CALLBACK_INCOMPLETE", event_id=event_id)
+    if snapshot_write is not None and snapshot_read is not None:
+        try:
+            stored = snapshot_write(raw, {
+                "source_url": url,
+                "official_event_id": event_id,
+                "source_content_sha256": sha,
+                "retrieved_at_utc": now.isoformat(),
+                "can_execute": False,
+            })
+            if not isinstance(stored, str) or not stored.strip():
+                raise ValueError("NHL_SOURCE_SNAPSHOT_ID_INVALID")
+            recovered = snapshot_read(stored)
+            if not isinstance(recovered, bytes) or recovered != raw:
+                raise ValueError("NHL_SOURCE_SNAPSHOT_READBACK_MISMATCH")
+            if hashlib.sha256(recovered).hexdigest() != sha:
+                raise ValueError("NHL_SOURCE_SNAPSHOT_HASH_MISMATCH")
+            snapshot_id = stored
+            persistence = "READBACK_SHA256_VERIFIED"
+        except Exception:  # noqa: BLE001 - never equate partial write with acceptance
+            return _held(
+                "NHL_SOURCE_SNAPSHOT_READBACK_FAILED", event_id=event_id,
+                source_url=url, source_content_sha256=sha,
+                source_persistence_status="READBACK_FAILED",
+            )
     return _held(
         "NHL_GOALIE_STARTER_CONFIRMATION_REQUIRED",
         event_id=event_id,
+        source_snapshot_id=snapshot_id,
+        source_persistence_status=persistence,
         source_url=url,
         identity_match_sha256=match_sha,
         source_content_sha256=sha,

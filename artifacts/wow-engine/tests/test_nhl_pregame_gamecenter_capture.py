@@ -159,3 +159,57 @@ def test_naive_as_of_rejected_instead_of_implicit_utc():
         capture_nhl_pregame_gamecenter(
             EVENT_ID, resolved_identity=identity(), as_of_utc=NOW.replace(tzinfo=None),
         )
+
+def test_authorized_source_snapshot_requires_exact_byte_readback():
+    stored = {}
+    def write(raw, metadata):
+        assert metadata["official_event_id"] == EVENT_ID
+        assert metadata["can_execute"] is False
+        assert metadata["source_content_sha256"] == hashlib.sha256(raw).hexdigest()
+        stored["raw"] = bytes(raw)
+        return "trusted-source:nhl:2026020219:20261109"
+
+    def read(snapshot_id):
+        assert snapshot_id == "trusted-source:nhl:2026020219:20261109"
+        return stored["raw"]
+
+    result = capture_nhl_pregame_gamecenter(
+        EVENT_ID, resolved_identity=identity(), as_of_utc=NOW,
+        get=lambda *a, **k: Response(),
+        snapshot_write=write, snapshot_read=read,
+    )
+    assert result["code"] == "NHL_GOALIE_STARTER_CONFIRMATION_REQUIRED"
+    assert result["source_snapshot_id"] == "trusted-source:nhl:2026020219:20261109"
+    assert result["source_persistence_status"] == "READBACK_SHA256_VERIFIED"
+    assert result["goalie_status"] == "UNVERIFIED"
+    assert result["probability_publishable"] is result["can_execute"] is False
+
+
+@pytest.mark.parametrize("mode", ["no_reader", "no_writer", "tampered", "unreadable", "missing_id"])
+def test_no_durable_source_attestation_without_verified_readback(mode):
+    def write(raw, metadata):
+        return "" if mode == "missing_id" else "opaque-id"
+    def read(snapshot_id):
+        if mode == "unreadable":
+            raise RuntimeError("not stored")
+        return b"tampered" if mode == "tampered" else Response().content
+    kwargs = {
+        "snapshot_write": write,
+        "snapshot_read": read,
+    }
+    if mode == "no_reader":
+        kwargs["snapshot_read"] = None
+    if mode == "no_writer":
+        kwargs["snapshot_write"] = None
+    result = capture_nhl_pregame_gamecenter(
+        EVENT_ID, resolved_identity=identity(), as_of_utc=NOW,
+        get=lambda *a, **k: Response(), **kwargs,
+    )
+    assert result["code"] == (
+        "NHL_SOURCE_SNAPSHOT_CALLBACK_INCOMPLETE"
+        if mode in {"no_reader", "no_writer"}
+        else "NHL_SOURCE_SNAPSHOT_READBACK_FAILED"
+    )
+    assert result["source_snapshot_id"] is None
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False

@@ -31,7 +31,8 @@ import math
 import re
 from typing import Any, Iterable, Mapping
 
-from v17.nhl_event_identity import team_abbreviation
+from v17.nhl_event_identity import team_abbreviation, resolve_nhl_current_event_identity
+from v17.nhl_cutoff_identity import NHLCutoffIdentityError, verify_nhl_identity_at_scoring
 from v17.nhl_provenance import (
     SOURCE_PAYLOAD_HASH_SCOPE,
     SOURCE_PROVENANCE_VERSION,
@@ -40,6 +41,9 @@ from v17.nhl_provenance import (
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
+# Strictly first-party, read-only final event recheck. Tests may replace only
+# this provider seam; caller sport_specific_evidence cannot override it.
+_NHL_CUTOFF_RESOLVER = resolve_nhl_current_event_identity
 
 MODEL_FAMILY = "NHL_REGULAR_SEASON_LOGISTIC_V1"
 FEATURE_SCHEMA_VERSION = "NHL_REGULAR_SEASON_FEATURES_V1"
@@ -1163,12 +1167,34 @@ def score_current_nhl_event(
         neutral_site=neutral_site,
         source_timeline_receipt=receipt,
     )
+    # Re-fetch the official schedule at the ACTUAL specialist scoring
+    # boundary. An earlier provider-slate/nightly receipt may be stale even
+    # though the fitted artifact and source history are otherwise valid.
+    # A postponed, started, or rescheduled event must not produce a score.
+    try:
+        cutoff_identity = verify_nhl_identity_at_scoring(
+            official_event_id=official_id,
+            home_team=home_team,
+            away_team=away_team,
+            event_start_time=target_start.isoformat(),
+            as_of_utc=now,
+            resolver=_NHL_CUTOFF_RESOLVER,
+        )
+    except NHLCutoffIdentityError as exc:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT", [exc.code]
+        ) from exc
+
     package = score_nhl_fitted_candidate(
         candidate,
         reconstruction,
         event_key=str(getattr(req, "event_key", "") or f"NHL:{official_id}"),
         evidence=scoring_evidence,
     )
+    # A read-only current-identity check is not a persisted source snapshot.
+    # Keep the original source_snapshot_id separately; do not change the
+    # existing reducer's probability or publishability decisions.
+    package["cutoff_identity_receipt"] = cutoff_identity
     verified_at = str(receipt.get("verified_at") or "").strip()
     if verified_at:
         package["timeline_receipt_verified_at"] = verified_at
