@@ -59,7 +59,10 @@ def feature_payload_sha256(features: Mapping[str, Any]) -> str:
     """Canonical digest of the exact feature mapping that will be scored."""
     if not isinstance(features, Mapping) or not features:
         raise SourceCaptureAttestationError("SOURCE_CAPTURE_FEATURES_MISSING")
-    canonical = json.dumps(dict(features), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    try:
+        canonical = json.dumps(dict(features), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise SourceCaptureAttestationError("SOURCE_CAPTURE_PAYLOAD_INVALID") from exc
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -167,14 +170,17 @@ def attest_bound_source_features(
     ``bind_nba_frozen_source_to_features`` (``source_replay_status`` must
     already be ``RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS``). On success the
     audit's ``as_of`` becomes the server ``received_at``, the conservative
-    instant by which the features provably existed. On any failure the
-    package is returned unchanged except for a typed
-    ``timestamp_attestation_failure``; it stays NOT_ESTABLISHED.
+    instant by which the features provably existed. On any failure the package stays NOT_ESTABLISHED, stale attestation
+    identifiers are cleared, and all publication and execution flags are false.
     """
     result = dict(bound_package)
-    audit = dict(bound_package.get("feature_audit") or {})
+    raw_audit = bound_package.get("feature_audit")
+    audit = dict(raw_audit) if isinstance(raw_audit, Mapping) else {}
     result["feature_audit"] = audit
+    result.update(probability_publishable=False, rank_eligible=False, can_execute=False)
     try:
+        if raw_audit is not None and not isinstance(raw_audit, Mapping):
+            raise SourceCaptureAttestationError("SOURCE_CAPTURE_PAYLOAD_INVALID")
         if audit.get("source_replay_status") != REQUIRED_REPLAY_STATUS:
             raise SourceCaptureAttestationError("SOURCE_CAPTURE_REPLAY_NOT_VERIFIED")
         raw = str(audit.get("source_raw_sha256") or "").lower()
@@ -192,6 +198,8 @@ def attest_bound_source_features(
     except SourceCaptureAttestationError as exc:
         audit["timestamp_attestation"] = "NOT_ESTABLISHED"
         audit["timestamp_attestation_failure"] = exc.code
+        audit.pop("timestamp_attestation_id", None)
+        audit.pop("timestamp_attestation_policy", None)
         return result
     audit.update({
         "timestamp_attestation": "VERIFIED",
@@ -200,9 +208,6 @@ def attest_bound_source_features(
         "as_of": receipt["attested_at"],
     })
     audit.pop("timestamp_attestation_failure", None)
-    result["probability_publishable"] = False
-    result["rank_eligible"] = False
-    result["can_execute"] = False
     return result
 
 
