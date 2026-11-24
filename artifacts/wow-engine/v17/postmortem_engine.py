@@ -495,6 +495,7 @@ def build_postmortem_payload(
     # fields across positions; never infer a certified event identity, pregame
     # sporting probability, actual entry, or independent joint probability.
     selection_positions: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    selection_results: dict[tuple[Any, ...], set[str]] = defaultdict(set)
     for leg in normalized_legs:
         identity = (
             _norm(leg["sport"]), _norm(leg["league"]), _norm(leg["event_id"]),
@@ -502,9 +503,40 @@ def build_postmortem_payload(
             leg["exact_line"], _norm(leg["selection"]),
         )
         selection_positions[identity].add(leg["position_reference"])
+        selection_results[identity].add(leg["settled_result"])
+
+    # A repeated exact observed selection cannot be WIN in one proposed card
+    # and LOSS in another. Reject conflicting retrospective inputs rather than
+    # laundering an ambiguous settlement into either calibration or slip stats.
+    if any(len(results) != 1 for results in selection_results.values()):
+        raise ValueError("CONFLICTING_EXACT_SELECTION_SETTLEMENT")
+
+    distinct_result_counts = {result: 0 for result in sorted(_ALLOWED_RESULTS)}
+    for results in selection_results.values():
+        distinct_result_counts[next(iter(results))] += 1
+
     reused_position_counts = [
         len(positions) for positions in selection_positions.values() if len(positions) > 1
     ]
+    all_or_nothing_references = {
+        pos.position_reference for pos in batch.positions if pos.all_or_nothing
+    }
+    shared_losing_hinges: list[dict[str, Any]] = []
+    impacted_all_or_nothing_positions: set[str] = set()
+    for identity, positions in selection_positions.items():
+        if len(positions) <= 1 or selection_results[identity] != {"LOSS"}:
+            continue
+        impacted = sorted(positions.intersection(all_or_nothing_references))
+        impacted_all_or_nothing_positions.update(impacted)
+        shared_losing_hinges.append({
+            "exact_observed_identity_hash": _canonical_hash(identity),
+            "positions_repeating_loss": sorted(positions),
+            "all_or_nothing_positions_impacted": impacted,
+            "position_count": len(positions),
+        })
+    shared_losing_hinges.sort(key=lambda entry: entry["exact_observed_identity_hash"])
+
+    distinct_decided = distinct_result_counts["WIN"] + distinct_result_counts["LOSS"]
 
     summary = {
         "legs": len(normalized_legs),
@@ -516,6 +548,16 @@ def build_postmortem_payload(
         "positions": len(normalized_positions),
         "all_leg_clear_positions": sum(1 for pos in normalized_positions if pos["all_legs_hit"]),
         "distinct_selections": len(selection_positions),
+        "distinct_selection_results": distinct_result_counts,
+        "distinct_selection_hit_rate": (
+            distinct_result_counts["WIN"] / distinct_decided if distinct_decided else None
+        ),
+        "shared_losing_hinge_count": len(shared_losing_hinges),
+        "shared_losing_hinges": shared_losing_hinges,
+        "all_or_nothing_positions_impacted_by_shared_losses": len(
+            impacted_all_or_nothing_positions
+        ),
+        "shared_losing_hinge_attribution": "OBSERVED_RETRO_ONLY_NOT_PREGAME_CAUSAL_PROOF",
         "reused_selection_groups": len(reused_position_counts),
         "reused_selection_extra_positions": sum(n - 1 for n in reused_position_counts),
         "max_selection_position_exposure": max((len(p) for p in selection_positions.values()), default=0),
