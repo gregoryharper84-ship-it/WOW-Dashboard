@@ -88,29 +88,16 @@ def _receipt(value: Any) -> dict[str, Any]:
     }
 
 
-def _features(handoff: Any, sport: str, event_id: str) -> list[str]:
-    """Only canonical missing-feature names, never raw source values."""
-    if not isinstance(handoff, dict) or handoff.get("can_execute") is not False:
-        return []
+def _features(receipt: dict[str, Any], sport: str) -> list[str]:
+    """Use only current canonical gap names, never source measurements."""
     from v17.matchup_discovery import feature_requirements
-    groups = feature_requirements(sport)
-    known = {name for names in groups.values() for name in names}
-    rows = handoff.get("model_handoff") or {}
-    if not isinstance(rows, dict):
+    canonical = {feature for fields in feature_requirements(sport).values()
+                 for feature in fields}
+    raw = receipt.get("canonical_missing_features", [])
+    if not isinstance(raw, list):
         return []
-    opted = [
-        row for lane in ("team_event_candidates", "prop_candidates")
-        for row in (rows.get(lane) or [])
-        if isinstance(row, dict) and row.get("native_swarm_requested") is True
-    ]
-    if len(opted) != 1 or opted[0].get("official_event_id") != event_id:
-        return []
-    audit = opted[0].get("matchup_discovery") or {}
-    missing = audit.get("missing_critical_features") if isinstance(audit, dict) else None
-    if not isinstance(missing, list):
-        return []
-    return sorted({x for x in missing if isinstance(x, str)
-                   and _safe_feature(x) and x in known})[:32]
+    return sorted({feature for feature in raw[:64]
+                   if _safe_feature(feature) and feature in canonical})[:32]
 
 
 def _history(paths: list[Path], current_run: str) -> tuple[list[dict[str, Any]], int]:
@@ -219,14 +206,12 @@ def learn(current: dict[str, Any], history: list[dict[str, Any]],
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bounded zero-credit Swarm research feedback")
     parser.add_argument("--current", required=True)
-    parser.add_argument("--handoff", required=True)
     parser.add_argument("--history-dir", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     try:
         current = _load(Path(args.current))
         checked = _receipt(current)
-        handoff = _load(Path(args.handoff))
         history, rejected = _history(
             sorted(Path(args.history_dir).glob("**/native-swarm-receipt.json")),
             checked["run_id"])
@@ -247,7 +232,7 @@ def main() -> int:
             "can_execute": False, "may_publish_or_qualify": False,
         }, "missing_features": row.get("missing_features", [])} for row in history]
         report = learn(current, raw,
-                       missing_features=_features(handoff, checked["sport"], checked["event_id"]),
+                       missing_features=_features(current, checked["sport"]),
                        rejected_history=rejected)
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
