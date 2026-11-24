@@ -247,3 +247,52 @@ def test_authenticated_slip_construction_route_reuses_ledger_read_without_writes
         "wow_postmortem_runs", "wow_postmortem_legs",
         "wow_postmortem_positions", "wow_postmortem_patch_candidates",
     ]
+
+
+def test_sabonis_style_same_player_points_pra_overlap_requires_joint_review():
+    # Synthetic component+composite example, not a real settled Sabonis ticket.
+    legs = [
+        {"row_key": "same-player-points", "position_reference": "A",
+         "sport": "NBA", "event_id": "event-1", "participant": "Synthetic Big",
+         "market": "POINTS", "side": "MORE", "selection": "points 13.5",
+         "exact_line": 13.5, "settled_result": "WIN"},
+        {"row_key": "same-player-pra", "position_reference": "A",
+         "sport": "NBA", "event_id": "event-1", "participant": "Synthetic Big",
+         "market": "PRA", "side": "MORE", "selection": "pra 30.5",
+         "exact_line": 30.5, "settled_result": "WIN"},
+    ]
+    positions = [{"position_reference": "A", "position_structure": "POWER",
+                  "underlying_market_count": 2, "all_or_nothing": True}]
+    report = build_slip_construction_postmortem(legs, positions)
+    card = report["cards"][0]
+    assert card["same_player_event_extra_legs"] == 1
+    assert card["same_event_extra_legs"] == 1
+    assert card["component_composite_overlap_row_pairs"] == [
+        ["same-player-points", "same-player-pra"]
+    ]
+    assert "SAME_PLAYER_MULTI_MARKET_DEPENDENCE_UNVERIFIED" in card["construction_flags"]
+    assert "COMPONENT_COMPOSITE_OVERLAP_REQUIRES_JOINT_REVIEW" in card["construction_flags"]
+    assert card["observed_all_legs_clear"] is True
+    assert report["independent_joint_probability"] is None
+
+
+def test_same_player_across_slips_tracked_even_when_exact_stats_differ():
+    legs = [
+        {"row_key": "A-pts", "position_reference": "A",
+         "sport": "NBA", "event_id": "e1", "participant": "Synthetic P",
+         "market": "POINTS", "side": "MORE", "selection": "P MORE points",
+         "exact_line": 20.5, "settled_result": "WIN"},
+        {"row_key": "B-ast", "position_reference": "B",
+         "sport": "NBA", "event_id": "e1", "participant": "Synthetic P",
+         "market": "ASSISTS", "side": "MORE", "selection": "P MORE assists",
+         "exact_line": 4.5, "settled_result": "LOSS"},
+    ]
+    positions = [
+        {"position_reference": x, "underlying_market_count": 1,
+         "all_or_nothing": True} for x in "AB"
+    ]
+    report = build_slip_construction_postmortem(legs, positions)
+    assert report["cross_slip_same_player_event_groups"] == 1
+    assert report["reused_selection_group_count"] == 0
+    assert report["shared_losing_hinge_count"] == 0
+    assert report["independent_joint_probability"] is None
