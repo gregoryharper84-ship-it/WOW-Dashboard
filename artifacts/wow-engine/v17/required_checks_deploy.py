@@ -1,7 +1,8 @@
 """Deploy recovery keyed only to the three ruleset-required checks.
 
-Render's native ``checksPass`` trigger remains the primary deploy path and is
-unchanged. Render skips any commit that carries a single failing check run,
+This is the single production deploy writer: ``render.yaml`` sets
+``autoDeployTrigger: off`` for web and worker (11-25). Render's native
+``checksPass`` trigger skipped any commit carrying a single failing check run,
 and optional main-scoped workflows (independent QA, Release Authority,
 canaries, maintenance) attach failing check runs to almost every protected
 ``main`` commit. Example: 27 ``qa`` + 3 ``admit-release`` failures on
@@ -201,10 +202,9 @@ def run(*, target_sha: str, fetch: Fetch, sleep: Callable[[float], None] = time.
                     deploys={role: deploys(role) for role in SERVICES})
     if decision["status"] in NON_ADVANCING:
         return decision
-    # No grace wait for Render's native deploy: Render waits for every check
-    # on the commit, including this in-progress job, so it cannot start first.
-    # If every optional check later passes, Render may rebuild the same SHA;
-    # that duplicate is harmless and never deploys different code.
+    # Native auto-deploy is off, so this is the only writer. If a service is
+    # still on checksPass, Render may rebuild the same SHA later; that is never
+    # different code (11-23..11-25: 14 of 26 SHAs were built twice that way).
     posted = {}
     for role in decision["trigger"]:
         if main_sha() != target_sha:  # recheck immediately before every write

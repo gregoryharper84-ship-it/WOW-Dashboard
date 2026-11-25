@@ -73,7 +73,8 @@ def test_unreadable_or_contradictory_comparison_is_a_hold(payload):
     ("web", "id", "srv-foreign"),
     ("web", "branch", "staging"),
     ("worker", "repo", "https://github.com/foreign/repo"),
-    ("worker", "autoDeployTrigger", "off"),
+    ("worker", "autoDeployTrigger", "commit"),
+    ("web", "autoDeployTrigger", None),
 ])
 def test_service_must_remain_the_canonical_ci_gated_pair(role, field, value):
     item = service(role)
@@ -192,3 +193,10 @@ def test_verify_workflow_runs_the_ancestry_check_off_the_deploy_commit_set():
     assert "render.com/v1/services" not in text
     assert "gh pr merge" not in text
     assert "RENDER_API_KEY" in step["env"]
+
+
+@pytest.mark.parametrize("trigger", ["checksPass", "off"])
+def test_ci_gated_service_accepts_native_checks_pass_or_single_deployer_writer(trigger):
+    item = service("worker")
+    item["autoDeployTrigger"] = trigger
+    m.assert_service("worker", item)
