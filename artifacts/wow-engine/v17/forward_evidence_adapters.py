@@ -226,10 +226,12 @@ class SoccerOpenFootballAdapter:
     Fixtures and official results come from the same CC0 source the candidate
     trains on. OpenFootball kickoff times are local and carry no zone, so the
     pregame anchor is the listed local kickoff converted with the league's
-    time zone, minus a two-hour safety margin. Without a usable time or zone
-    database it falls back to 00:00 UTC on the match date. A capture is only
-    taken before the anchor, so a one-hour zone or listing error still leaves
-    every capture pregame.
+    time zone, minus a two-hour safety margin. A capture is only taken before
+    the anchor, so a one-hour zone or listing error still leaves every capture
+    pregame. Untimed fixtures carry a round placeholder date (the real kickoff
+    can be days earlier), so they are blocked, not anchored. A team with a
+    past league match that has no recorded result is blocked too: its form
+    features would not be as of now.
     """
 
     LEAGUE_TZ = {"EPL": "Europe/London", "BUNDESLIGA": "Europe/Berlin", "LALIGA": "Europe/Madrid",
@@ -278,22 +280,29 @@ class SoccerOpenFootballAdapter:
         year = now.year if now.month >= 7 else now.year - 1
         return f"{year}-{(year + 1) % 100:02d}"
 
+    def _listed_anchor(self, match: Mapping[str, Any]) -> datetime | None:
+        """Listed local kickoff minus the safety margin, or None if not provable."""
+        date_text = str(match.get("date") or "").strip()
+        time_text = str(match.get("time") or "").strip()
+        zone = self.LEAGUE_TZ.get(self.league)
+        if not (zone and len(time_text) == 5 and time_text[2] == ":" and time_text.replace(":", "").isdigit()):
+            return None
+        try:
+            from zoneinfo import ZoneInfo
+
+            local = datetime.fromisoformat(f"{date_text}T{time_text}:00").replace(tzinfo=ZoneInfo(zone))
+        except Exception:  # noqa: BLE001 - bad time or no tz database
+            return None
+        return local.astimezone(timezone.utc) - self.KICKOFF_SAFETY
+
     def _identity(self, match: Mapping[str, Any]) -> tuple[str, datetime, str, str]:
         date_text = str(match.get("date") or "").strip()
         home, away = str(match.get("team1") or "").strip(), str(match.get("team2") or "").strip()
         if not date_text or not home or not away or home == away:
             raise ForwardEvidenceBlocked("SOCCER_FIXTURE_IDENTITY_INVALID")
-        anchor = datetime.fromisoformat(f"{date_text}T00:00:00+00:00")
-        time_text = str(match.get("time") or "").strip()
-        zone = self.LEAGUE_TZ.get(self.league)
-        if zone and len(time_text) == 5 and time_text[2] == ":" and time_text.replace(":", "").isdigit():
-            try:
-                from zoneinfo import ZoneInfo
-
-                local = datetime.fromisoformat(f"{date_text}T{time_text}:00").replace(tzinfo=ZoneInfo(zone))
-                anchor = local.astimezone(timezone.utc) - self.KICKOFF_SAFETY
-            except Exception:  # noqa: BLE001 - no tz database: keep the midnight anchor
-                pass
+        # Untimed: midnight on the listed date only places the fixture in the
+        # horizon; score() blocks it because that date is not a kickoff.
+        anchor = self._listed_anchor(match) or datetime.fromisoformat(f"{date_text}T00:00:00+00:00")
         digest = self._soccer._hash_json({"competition": self.league, "date": date_text, "home": home, "away": away})
         return f"{self.league}:{digest[:32]}", anchor, home, away
 
@@ -365,9 +374,14 @@ class SoccerOpenFootballAdapter:
             found[event_id] = EventIdentity(event_id, anchor, home, away, self.source, payload=dict(match))
         return sorted((e for e in found.values() if e is not None), key=lambda e: e.event_start_time_utc)
 
-    def load_context(self, db: Any, now: datetime) -> dict[str, list[dict[str, Any]]]:
+    def load_context(self, db: Any, now: datetime) -> dict[str, Any]:
         soccer = self._soccer
         histories: dict[str, list[dict[str, Any]]] = {}
+        unrecorded: set[str] = set()
+        today = now.astimezone(timezone.utc).date().isoformat()
+        for match in self._season(self.season_for(now)):
+            if str(match.get("date") or "") < today and soccer._score(dict(match)) is None:
+                unrecorded.update({str(match.get("team1") or "").strip(), str(match.get("team2") or "").strip()})
         scored = []
         for season in soccer.SEASONS:
             for match in self._season(season):
@@ -384,13 +398,18 @@ class SoccerOpenFootballAdapter:
             event_id = soccer._hash_json({"competition": self.league, "date": date_text, "home": home, "away": away})[:32]
             histories.setdefault(home, []).append({"event_id": event_id, "start": start, "points": hp, "goal_diff": hg - ag})
             histories.setdefault(away, []).append({"event_id": event_id, "start": start, "points": ap, "goal_diff": ag - hg})
-        return histories
+        return {"histories": histories, "unrecorded": unrecorded}
 
     def score(self, event: EventIdentity, context: Any, candidate: Mapping[str, Any], now: datetime) -> Forecast:
         soccer = self._soccer
+        if self._listed_anchor(event.payload) is None:
+            raise ForwardEvidenceBlocked("SOCCER_KICKOFF_TIME_UNVERIFIED")
+        if {event.home_participant, event.away_participant} & context["unrecorded"]:
+            raise ForwardEvidenceBlocked("SOCCER_SOURCE_RESULTS_STALE")
+        histories = context["histories"]
         start = soccer._event_time(dict(event.payload))  # the same anchor the candidate trained on
-        hs = soccer._summary(context.get(event.home_participant, []), start)
-        aws = soccer._summary(context.get(event.away_participant, []), start)
+        hs = soccer._summary(histories.get(event.home_participant, []), start)
+        aws = soccer._summary(histories.get(event.away_participant, []), start)
         if hs is None or aws is None:
             raise ForwardEvidenceBlocked("SOCCER_PRIOR_SAMPLE_INSUFFICIENT")
         features = {}
