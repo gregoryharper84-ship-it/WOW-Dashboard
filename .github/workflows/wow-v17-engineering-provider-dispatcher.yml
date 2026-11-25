@@ -15,6 +15,14 @@ on:
     types: [completed]
   workflow_dispatch:
     inputs:
+      cursor_verification_pilot:
+        description: Read-only Cursor verification pilot. Preflight sends no launch.
+        type: choice
+        default: "off"
+        options:
+          - "off"
+          - preflight
+          - launch
       resident_dispatch_id:
         description: Optional resident reservation correlation ID; never provider or spend authorization.
         required: false
@@ -75,6 +83,8 @@ concurrency:
     github.event_name == 'workflow_dispatch' &&
     inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' ||
     github.event_name == 'workflow_dispatch' &&
+    (inputs.cursor_verification_pilot == 'preflight' || inputs.cursor_verification_pilot == 'launch') && 'CURSOR_SINGLE_AGENT' ||
+    github.event_name == 'workflow_dispatch' &&
     inputs.lease_group != '' && inputs.lease_group != 'GLOBAL' &&
     inputs.lease_group ||
     github.event_name == 'workflow_dispatch' &&
@@ -87,7 +97,11 @@ jobs:
   provider-control:
     name: WOW V17 engineering provider control plane
     # Schedule/workflow_run use protected main; reject unmerged manual dispatch.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+      && github.ref == 'refs/heads/main'
+      && (github.event_name != 'workflow_dispatch'
+        || (inputs.cursor_verification_pilot != 'preflight' && inputs.cursor_verification_pilot != 'launch'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -1085,5 +1099,54 @@ jobs:
           path: |
             ${{ runner.temp }}/independent-provider-receipt.json
             ${{ runner.temp }}/cursor-handoff.json
+          if-no-files-found: error
+          retention-days: 14
+
+  cursor-verification-pilot:
+    name: WOW V17 Cursor read-only verification pilot
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+      && github.ref == 'refs/heads/main'
+      && github.event_name == 'workflow_dispatch'
+      && github.actor == 'gregoryharper84-ship-it'
+      && github.triggering_actor == github.actor
+      && (inputs.cursor_verification_pilot == 'preflight' || inputs.cursor_verification_pilot == 'launch')
+    environment: wow-cursor-verification-pilot
+    permissions:
+      contents: read
+      issues: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install Redis client
+        run: python -m pip install 'redis>=5.0,<7'
+      - name: Check admission or launch one read-only verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSOR_INVENTORY_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_VERIFICATION_WEBHOOK_KEY: ${{ secrets.CURSOR_VERIFICATION_WEBHOOK_KEY }}
+          CURSOR_VERIFICATION_REDIS_URL: ${{ secrets.CURSOR_VERIFICATION_REDIS_URL }}
+          CURSOR_VERIFICATION_BUDGET_EVIDENCE: ${{ vars.CURSOR_VERIFICATION_BUDGET_EVIDENCE }}
+          CURSOR_VERIFICATION_ENABLED: ${{ vars.CURSOR_VERIFICATION_ENABLED }}
+          CURSOR_VERIFICATION_DURABLE_STORE_VERIFIED: ${{ vars.CURSOR_VERIFICATION_DURABLE_STORE_VERIFIED }}
+          CURSOR_VERIFICATION_MODE: ${{ inputs.cursor_verification_pilot }}
+        run: >-
+          python artifacts/wow-engine/v17/cursor_automation_workflow.py
+          --receipt "$RUNNER_TEMP/cursor-verification-pilot.json"
+      - name: Upload Cursor verification receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-cursor-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cursor-verification-pilot.json
           if-no-files-found: error
           retention-days: 14
