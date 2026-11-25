@@ -6,10 +6,21 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "artifacts/wow-engine/v17"))
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 import independent_release_checks as policy
+import qa_review_path_selector as selector
 
 SHA = "a" * 40
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 ROOTS = frozenset({"src/trust-root.py"})
+
+
+def review_path(path):
+    """The selection production gather() derives for a one-file PR (benign additive patch)."""
+    files = [{"filename": path, "status": "modified", "sha": "c" * 40, "patch": "@@ -1,1 +1,2 @@\n c\n+x\n"}]
+    out = selector.select_review_path(
+        files, allowlist=policy.CLASS_A_EXACT_PATHS, content_types={path: "file"},
+        trust_root_fn=lambda p: p.startswith((".github/", ".agents/", ".claude/")),
+    )
+    return {**out, "head_sha": SHA}
 
 
 def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="artifacts/wow-engine/learning/README.md"):
@@ -23,7 +34,7 @@ def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="artifacts/w
         "evidence_errors": [], "owner_login": "gregoryharper84-ship-it",
         "pr": {"head_sha": SHA, "body": "Incident: #2136", "head_ref": "fix/nfl", "head_repo": REPO, "base_ref": "main",
                "state": "open", "merged": False, "draft": False, "author": author},
-        "files": [path], "reviews": [], "source_review": None,
+        "files": [path], "review_path": review_path(path), "reviews": [], "source_review": None,
         "independent_review_active": False, "current_review_active": False,
         "zero_credit_enabled": enabled,
         "qa_review_policy": {
@@ -157,8 +168,10 @@ def test_release_rejects_qa_from_wrong_app():
 def test_workflows_keep_independent_gemini_review_and_explicit_free_flag():
     qa_yaml = (ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text()
     release_yaml = (ROOT / ".github/workflows/wow-v17-release-authority-check.yml").read_text()
-    assert "WOW_QA_ZERO_CREDIT_MODE" in qa_yaml
-    assert "WOW_QA_ZERO_CREDIT_MODE" in release_yaml
+    # The review path is derived per PR; no repository variable selects it any more.
+    assert "select-review-path" in qa_yaml
+    assert "WOW_QA_ZERO_CREDIT_MODE" not in release_yaml
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in release_yaml
     assert "--zero-credit-policy-enabled" in qa_yaml
     assert "--zero-credit-policy-enabled" in release_yaml
     assert "wow_v28_gemini_qa_bridge.py review" in qa_yaml

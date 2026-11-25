@@ -388,11 +388,13 @@ def test_global_off_semantic_canary_requires_unique_current_attempt_receipt():
     content = WORKFLOW.read_text(encoding="utf-8")
     assert "SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}" in content
     assert '[ "$SOURCE_CONCLUSION" = "success" ] || neutral' in content
-    assert 'if [ "$REVIEW_ACTIVE" != "true" ]; then' in content
+    # Legacy flags are warning-only: no admission branch may depend on them.
+    assert 'REVIEW_ACTIVE" != "true"' not in content
+    assert "QA_LEGACY_REVIEW_FLAGS_IGNORED" in content
     assert "wow-v17-independent-source-review-" in content
     assert '(.expired == false and' in content
     assert '(.name | endswith($suffix))' in content
-    assert '"INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"' in content
+    assert "NO_EXACT_SEMANTIC_REVIEW_ARTIFACT_DETERMINISTIC_OR_INACTIVE" in content
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in content
     assert "independent_source_review_receipt.py" in content
     assert "--verify" in content

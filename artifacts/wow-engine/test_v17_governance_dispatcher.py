@@ -1248,13 +1248,15 @@ def test_reconcile_completed_authorized_apps_skip_history_without_false_green(mo
                         lambda *_: pytest.fail("no history scan for authentic completed App receipts"))
     monkeypatch.setattr(transport, "dispatch",
                         lambda *_args, **_kwargs: pytest.fail("no dispatch after DONE"))
+    # The path is derived per PR; the eligible Class A selection takes the deterministic path.
+    monkeypatch.setattr(transport, "derive_review_path",
+                        lambda *_: {"path": transport.review_path_selector.PATH_DETERMINISTIC, "reasons": []})
     result = transport.reconcile(
         client=object(),
         input_pr="41",
         run_number=7,
         controller_run_id="12345",
         source_sha=OTHER_HEAD,
-        zero_credit_mode=True,
     )
     assert result["dispatch_count"] == 0
     assert result["decisions"][0]["action"] == "DONE"
@@ -1655,3 +1657,47 @@ def test_existing_pr_certifier_prechecks_authentic_release_event_before_runner()
     assert 'live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}")' in source
     assert "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE" in source
     assert "cancel-in-progress: false" in source
+
+
+_LEGACY_FLAG_VALUES = ["", "false", "true", "enabled", "True "]
+
+
+def test_dispatcher_main_is_identical_for_every_legacy_flag_combination(monkeypatch, capsys):
+    """Unset/false/true/both-true/invalid legacy values: same call, same output, never a HOLD."""
+    outcomes = {}
+    for zero in _LEGACY_FLAG_VALUES:
+        for paid in _LEGACY_FLAG_VALUES:
+            calls = []
+            monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+            monkeypatch.setenv("GH_TOKEN", "placeholder")
+            monkeypatch.setenv("GITHUB_REPOSITORY", transport.REPOSITORY)
+            monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+            monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+            monkeypatch.setenv("GITHUB_RUN_NUMBER", "7")
+            monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+            monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+            monkeypatch.setenv("GITHUB_SHA", OTHER_HEAD)
+            monkeypatch.setenv("WOW_QA_ZERO_CREDIT_MODE", zero)
+            monkeypatch.setenv("WOW_QA_INDEPENDENT_REVIEW_ACTIVE", paid)
+            monkeypatch.setattr(transport, "GitHub", lambda token: object())
+            monkeypatch.setattr(transport, "reconcile",
+                                lambda **kw: calls.append(sorted(kw)) or {"dispatch_count": 0, "decisions": [], "can_execute": False})
+            rc = transport.main()
+            out = capsys.readouterr()
+            payload = __import__("json").loads(out.out)
+            ignored = payload.pop("legacy_review_flags_ignored")
+            assert (ignored != []) == bool(zero or paid)
+            assert "QA_LEGACY_REVIEW_FLAGS_IGNORED" in out.err or not ignored
+            assert "REVIEW_POLICY" not in out.out and "finding" not in payload
+            outcomes[(zero, paid)] = (rc, payload, calls)
+    assert len({repr(v) for v in outcomes.values()}) == 1, "a legacy flag changed dispatcher behavior"
+    (rc, _, calls) = next(iter(outcomes.values()))
+    assert rc == 0 and calls == [["client", "controller_run_attempt", "controller_run_id", "input_pr", "run_number", "source_sha"]]
+
+
+def test_reconcile_derives_the_path_per_pr_and_fails_toward_independent_review():
+    deterministic = transport.derive_review_path
+    # Unreadable client / malformed inputs never select the zero-credit path.
+    assert deterministic(object(), "a" * 40, [])["path"] == transport.review_path_selector.PATH_SCOPED
+    assert deterministic(object(), "a" * 40, [{"filename": "v17/other.py", "status": "modified", "patch": "@@\n+x\n"}])["path"] \
+        == transport.review_path_selector.PATH_SCOPED

@@ -124,6 +124,8 @@ def test_zero_credit_qa_negative_tests_are_mandatory() -> None:
     # tests; future source changes may not silently omit them.
     assert "test_v17_zero_credit_release.py" in wow_rapid.GOVERNANCE_TESTS
     assert (MODULE_PATH.parents[1] / "test_v17_zero_credit_release.py").is_file()
+    assert "test_v17_qa_review_path_selector.py" in wow_rapid.GOVERNANCE_TESTS
+    assert (MODULE_PATH.parents[1] / "test_v17_qa_review_path_selector.py").is_file()
 
 
 def test_invalid_shard_parameters_fail_closed() -> None:
