@@ -1,14 +1,15 @@
-"""GET-only live deployed-SHA ancestry assertion for CI-gated Render deploys.
+"""GET-only live deployed-SHA ancestry assertion for single-writer Render deploys.
 
-This check runs on protected ``main`` — the same commit Render's native
-``checksPass`` trigger is evaluating. It therefore must never assert that
-production already equals HEAD: that would deny the very deployment it is
-waiting for, which is the release-gate circularity the repository already
-repaired once (#2510) in ``lean_production_readback``.
+This check runs on protected ``main``. It must never assert that production
+already equals HEAD: that would deny the authorized API deployment still in
+flight (release-gate circularity repaired in ``lean_production_readback`` /
+#2510).
 
 It asserts only invariants a *pending* deployment cannot violate:
 
-* both services are still the canonical repository/branch/``checksPass`` pair;
+* both services are still the canonical repository/branch pair under the
+  single-writer auto-deploy policy (``off``, with ``checksPass`` accepted only
+  during the controlled cutover window);
 * each service has exactly one live deploy with a well-formed commit SHA;
 * that live SHA is contained in protected ``main``'s history.
 
@@ -29,7 +30,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from v17.lean_production_readback import REPO, SERVICES, SHA, _live_deploy
+from v17.lean_production_readback import (
+    REPO,
+    SERVICES,
+    SHA,
+    _live_deploy,
+    service_identity_ok,
+)
 
 BEHIND_REASON_PREFIX = "LIVE_SHA_BEHIND:"
 
@@ -39,14 +46,11 @@ class AncestryHold(ValueError):
 
 
 def assert_service(role: str, service: Any) -> None:
-    """The live service must still be the canonical CI-gated production one."""
+    """The live service must still be the canonical single-writer production one."""
     if not isinstance(service, dict):
         raise AncestryHold("RENDER_SERVICE_READBACK_INVALID:" + role)
-    if (service.get("id") != SERVICES[role]
-            or service.get("branch") != "main"
-            or service.get("repo") != "https://github.com/" + REPO
-            or service.get("autoDeployTrigger") != "checksPass"):
-        raise AncestryHold("RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:" + role)
+    if not service_identity_ok(role, service):
+        raise AncestryHold("RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:" + role)
 
 
 def classify_ancestry(*, live_sha: str, main_sha: str,
@@ -155,9 +159,9 @@ def main() -> int:
     except Exception as exc:
         # A typed hold is real evidence (divergence, foreign service, malformed
         # deploy) and fails closed. A transport/credential gap is only an
-        # unverified observation: this check runs on the same commit Render's
-        # checksPass trigger is evaluating, so an infrastructure blip must never
-        # deny the deployment it is meant to observe.
+        # unverified observation: this check runs on the same commit an
+        # authorized deploy may still be building, so an infrastructure blip
+        # must never deny the deployment it is meant to observe.
         hold = isinstance(exc, AncestryHold)
         reason = str(exc) if hold else "ANCESTRY_SOURCE_UNAVAILABLE_OR_INVALID"
         outcome = {

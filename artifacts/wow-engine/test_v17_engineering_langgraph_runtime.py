@@ -106,9 +106,8 @@ def test_render_worker_declares_fail_closed_langgraph_activation_contract():
     worker = next(service for service in manifest["services"] if service.get("name") == "wow-agent-worker")
     env = {item["key"]: item for item in worker["envVars"]}
 
-    # Workers must follow the same protected-main CI admission as the web service.
-    # Automatic deployment is not a substitute for an approved/verified release.
-    assert worker["autoDeployTrigger"] == "checksPass"
+    # Workers share the sole API writer with the web service; native auto-deploy off.
+    assert worker["autoDeployTrigger"] == "off"
     web = next(service for service in manifest["services"] if service.get("name") == "wow-governed-probability-engine")
     assert web["autoDeployTrigger"] == worker["autoDeployTrigger"]
     assert worker["rootDir"] == web["rootDir"] == "artifacts/wow-engine"

@@ -11,7 +11,7 @@ SHA = "a" * 40
 LIVE = "b" * 40
 
 
-def service(role, trigger="checksPass"):
+def service(role, trigger="off"):
     return {
         "id": m.SERVICES[role], "branch": "main",
         "repo": "https://github.com/" + m.REPO,
@@ -35,7 +35,7 @@ def test_equal_deployment_is_contained_and_never_verified():
 
 
 def test_lagging_deployment_is_pending_not_a_failure():
-    """The checksPass circularity: a recent merge cannot already be live."""
+    """A recent merge cannot already be live while the sole writer is deploying."""
     out = m.classify_ancestry(
         live_sha=LIVE, main_sha=SHA, comparison=compare("ahead", 4, 0))
     assert out["deployment_lag_commits"] == 4
@@ -73,13 +73,17 @@ def test_unreadable_or_contradictory_comparison_is_a_hold(payload):
     ("web", "id", "srv-foreign"),
     ("web", "branch", "staging"),
     ("worker", "repo", "https://github.com/foreign/repo"),
-    ("worker", "autoDeployTrigger", "off"),
+    ("worker", "autoDeployTrigger", "commit"),
 ])
-def test_service_must_remain_the_canonical_ci_gated_pair(role, field, value):
+def test_service_must_remain_the_canonical_single_writer_pair(role, field, value):
     item = service(role)
     item[field] = value
-    with pytest.raises(m.AncestryHold, match="RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH"):
+    with pytest.raises(m.AncestryHold, match="RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH"):
         m.assert_service(role, item)
+
+
+def test_cutover_checks_pass_trigger_remains_accepted():
+    m.assert_service("web", service("web", trigger="checksPass"))
 
 
 def test_non_mapping_service_is_a_hold():

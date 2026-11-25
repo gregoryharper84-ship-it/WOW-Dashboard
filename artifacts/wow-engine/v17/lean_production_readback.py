@@ -1,8 +1,12 @@
-"""GET-only two-service production observation for native CI-gated Render deploys.
+"""GET-only two-service production observation for single-writer Render deploys.
 
 Never deploys, approves, merges, or self-certifies the V17 model.
 A current GitHub main SHA + successful CI is necessary but not a SIRT
 or model acceptance receipt.
+
+Canonical writer policy (WOW-V17-DEPLOY-RELIABILITY-P0 / #2422): native Render
+``checksPass`` is retired; ``wow-v17-required-checks-deploy.yml`` is the sole
+authorized deploy writer after the three required checks pass on exact ``main``.
 """
 from __future__ import annotations
 
@@ -28,11 +32,17 @@ SERVICES = {
     "worker": "srv-dapkbc0473hc73c1978g",
 }
 SHA = re.compile(r"^[0-9a-f]{40}$")
-# A freshly merged main SHA cannot be live until Render's native checksPass
-# deploy completes. Inside this bounded window ONLY, a Render live-SHA mismatch
+# Sole writer: authenticated exact-main required-checks deploy workflow.
+SOLE_DEPLOY_WRITER = "wow-v17-required-checks-deploy.yml"
+CANONICAL_AUTO_DEPLOY_TRIGGER = "off"
+# Live services may still report checksPass until the controlled cutover PATCH.
+# Accept both so the API writer and GET-only observers keep working; stall
+# detection escalates dual-writer state separately.
+ACCEPTED_AUTO_DEPLOY_TRIGGERS = frozenset({"off", "checksPass"})
+# A freshly merged main SHA cannot be live until the authorized API deploy
+# completes. Inside this bounded window ONLY, a Render live-SHA mismatch
 # is a typed PENDING observation instead of a failing check on the very commit
-# Render is evaluating (which would deny the deploy it is waiting for).
-# After the window the mismatch is a genuine HOLD and fails the job again.
+# being deployed. After the window the mismatch is a genuine HOLD.
 PENDING_DEPLOY_GRACE_SECONDS = 90 * 60
 PENDING_DEPLOY_REASON_PREFIX = "RENDER_LIVE_SHA_MISMATCH:"
 
@@ -86,6 +96,29 @@ def _live_deploy(deploys: Any, role: str) -> tuple[str, str]:
     return str((item.get("commit") or {}).get("id") or ""), str(item.get("id") or "")
 
 
+def service_identity_ok(role: str, service: Any) -> bool:
+    """True when the live service is still the canonical web/worker pair."""
+    if not isinstance(service, dict):
+        return False
+    return (
+        service.get("id") == SERVICES[role]
+        and service.get("branch") == "main"
+        and service.get("repo") == "https://github.com/" + REPO
+        and service.get("autoDeployTrigger") in ACCEPTED_AUTO_DEPLOY_TRIGGERS
+    )
+
+
+def native_auto_deploy_retired(services: dict[str, Any]) -> bool:
+    """True only when every production service has native auto-deploy off."""
+    if not isinstance(services, dict):
+        return False
+    return all(
+        isinstance(services.get(role), dict)
+        and services[role].get("autoDeployTrigger") == CANONICAL_AUTO_DEPLOY_TRIGGER
+        for role in SERVICES
+    )
+
+
 def classify_readback(*, target_sha: str, main_sha: str,
                       services: dict[str, dict[str, Any]],
                       deploys: dict[str, list[dict[str, Any]]],
@@ -99,11 +132,8 @@ def classify_readback(*, target_sha: str, main_sha: str,
     ids = {}
     for role, service_id in SERVICES.items():
         service = services.get(role) or {}
-        if (service.get("id") != service_id
-                or service.get("branch") != "main"
-                or service.get("repo") != "https://github.com/" + REPO
-                or service.get("autoDeployTrigger") != "checksPass"):
-            raise ReadbackHold("RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:" + role)
+        if not service_identity_ok(role, service) or service.get("id") != service_id:
+            raise ReadbackHold("RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:" + role)
         actual_sha, deploy_id = _live_deploy(deploys.get(role), role)
         if actual_sha != target_sha or not deploy_id:
             raise ReadbackHold("RENDER_LIVE_SHA_MISMATCH:" + role)
@@ -116,6 +146,8 @@ def classify_readback(*, target_sha: str, main_sha: str,
         "observed_main_sha": main_sha,
         "web_deploy_id": ids["web"],
         "worker_deploy_id": ids["worker"],
+        "sole_deploy_writer": SOLE_DEPLOY_WRITER,
+        "native_auto_deploy_retired": native_auto_deploy_retired(services),
         "health_live": "HTTP_200",
         "production_verified": False,
         "terminal": "PENDING_SIRT_INDEPENDENT_ACCEPTANCE",
