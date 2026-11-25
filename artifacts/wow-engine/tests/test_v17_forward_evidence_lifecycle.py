@@ -155,7 +155,8 @@ class FakeDB:
             p = c["probabilities"]
             out.append({"registration_id": reg_id, "official_event_id": event_id, "outcome": s["outcome"],
                         "probabilities": p, "outcome_probability": p[s["outcome"]],
-                        "brier": (p["HOME"] - (s["outcome"] == "HOME")) ** 2,
+                        "brier": ((p["HOME"] - (s["outcome"] == "HOME")) ** 2 if reg["outcome_space"] == "BINARY_HOME_AWAY"
+                                  else sum((v - (k == s["outcome"])) ** 2 for k, v in p.items())),
                         "log_loss": -__import__("math").log(p[s["outcome"]])})
         return out
 
@@ -385,3 +386,134 @@ def test_migration_grants_nothing_to_client_roles_and_touches_no_reducer():
     for forbidden in ("wow_v17_reduce_", "terminal_label", "drop table", "security definer",
                       "wow_team_event_specialist_certifications", "update public.", "delete from"):
         assert forbidden not in lowered, forbidden
+
+
+# --- soccer 1X2 adapter --------------------------------------------------
+
+from v17 import soccer_openfootball_candidate as soccer_mod
+from v17.forward_evidence_adapters import (SoccerOpenFootballAdapter, score_multinomial,
+                                           soccer_forward_evidence_after_maintenance)
+
+
+def test_multinomial_scorer_matches_sklearn_with_temperature():
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+    from v17.multiclass_candidate_lifecycle import _temperature_scale
+
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(300, 4)) * [1, 3, 0.5, 2] + [0, 5, -1, 2]
+    y = np.array(["HOME", "DRAW", "AWAY"])[rng.integers(0, 3, size=300)]
+    scaler = StandardScaler().fit(X)
+    model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=0).fit(scaler.transform(X), y)
+    artifact = {"classes": [str(c) for c in model.classes_], "scaler_mean": scaler.mean_.tolist(),
+                "scaler_scale": scaler.scale_.tolist(), "intercepts": model.intercept_.tolist(),
+                "coefficients": model.coef_.tolist()}
+    sample = X[:5]
+    expected = _temperature_scale(model.predict_proba(scaler.transform(sample)), 1.37)
+    for row, exp in zip(sample, expected):
+        got = score_multinomial(artifact, {"temperature": 1.37}, row.tolist())
+        for label, value in zip(artifact["classes"], exp):
+            assert abs(got[label] - value) < 1e-12
+
+
+SOCCER_NOW = datetime(2026, 11, 25, 12, 10, tzinfo=timezone.utc)
+
+
+def soccer_candidate(created="2026-11-20T00:00:00+00:00"):
+    names = list(soccer_mod.FEATURE_NAMES)
+    artifact = {"model_family": "SOCCER_1X2_MULTINOMIAL_LOGIT_V1_EPL",
+                "artifact_format": "STANDARDIZED_MULTINOMIAL_LOGISTIC_JSON_V1", "feature_names": names,
+                "classes": ["AWAY", "DRAW", "HOME"], "scaler_mean": [0.5] * len(names), "scaler_scale": [1.0] * len(names),
+                "intercepts": [-0.2, -0.4, 0.3],
+                "coefficients": [[0.1 * ((i + k) % 3 - 1) for i in range(len(names))] for k in range(3)],
+                "split_policy": "CHRONOLOGICAL_60_20_20"}
+    return {"candidate_id": "soc-1", "sport": "SOCCER", "league": "EPL", "market_family": "OUTRIGHT_WINNER",
+            "model_family": "SOCCER_1X2_MULTINOMIAL_LOGIT_V1_EPL",
+            "feature_schema_version": soccer_mod.FEATURE_SCHEMA_VERSION, "source_policy_id": soccer_mod.SOURCE_POLICY_ID,
+            "artifact_payload": artifact, "artifact_checksum": soccer_mod._hash_json(artifact),
+            "calibrator_payload": {"method": "TEMPERATURE_SCALE_CHRONOLOGICAL_V1", "temperature": 1.1},
+            "lifecycle_state": "CANDIDATE", "research_screen_pass": True, "active": False, "promoted": False,
+            "probability_publishable": False, "can_execute": False, "automatic_certification": False,
+            "automatic_promotion": False, "created_at": created, "training_dataset_hash": "e" * 64,
+            "model_artifact_version": "SOCCER_1X2_MULTINOMIAL_LOGIT_V1_EPL_" + "e" * 16 + "_abcdef123456"}
+
+
+def soccer_season(scores=None):
+    teams = ["Alpha FC", "Beta FC", "Gamma FC", "Delta FC"]
+    matches = []
+    day = datetime(2026, 8, 15, tzinfo=timezone.utc)
+    for week in range(12):
+        for i in range(0, 4, 2):
+            home, away = teams[(i + week) % 4], teams[(i + 1 + week) % 4]
+            matches.append({"date": (day + timedelta(days=7 * week)).date().isoformat(), "time": "15:00",
+                            "team1": home, "team2": away, "score": {"ft": [week % 3, (week + i) % 2]}})
+    matches.append({"date": "2026-11-28", "time": "20:00", "team1": "Alpha FC", "team2": "Beta FC"})
+    matches.append({"date": "2026-11-29", "time": "16:30", "team1": "Gamma FC", "team2": "New FC"})  # no history
+    matches.append({"date": "2026-12-20", "time": "15:00", "team1": "Delta FC", "team2": "Gamma FC"})  # outside horizon
+    for m in matches:
+        key = (m["date"], m["team1"], m["team2"])
+        if scores and key in scores:
+            m["score"] = {"ft": list(scores[key])}
+    return matches
+
+
+def soccer_db():
+    db = FakeDB(lambda: SOCCER_NOW)
+    db.tables["wow_d1_candidate_artifacts"] = [soccer_candidate()]
+    return db
+
+
+def test_soccer_captures_three_way_with_conservative_pregame_anchor():
+    db = soccer_db()
+    adapter = SoccerOpenFootballAdapter("EPL", fetch_season=lambda code, season: soccer_season() if season == "2026-27" else [])
+    receipt = fe.run_forward_evidence(db, adapter, now=SOCCER_NOW)
+    assert receipt["status"] == "FORWARD_EVIDENCE_UPDATED", receipt
+    assert receipt["captured"] == 1 and receipt["blocked_by_code"] == {"SOCCER_PRIOR_SAMPLE_INSUFFICIENT": 1}
+    row = db.tables[fe.CAPTURE_TABLE][0]
+    assert set(row["probabilities"]) == {"HOME", "DRAW", "AWAY"}
+    assert abs(sum(row["probabilities"].values()) - 1) < 1e-9
+    assert row["event_start_time_utc"] == "2026-11-28T00:00:00+00:00"  # before any kickoff that date
+    assert db.tables[fe.REGISTRATION_TABLE][0]["outcome_space"] == "THREE_WAY_1X2"
+
+
+def test_soccer_settles_draw_and_grades_multiclass_brier():
+    db = soccer_db()
+    adapter = SoccerOpenFootballAdapter("EPL", fetch_season=lambda code, season: soccer_season() if season == "2026-27" else [])
+    fe.run_forward_evidence(db, adapter, now=SOCCER_NOW)
+    later = datetime(2026, 11, 29, 12, 10, tzinfo=timezone.utc)
+    db.clock = lambda: later
+    scored = SoccerOpenFootballAdapter(
+        "EPL", fetch_season=lambda code, season: soccer_season({("2026-11-28", "Alpha FC", "Beta FC"): (1, 1)})
+        if season == "2026-27" else [])
+    receipt = fe.run_forward_evidence(db, scored, now=later)
+    assert receipt["settled"] == 1
+    assert db.tables[fe.SETTLEMENT_TABLE][0]["outcome"] == "DRAW"
+    p = db.tables[fe.CAPTURE_TABLE][0]["probabilities"]
+    expected = (p["HOME"]) ** 2 + (p["AWAY"]) ** 2 + (p["DRAW"] - 1) ** 2
+    assert abs(receipt["scorecard"]["brier"] - expected) < 1e-12
+
+
+def test_soccer_rejects_tampered_artifact():
+    bad = soccer_candidate()
+    bad["artifact_payload"]["intercepts"] = [0, 0, 0]
+    with pytest.raises(fe.ForwardEvidenceBlocked) as err:
+        SoccerOpenFootballAdapter("EPL").verify_candidate(bad, SOCCER_NOW)
+    assert err.value.code == "SOCCER_ARTIFACT_CHECKSUM_MISMATCH"
+
+
+def test_soccer_hook_isolates_each_league(monkeypatch):
+    def fetch(self, code, season):
+        if self.league != "EPL":
+            raise fe.ForwardEvidenceBlocked("SOCCER_OPENFOOTBALL_HTTP_FAILED")
+        return soccer_season() if season == "2026-27" else []
+
+    monkeypatch.setattr(SoccerOpenFootballAdapter, "_fetch_season", fetch)
+    db = soccer_db()
+    real_run = fe.run_forward_evidence
+    monkeypatch.setattr(fe, "run_forward_evidence", lambda db_, adapter: real_run(db_, adapter, now=SOCCER_NOW))
+    out = soccer_forward_evidence_after_maintenance(db)
+    assert out["status"] == "COMPLETED" and out["can_execute"] is False
+    assert out["leagues"]["EPL"]["captured"] == 1
+    others = {k: v for k, v in out["leagues"].items() if k != "EPL"}
+    assert others and all(v["status"] in ("BLOCKED", "FAILED") for v in others.values())
