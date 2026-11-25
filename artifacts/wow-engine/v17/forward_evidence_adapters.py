@@ -188,3 +188,247 @@ def ncaaf_forward_evidence_after_maintenance(db: Any, *, fresh_acquisition_compl
         capture=bool(fresh_acquisition_complete),
         capture_skip_reason=None if fresh_acquisition_complete else "NCAAF_ACQUISITION_NOT_FRESH",
     )
+
+
+# --- Soccer 1X2 (OpenFootball CC0) ------------------------------------------
+
+def score_multinomial(artifact: Mapping[str, Any], calibrator: Mapping[str, Any],
+                      values: Sequence[float]) -> dict[str, float]:
+    """Standardized multinomial logit plus the stored temperature calibration.
+
+    Mirrors ``LogisticRegression.predict_proba`` (softmax of the decision
+    function) followed by ``multiclass_candidate_lifecycle._temperature_scale``.
+    """
+    import math
+
+    classes = [str(c) for c in artifact["classes"]]
+    mean, scale = artifact["scaler_mean"], artifact["scaler_scale"]
+    x = [(float(v) - float(m)) / float(s) for v, m, s in zip(values, mean, scale)]
+    logits = [float(b) + sum(float(w) * xi for w, xi in zip(row, x))
+              for b, row in zip(artifact["intercepts"], artifact["coefficients"])]
+    top = max(logits)
+    exps = [math.exp(z - top) for z in logits]
+    total = sum(exps)
+    raw = [e / total for e in exps]
+    temperature = float(calibrator["temperature"])
+    scaled = [math.log(min(1.0, max(p, 1e-12))) / temperature for p in raw]
+    top = max(scaled)
+    exps = [math.exp(z - top) for z in scaled]
+    total = sum(exps)
+    return {label: e / total for label, e in zip(classes, exps)}
+
+
+class SoccerOpenFootballAdapter:
+    """Soccer 1X2 for one competition with the OpenFootball result-form candidate.
+
+    Fixtures and official results come from the same CC0 source the candidate
+    trains on. OpenFootball kickoff times are local, so the pregame anchor is
+    00:00 UTC on the listed match date: a capture is only taken before that
+    instant, which precedes every kickoff on that date in Europe.
+    """
+
+    sport = "SOCCER"
+    market_family = "OUTRIGHT_WINNER"
+    outcome_space = "THREE_WAY_1X2"
+    source = "OPENFOOTBALL:football.json"
+
+    def __init__(self, league: str, fetch_season: Any = None):
+        from v17 import soccer_openfootball_candidate as soccer
+
+        if league not in soccer.COMPETITIONS:
+            raise ValueError(league)
+        self._soccer = soccer
+        self.league = league
+        self.code = soccer.COMPETITIONS[league]
+        self.model_family = f"{soccer.MODEL_FAMILY}_{league}"
+        self._fetch = fetch_season or self._fetch_season
+        self._cache: dict[str, list[Mapping[str, Any]]] = {}
+
+    def _fetch_season(self, code: str, season: str) -> list[Mapping[str, Any]]:
+        import requests
+
+        url = f"{self._soccer.BASE_URL}/{season}/{code}.json"
+        response = requests.get(url, timeout=30)
+        if response.status_code == 404:
+            return []
+        if response.status_code != 200:
+            raise ForwardEvidenceBlocked("SOCCER_OPENFOOTBALL_HTTP_FAILED")
+        body = response.json()
+        matches = body.get("matches") if isinstance(body, dict) else None
+        if not isinstance(matches, list):
+            raise ForwardEvidenceBlocked("SOCCER_OPENFOOTBALL_SCHEMA_INVALID")
+        return [m for m in matches if isinstance(m, Mapping)]
+
+    def _season(self, season: str) -> list[Mapping[str, Any]]:
+        if season not in self._cache:
+            self._cache[season] = list(self._fetch(self.code, season))
+        return self._cache[season]
+
+    @staticmethod
+    def season_for(now: datetime) -> str:
+        year = now.year if now.month >= 7 else now.year - 1
+        return f"{year}-{(year + 1) % 100:02d}"
+
+    def _identity(self, match: Mapping[str, Any]) -> tuple[str, datetime, str, str]:
+        date_text = str(match.get("date") or "").strip()
+        home, away = str(match.get("team1") or "").strip(), str(match.get("team2") or "").strip()
+        if not date_text or not home or not away or home == away:
+            raise ForwardEvidenceBlocked("SOCCER_FIXTURE_IDENTITY_INVALID")
+        anchor = datetime.fromisoformat(f"{date_text}T00:00:00+00:00")
+        digest = self._soccer._hash_json({"competition": self.league, "date": date_text, "home": home, "away": away})
+        return f"{self.league}:{digest[:32]}", anchor, home, away
+
+    def eligible_candidates(self, db: Any, now: datetime) -> Sequence[Mapping[str, Any]]:
+        return _rows(
+            db.table("wow_d1_candidate_artifacts").select("*")
+            .eq("sport", self.sport).eq("league", self.league)
+            .eq("market_family", self.market_family).eq("model_family", self.model_family)
+            .eq("lifecycle_state", "CANDIDATE").eq("research_screen_pass", True)
+            .order("created_at", desc=True).limit(20).execute()
+        )
+
+    def verify_candidate(self, candidate: Mapping[str, Any], now: datetime) -> None:
+        from math import isfinite
+
+        soccer = self._soccer
+        names = list(soccer.FEATURE_NAMES)
+        ok = (candidate.get("sport") == self.sport and candidate.get("league") == self.league
+              and candidate.get("market_family") == self.market_family
+              and candidate.get("model_family") == self.model_family
+              and candidate.get("feature_schema_version") == soccer.FEATURE_SCHEMA_VERSION
+              and candidate.get("source_policy_id") == soccer.SOURCE_POLICY_ID
+              and candidate.get("lifecycle_state") == "CANDIDATE"
+              and candidate.get("research_screen_pass") is True
+              and all(candidate.get(k) is False for k in ("active", "promoted", "probability_publishable",
+                                                          "can_execute", "automatic_certification",
+                                                          "automatic_promotion")))
+        if not ok:
+            raise ForwardEvidenceBlocked("SOCCER_CANDIDATE_LIFECYCLE_INVALID")
+        if _aware(candidate.get("created_at")) > now:
+            raise ForwardEvidenceBlocked("SOCCER_CANDIDATE_POST_AS_OF")
+        artifact, cal = candidate.get("artifact_payload"), candidate.get("calibrator_payload")
+        if not isinstance(artifact, Mapping) or soccer._hash_json(artifact) != candidate.get("artifact_checksum"):
+            raise ForwardEvidenceBlocked("SOCCER_ARTIFACT_CHECKSUM_MISMATCH")
+        try:
+            shapes_ok = (
+                artifact.get("artifact_format") == "STANDARDIZED_MULTINOMIAL_LOGISTIC_JSON_V1"
+                and artifact.get("model_family") == self.model_family
+                and list(artifact.get("feature_names") or []) == names
+                and sorted(artifact.get("classes") or []) == ["AWAY", "DRAW", "HOME"]
+                and len(artifact["scaler_mean"]) == len(names) == len(artifact["scaler_scale"])
+                and all(float(s) > 0 for s in artifact["scaler_scale"])
+                and len(artifact["intercepts"]) == 3 == len(artifact["coefficients"])
+                and all(len(row) == len(names) for row in artifact["coefficients"])
+                and all(isfinite(float(v)) for row in artifact["coefficients"] for v in row)
+                and isinstance(cal, Mapping)
+                and cal.get("method") == "TEMPERATURE_SCALE_CHRONOLOGICAL_V1"
+                and isfinite(float(cal.get("temperature"))) and float(cal["temperature"]) > 0
+            )
+        except (KeyError, TypeError, ValueError):
+            shapes_ok = False
+        if not shapes_ok:
+            raise ForwardEvidenceBlocked("SOCCER_ARTIFACT_SCHEMA_INVALID")
+
+    def upcoming_events(self, db: Any, now: datetime, horizon: timedelta) -> Sequence[EventIdentity]:
+        found: dict[str, EventIdentity | None] = {}
+        for match in self._season(self.season_for(now)):
+            if self._soccer._score(dict(match)) is not None:
+                continue
+            try:
+                event_id, anchor, home, away = self._identity(match)
+            except ForwardEvidenceBlocked:
+                continue
+            if not now < anchor <= now + horizon:
+                continue
+            if event_id in found:
+                found[event_id] = None
+                continue
+            found[event_id] = EventIdentity(event_id, anchor, home, away, self.source, payload=dict(match))
+        return sorted((e for e in found.values() if e is not None), key=lambda e: e.event_start_time_utc)
+
+    def load_context(self, db: Any, now: datetime) -> dict[str, list[dict[str, Any]]]:
+        soccer = self._soccer
+        histories: dict[str, list[dict[str, Any]]] = {}
+        scored = []
+        for season in soccer.SEASONS:
+            for match in self._season(season):
+                score = soccer._score(dict(match))
+                if score is None:
+                    continue
+                start = soccer._event_time(dict(match))
+                if start >= now:
+                    continue
+                scored.append((start, str(match.get("team1") or "").strip(), str(match.get("team2") or "").strip(),
+                               score, str(match.get("date") or "")))
+        for start, home, away, (hg, ag), date_text in sorted(scored):
+            hp, ap = (1, 1) if hg == ag else ((3, 0) if hg > ag else (0, 3))
+            event_id = soccer._hash_json({"competition": self.league, "date": date_text, "home": home, "away": away})[:32]
+            histories.setdefault(home, []).append({"event_id": event_id, "start": start, "points": hp, "goal_diff": hg - ag})
+            histories.setdefault(away, []).append({"event_id": event_id, "start": start, "points": ap, "goal_diff": ag - hg})
+        return histories
+
+    def score(self, event: EventIdentity, context: Any, candidate: Mapping[str, Any], now: datetime) -> Forecast:
+        soccer = self._soccer
+        start = soccer._event_time(dict(event.payload))  # the same anchor the candidate trained on
+        hs = soccer._summary(context.get(event.home_participant, []), start)
+        aws = soccer._summary(context.get(event.away_participant, []), start)
+        if hs is None or aws is None:
+            raise ForwardEvidenceBlocked("SOCCER_PRIOR_SAMPLE_INSUFFICIENT")
+        features = {}
+        for side, summary in (("home", hs), ("away", aws)):
+            features[f"{side}_recent_points_per_game"] = summary["points_per_game"]
+            features[f"{side}_recent_goal_diff"] = summary["goal_diff"]
+            features[f"{side}_recent_win_rate"] = summary["win_rate"]
+            features[f"{side}_recent_draw_rate"] = summary["draw_rate"]
+            features[f"{side}_games_prior_log"] = summary["games_prior_log"]
+            features[f"{side}_rest_days_capped"] = summary["rest_days_capped"]
+        vector = [float(features[name]) for name in soccer.FEATURE_NAMES]
+        probabilities = score_multinomial(candidate["artifact_payload"], candidate["calibrator_payload"], vector)
+        digest = soccer._hash_json({"home": hs["prior_event_ids"], "away": aws["prior_event_ids"]})
+        return Forecast(probabilities=probabilities, features=features, source_history_digest=digest)
+
+    def settlements(self, db: Any, pending: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
+        if not pending:
+            return []
+        wanted = {str(row["official_event_id"]): _aware(row["event_start_time_utc"]) for row in pending}
+        now = datetime.now(timezone.utc)
+        seasons = {self.season_for(start) for start in wanted.values()}
+        out: list[dict[str, Any]] = []
+        for season in sorted(seasons):
+            self._cache.pop(season, None)  # results must be re-read, not served from the capture fetch
+            for match in self._season(season):
+                score = self._soccer._score(dict(match))
+                if score is None:
+                    continue
+                try:
+                    event_id, anchor, _, _ = self._identity(match)
+                except ForwardEvidenceBlocked:
+                    continue
+                if event_id not in wanted or anchor != wanted[event_id]:
+                    continue
+                hg, ag = score
+                out.append({
+                    "official_event_id": event_id,
+                    "event_start_time_utc": anchor.isoformat(),
+                    "outcome": "DRAW" if hg == ag else ("HOME" if hg > ag else "AWAY"),
+                    "home_score": hg,
+                    "away_score": ag,
+                    "settlement_source": self.source,
+                    "source_retrieved_at": now.isoformat(),
+                })
+        return out
+
+
+def soccer_forward_evidence_after_maintenance(db: Any) -> dict[str, Any]:
+    """Soccer maintenance hook: one isolated receipt per competition."""
+    from v17.forward_evidence import run_forward_evidence
+    from v17.soccer_openfootball_candidate import COMPETITIONS
+
+    receipts = {}
+    for league in COMPETITIONS:
+        try:
+            receipts[league] = run_forward_evidence(db, SoccerOpenFootballAdapter(league))
+        except Exception as exc:  # noqa: BLE001 - one league never blocks another
+            receipts[league] = {"status": "FAILED", "code": f"FORWARD_EVIDENCE_HOOK_{type(exc).__name__.upper()}",
+                                "probability_publishable": False, "can_execute": False}
+    return {"status": "COMPLETED", "leagues": receipts, "probability_publishable": False, "can_execute": False}
