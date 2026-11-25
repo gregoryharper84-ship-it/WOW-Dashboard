@@ -168,7 +168,7 @@ class NCAAFResultFormAdapter:
                 continue
             out.append({
                 "official_event_id": event_id,
-                "event_start_time_utc": start.isoformat(),
+                "event_start_time_utc": _aware(final.get("event_start_time")).isoformat(),  # final's own kickoff
                 "outcome": "VOID" if hp == ap else ("HOME" if hp > ap else "AWAY"),
                 "home_score": hp,
                 "away_score": ap,
