@@ -308,6 +308,25 @@ def test_settlement_start_mismatch_is_typed_and_not_graded():
     assert receipt["settlement_blocked_by_code"] == {"NCAAF_SETTLEMENT_START_MISMATCH": 1}
 
 
+def test_settlement_records_the_finals_own_kickoff_within_tolerance():
+    db, state = make_db(NOW)
+    run(db, NOW)
+    after = KICK + timedelta(hours=8)
+    state["now"] = after
+    moved = KICK - timedelta(minutes=60)  # schedule moved earlier after capture
+    db.tables["wow_ncaaf_training_games"].append(game("401", "Home U", "Away U", moved, 24, 27))
+    assert run(db, after)["settled"] == 1
+    settlement = db.tables[fe.SETTLEMENT_TABLE][0]
+    assert datetime.fromisoformat(settlement["event_start_time_utc"]) == moved
+
+
+def test_graded_view_requires_capture_before_settlement_kickoff():
+    fix = (Path(__file__).resolve().parents[1] / "migrations"
+           / "20261125b_v17_forward_evidence_graded_settlement_kickoff.sql").read_text()
+    assert "l.created_at < s.event_start_time_utc" in fix
+    assert "create or replace view public.wow_v17_forward_evidence_graded" in fix
+
+
 def test_capture_skipped_without_fresh_acquisition_but_settlement_still_runs():
     db, _ = make_db(NOW)
     receipt = run(db, NOW, capture=False, capture_skip_reason="NCAAF_ACQUISITION_NOT_FRESH")
