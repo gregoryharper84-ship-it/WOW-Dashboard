@@ -57,6 +57,11 @@ def build_slip_construction_postmortem(
     selection_positions: dict[tuple[Any, ...], set[str]] = defaultdict(set)
     selection_results: dict[tuple[Any, ...], set[str]] = defaultdict(set)
     player_event_positions: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    # Game-level exposure is tracked independently of the player: two different
+    # players in the same game are not independent outcomes just because their
+    # exact selections differ. Only an observed sport+event pair is grouped; a
+    # missing official event ID never becomes a certified game identity.
+    event_positions: dict[tuple[str, str], set[str]] = defaultdict(set)
     seen_row_ids: set[tuple[str, str]] = set()
     position_map: dict[str, Mapping[str, Any]] = {}
 
@@ -91,6 +96,8 @@ def build_slip_construction_postmortem(
                 _norm(leg.get("sport")), _norm(leg.get("event_id")),
                 _norm(leg.get("participant"))
             )].add(ref)
+        if all((_norm(leg.get("sport")), _norm(leg.get("event_id")))):
+            event_positions[(_norm(leg.get("sport")), _norm(leg.get("event_id")))].add(ref)
 
     if any(len(results) != 1 for results in selection_results.values()):
         raise ValueError("CONFLICTING_EXACT_SELECTION_SETTLEMENT")
@@ -133,6 +140,15 @@ def build_slip_construction_postmortem(
             ))
         )
         same_player_count = sum(v - 1 for v in player_counts.values() if v > 1)
+        distinct_events = {
+            (_norm(x.get("sport")), _norm(x.get("event_id")))
+            for x in items if all((_norm(x.get("sport")), _norm(x.get("event_id"))))
+        }
+        cross_slip_shared_event_legs = sum(
+            1 for x in items
+            if all((_norm(x.get("sport")), _norm(x.get("event_id"))))
+            and len(event_positions[(_norm(x.get("sport")), _norm(x.get("event_id")))]) > 1
+        )
         composite_pairs = [
             sorted((str(left.get("row_key")), str(right.get("row_key"))))
             for index, left in enumerate(items)
@@ -151,6 +167,8 @@ def build_slip_construction_postmortem(
             flags.append("SAME_EVENT_DEPENDENCY_UNVERIFIED")
         if same_player_count:
             flags.append("SAME_PLAYER_MULTI_MARKET_DEPENDENCE_UNVERIFIED")
+        if cross_slip_shared_event_legs:
+            flags.append("CROSS_SLIP_GAME_EXPOSURE_UNVERIFIED")
         if composite_pairs:
             flags.append("COMPONENT_COMPOSITE_OVERLAP_REQUIRES_JOINT_REVIEW")
         if len(items) >= 4:
@@ -169,8 +187,11 @@ def build_slip_construction_postmortem(
             "all_or_nothing": position.get("all_or_nothing") is True,
             "leg_count": len(items),
             "distinct_sport_count": len({_norm(x.get("sport")) for x in items if _norm(x.get("sport"))}),
+            "distinct_event_count": len(distinct_events),
             "same_event_extra_legs": same_event_count,
             "same_player_event_extra_legs": same_player_count,
+            "cross_slip_shared_event_legs": cross_slip_shared_event_legs,
+            "event_identity_basis": "EXACT_OBSERVED_SPORT_EVENT_PAIR_NOT_OFFICIAL_ATTESTATION",
             "component_composite_overlap_row_pairs": sorted(composite_pairs),
             "reused_selection_hashes": reused,
             "observed_result": observed,
@@ -201,6 +222,14 @@ def build_slip_construction_postmortem(
         "cross_slip_same_player_event_groups": sum(
             len(refs) > 1 for refs in player_event_positions.values()
         ),
+        "distinct_event_count": len(event_positions),
+        "cross_slip_shared_event_groups": sum(
+            len(refs) > 1 for refs in event_positions.values()
+        ),
+        "cross_slip_shared_event_position_occurrences": sum(
+            len(refs) - 1 for refs in event_positions.values() if len(refs) > 1
+        ),
+        "game_identity_basis": "EXACT_OBSERVED_SPORT_EVENT_PAIR_NOT_OFFICIAL_ATTESTATION",
         "shared_losing_hinge_count": len(shared_losses),
         "shared_losing_hinges": shared_losses,
         "affected_all_or_nothing_position_count": len(affected),

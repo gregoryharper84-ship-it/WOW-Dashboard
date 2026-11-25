@@ -26,6 +26,7 @@ _STANDARD_MAX_LEGS = 3
 _HIGH_CONFIDENCE_CLAIMS = {
     "STRONG", "STRONG_CONFIDENCE", "HIGH", "HIGH_CONFIDENCE",
     "VERY_HIGH", "ELITE", "LOCK", "CERTIFIED", "FULL_MODEL",
+    "LOCK_OF_THE_DAY", "CANNOT_LOSE", "GUARANTEED",
 }
 _MARKET_ALIASES = {
     "ML": "MONEYLINE", "MONEYLINE": "MONEYLINE",
@@ -55,6 +56,19 @@ def _time(raw: Any) -> datetime | None:
 
 def _text(x: Any) -> str:
     return x.strip() if isinstance(x, str) else ""
+
+
+def _claim_label(x: Any) -> str:
+    """Normalize a caller-supplied confidence label before the claim screen.
+
+    A label is free text, so "STRONG CONFIDENCE" or "strong-confidence" is the
+    same unsupported claim as "STRONG_CONFIDENCE". Matching only the exact
+    underscore spelling lets a real strong-confidence claim pass unflagged.
+    """
+    cleaned = "".join(
+        char if char.isalnum() else "_" for char in _text(x).upper()
+    )
+    return "_".join(part for part in cleaned.split("_") if part)
 
 
 def _number(value: Any, *, minimum: float | None = None) -> float | None:
@@ -621,7 +635,6 @@ def audit_research_slips(
     *,
     as_of_utc: str,
     max_distinct_slips_per_leg: int = 1,
-    max_distinct_slips_per_event: int = 2,
     max_standard_legs: int = _STANDARD_MAX_LEGS,
 ) -> dict[str, Any]:
     """Evaluate all proposed slips as one portfolio; input remains unchanged.
@@ -633,12 +646,25 @@ def audit_research_slips(
     at = _time(as_of_utc)
     if at is None:
         raise ValueError("RESEARCH_PREFLIGHT_AS_OF_INVALID")
-    if max_distinct_slips_per_leg < 1 or max_distinct_slips_per_event < 1 or max_standard_legs < 2:
+    if max_distinct_slips_per_leg < 1 or max_standard_legs < 2:
         raise ValueError("RESEARCH_PREFLIGHT_LIMIT_INVALID")
     seen_exact: dict[tuple[str, ...], set[str]] = {}
-    seen_events: dict[tuple[str, str], set[str]] = {}
     seen_card_ids: set[str] = set()
     reports: list[dict[str, Any]] = []
+    # A game shared by two proposed cards is a dependency, not two independent
+    # theses. This audit cannot authenticate a joint artifact, so the hold is
+    # absolute and read-order independent. Pre-computing exposure means a card is
+    # never trusted merely because no other card has been read yet.
+    event_cards: dict[tuple[str, str], set[str]] = {}
+    for index, proposed in enumerate(slips):
+        if not isinstance(proposed, Mapping):
+            continue
+        proposed_id = _text(proposed.get("card_id")) or str(index)
+        proposed_legs = proposed.get("legs")
+        for item in proposed_legs if isinstance(proposed_legs, list) else []:
+            identity = exact_key(item) if isinstance(item, Mapping) else None
+            if identity and identity[0] and identity[1]:
+                event_cards.setdefault((identity[0], identity[1]), set()).add(proposed_id)
     for idx, slip in enumerate(slips):
         if not isinstance(slip, Mapping):
             raise ValueError("RESEARCH_PREFLIGHT_SLIP_INVALID")
@@ -647,7 +673,8 @@ def audit_research_slips(
         if not isinstance(legs, list):
             legs = []
         blockers = []
-        if _text(slip.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+        shared_games: set[tuple[str, str]] = set()
+        if _claim_label(slip.get("confidence_label")) in _HIGH_CONFIDENCE_CLAIMS:
             blockers.append("SLIP_JOINT_CONFIDENCE_UNVERIFIED")
         if slip_id in seen_card_ids:
             blockers.append("RESEARCH_CARD_ID_DUPLICATE")
@@ -664,7 +691,7 @@ def audit_research_slips(
                 blockers.append("RESEARCH_LEG_INVALID")
                 continue
             reasons: list[str] = _context_impact_blockers(leg)
-            if _text(leg.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+            if _claim_label(leg.get("confidence_label")) in _HIGH_CONFIDENCE_CLAIMS:
                 reasons.append("RESEARCH_STRONG_CONFIDENCE_CLAIM_UNVERIFIED")
             identity = exact_key(leg)
             start = _time(leg.get("event_start_utc"))
@@ -709,18 +736,16 @@ def audit_research_slips(
                 if market in _PROPS:
                     reasons.extend(_player_blockers(leg, at, start))
                     reasons.extend(_prop_context_blockers(leg, at, start))
+            if identity and len(event_cards.get((identity[0], identity[1]), ())) > 1:
+                reasons.append("CROSS_SLIP_EVENT_EXPOSURE_UNVERIFIED")
+                shared_games.add((identity[0], identity[1]))
             if identity:
                 previous = seen_exact.setdefault(identity, set())
                 if any(x != slip_id for x in previous) and len(previous) >= max_distinct_slips_per_leg:
                     reasons.append("CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE")
                 previous.add(slip_id)
                 if identity[0] and identity[1]:
-                    event_key = (identity[0], identity[1])
-                    prior_cards = seen_events.setdefault(event_key, set())
-                    if slip_id not in prior_cards and len(prior_cards) >= max_distinct_slips_per_event:
-                        reasons.append("CROSS_SLIP_EVENT_HINGE_CONCENTRATION")
-                    prior_cards.add(slip_id)
-                    event_counts[event_key] += 1
+                    event_counts[(identity[0], identity[1])] += 1
             reasons = list(dict.fromkeys(reasons))
             leg_reports.append({"index": i, "row_id": leg.get("row_id"),
                                 "blockers": reasons, "research_only": True,
@@ -749,6 +774,7 @@ def audit_research_slips(
             ).items())),
             "can_publish_as_certified": False,
             "model_rescore_verified": False,
+            "cross_slip_shared_game_count": len(shared_games),
             "joint_probability": None,
             "joint_probability_certified": False,
             "executable_quote_verified": False,
@@ -763,7 +789,7 @@ def audit_research_slips(
             "|".join(key): len(value) for key, value in sorted(seen_exact.items())
         },
         "cross_slip_event_exposure_counts": {
-            "|".join(key): len(value) for key, value in sorted(seen_events.items())
+            "|".join(key): len(value) for key, value in sorted(event_cards.items())
         },
         "research_only": True,
         "fitted_model_changed": False,
