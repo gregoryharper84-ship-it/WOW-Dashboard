@@ -53,7 +53,11 @@ def test_all_three_sports_get_read_only_winner_context(sport):
     assert len(value["events"]) == 1
     event = value["events"][0]
     assert event["sport"] == sport
-    assert event["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
+    # A self-asserted Daily winner is not a verified immutable event ledger
+    # receipt. The pure view has no authenticated database and must withhold p.
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in event["markets"][0]
+    assert event["source_diagnostics"]["event_prediction_receipt_verified"] is False
     assert event["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
     assert event["market_coverage"]["GAME_TOTAL"] == "NO_EXACT_TOTAL_RECEIPT_IN_DAILY_RUN"
     assert value["source_mutated"] is False and value["nfl_pickem_mutated"] is False
