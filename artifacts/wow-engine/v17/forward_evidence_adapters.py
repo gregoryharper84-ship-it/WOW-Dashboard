@@ -224,10 +224,17 @@ class SoccerOpenFootballAdapter:
     """Soccer 1X2 for one competition with the OpenFootball result-form candidate.
 
     Fixtures and official results come from the same CC0 source the candidate
-    trains on. OpenFootball kickoff times are local, so the pregame anchor is
-    00:00 UTC on the listed match date: a capture is only taken before that
-    instant, which precedes every kickoff on that date in Europe.
+    trains on. OpenFootball kickoff times are local and carry no zone, so the
+    pregame anchor is the listed local kickoff converted with the league's
+    time zone, minus a two-hour safety margin. Without a usable time or zone
+    database it falls back to 00:00 UTC on the match date. A capture is only
+    taken before the anchor, so a one-hour zone or listing error still leaves
+    every capture pregame.
     """
+
+    LEAGUE_TZ = {"EPL": "Europe/London", "BUNDESLIGA": "Europe/Berlin", "LALIGA": "Europe/Madrid",
+                 "SERIE_A": "Europe/Rome", "LIGUE_1": "Europe/Paris"}
+    KICKOFF_SAFETY = timedelta(hours=2)
 
     sport = "SOCCER"
     market_family = "OUTRIGHT_WINNER"
@@ -277,6 +284,16 @@ class SoccerOpenFootballAdapter:
         if not date_text or not home or not away or home == away:
             raise ForwardEvidenceBlocked("SOCCER_FIXTURE_IDENTITY_INVALID")
         anchor = datetime.fromisoformat(f"{date_text}T00:00:00+00:00")
+        time_text = str(match.get("time") or "").strip()
+        zone = self.LEAGUE_TZ.get(self.league)
+        if zone and len(time_text) == 5 and time_text[2] == ":" and time_text.replace(":", "").isdigit():
+            try:
+                from zoneinfo import ZoneInfo
+
+                local = datetime.fromisoformat(f"{date_text}T{time_text}:00").replace(tzinfo=ZoneInfo(zone))
+                anchor = local.astimezone(timezone.utc) - self.KICKOFF_SAFETY
+            except Exception:  # noqa: BLE001 - no tz database: keep the midnight anchor
+                pass
         digest = self._soccer._hash_json({"competition": self.league, "date": date_text, "home": home, "away": away})
         return f"{self.league}:{digest[:32]}", anchor, home, away
 
@@ -403,15 +420,15 @@ class SoccerOpenFootballAdapter:
                 if score is None:
                     continue
                 try:
-                    event_id, anchor, _, _ = self._identity(match)
+                    event_id, _, _, _ = self._identity(match)
                 except ForwardEvidenceBlocked:
                     continue
-                if event_id not in wanted or anchor != wanted[event_id]:
+                if event_id not in wanted:  # the id already binds league, date and teams
                     continue
                 hg, ag = score
                 out.append({
                     "official_event_id": event_id,
-                    "event_start_time_utc": anchor.isoformat(),
+                    "event_start_time_utc": wanted[event_id].isoformat(),
                     "outcome": "DRAW" if hg == ag else ("HOME" if hg > ag else "AWAY"),
                     "home_score": hg,
                     "away_score": ag,

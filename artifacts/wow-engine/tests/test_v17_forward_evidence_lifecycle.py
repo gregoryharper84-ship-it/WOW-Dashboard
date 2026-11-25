@@ -291,6 +291,9 @@ def test_settlement_after_kickoff_grades_the_latest_pregame_capture():
     assert settlement["outcome"] == "AWAY" and settlement["settlement_source"] == "CFBD:/games"
     card = receipt["scorecard"]
     assert card["graded_n"] == 1 and 0 < card["brier"] < 1 and card["log_loss"] > 0
+    assert card["captured_events"] == 2 and card["observed_home_rate"] == 0.0
+    assert card["home_calibration_bias"] == card["mean_home_probability"]
+    assert card["lower_bound"] == "NOT_AVAILABLE_RESEARCH_CANDIDATE"
     assert run(db, after)["settled"] == 0  # idempotent
 
 
@@ -473,7 +476,8 @@ def test_soccer_captures_three_way_with_conservative_pregame_anchor():
     row = db.tables[fe.CAPTURE_TABLE][0]
     assert set(row["probabilities"]) == {"HOME", "DRAW", "AWAY"}
     assert abs(sum(row["probabilities"].values()) - 1) < 1e-9
-    assert row["event_start_time_utc"] == "2026-11-28T00:00:00+00:00"  # before any kickoff that date
+    # 20:00 London (GMT in November) = 20:00Z kickoff; anchor keeps a two-hour safety margin.
+    assert row["event_start_time_utc"] == "2026-11-28T18:00:00+00:00"
     assert db.tables[fe.REGISTRATION_TABLE][0]["outcome_space"] == "THREE_WAY_1X2"
 
 
@@ -492,6 +496,16 @@ def test_soccer_settles_draw_and_grades_multiclass_brier():
     p = db.tables[fe.CAPTURE_TABLE][0]["probabilities"]
     expected = (p["HOME"]) ** 2 + (p["AWAY"]) ** 2 + (p["DRAW"] - 1) ** 2
     assert abs(receipt["scorecard"]["brier"] - expected) < 1e-12
+
+
+def test_soccer_anchor_uses_league_zone_and_falls_back_to_midnight():
+    laliga = SoccerOpenFootballAdapter("LALIGA")
+    event_id, anchor, _, _ = laliga._identity({"date": "2026-11-28", "time": "21:00", "team1": "A", "team2": "B"})
+    assert anchor.isoformat() == "2026-11-28T18:00:00+00:00"  # 21:00 CET = 20:00Z, minus 2 h
+    _, no_time, _, _ = laliga._identity({"date": "2026-11-28", "team1": "A", "team2": "B"})
+    assert no_time.isoformat() == "2026-11-28T00:00:00+00:00"
+    same_id, _, _, _ = laliga._identity({"date": "2026-11-28", "time": "18:30", "team1": "A", "team2": "B"})
+    assert same_id == event_id  # a kickoff-time change keeps identity, so settlement still binds
 
 
 def test_soccer_rejects_tampered_artifact():
@@ -683,3 +697,11 @@ def test_ncaab_history_source_failure_is_typed():
 def test_ncaab_season_naming():
     assert NCAABResultFormAdapter.season_for(datetime(2026, 11, 25, tzinfo=timezone.utc)) == 2027
     assert NCAABResultFormAdapter.season_for(datetime(2027, 3, 1, tzinfo=timezone.utc)) == 2027
+
+
+def test_view_least_privilege_migration_leaves_service_role_select_only():
+    sql = (ROOT / "migrations" / "20261125_v17_forward_evidence_view_least_privilege.sql").read_text().lower()
+    assert ("revoke insert, update, delete, truncate, references, trigger\n"
+            "  on table public.wow_v17_forward_evidence_graded from service_role;") in sql
+    assert "grant select on table public.wow_v17_forward_evidence_graded to service_role;" in sql
+    assert re.search(r"grant [^;]* to (public|anon|authenticated)", sql) is None
