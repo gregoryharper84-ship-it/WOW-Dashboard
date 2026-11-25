@@ -108,7 +108,7 @@ def test_render_worker_declares_fail_closed_langgraph_activation_contract():
 
     # Workers must follow the same protected-main CI admission as the web service.
     # Automatic deployment is not a substitute for an approved/verified release.
-    assert worker["autoDeployTrigger"] == "checksPass"
+    assert worker["autoDeployTrigger"] == "off"  # deployed only by wow-v17-required-checks-deploy
     web = next(service for service in manifest["services"] if service.get("name") == "wow-governed-probability-engine")
     assert web["autoDeployTrigger"] == worker["autoDeployTrigger"]
     assert worker["rootDir"] == web["rootDir"] == "artifacts/wow-engine"

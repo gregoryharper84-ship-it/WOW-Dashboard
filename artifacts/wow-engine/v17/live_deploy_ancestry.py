@@ -38,6 +38,10 @@ class AncestryHold(ValueError):
     pass
 
 
+# Render deploys only CI-gated commits: native checksPass, or "off" with the
+# required-checks deployer as the single writer. "commit" (or missing) never.
+CI_GATED_TRIGGERS = frozenset({"checksPass", "off"})
+
 def assert_service(role: str, service: Any) -> None:
     """The live service must still be the canonical CI-gated production one."""
     if not isinstance(service, dict):
@@ -45,7 +49,7 @@ def assert_service(role: str, service: Any) -> None:
     if (service.get("id") != SERVICES[role]
             or service.get("branch") != "main"
             or service.get("repo") != "https://github.com/" + REPO
-            or service.get("autoDeployTrigger") != "checksPass"):
+            or service.get("autoDeployTrigger") not in CI_GATED_TRIGGERS):
         raise AncestryHold("RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:" + role)
 
 
