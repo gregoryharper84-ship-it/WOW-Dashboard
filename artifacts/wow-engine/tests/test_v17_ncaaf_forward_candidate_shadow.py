@@ -157,3 +157,17 @@ def test_database_does_not_score_with_provider_unverified_identity():
     bad=identity();bad['identity_provider']='ESPN_DISCOVERY'
     with pytest.raises(ShadowScoringBlocked,match='NCAAF_SHADOW_CANONICAL_IDENTITY_UNVERIFIED'):
         run_fitted_ncaaf_shadow(db,event_start_time=START.isoformat(),home_team='Home School',away_team='Away School',as_of_utc=AS_OF,identity_resolver=lambda **_: bad)
+
+def test_history_digest_ignores_retrieval_time_but_tracks_outcomes():
+    # NCAAF maintenance re-stamps result_source_timestamp on every CFBD
+    # acquisition. The same settled history must keep the same digest, or each
+    # run stores a redundant forward-evidence capture for an unchanged forecast.
+    base = score()
+    restamped = [dict(row, result_source_timestamp=(datetime.fromisoformat(row["event_start_time"])
+                                                    + timedelta(hours=40)).isoformat()) for row in history()]
+    again = score(rows=restamped)
+    assert again["source_history_digest"] == base["source_history_digest"]
+    assert again["features"] == base["features"]
+    corrected = history()
+    corrected[0] = dict(corrected[0], home_points=31)
+    assert score(rows=corrected)["source_history_digest"] != base["source_history_digest"]
