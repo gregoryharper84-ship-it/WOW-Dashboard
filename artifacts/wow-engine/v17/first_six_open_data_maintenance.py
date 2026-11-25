@@ -300,7 +300,17 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
         @app.post("/internal/v17/soccer-model-maintenance",dependencies=[dependency],operation_id="runWowV17SoccerModelMaintenance")
         def run_soccer_maintenance() -> dict[str, Any]:
             from v17.soccer_openfootball_candidate import SoccerCandidateUnavailable, train_all as train_soccer
-            return _run("SOCCER",train_soccer,db_client_fn(),candidate_errors=(SoccerCandidateUnavailable,))
+            db = db_client_fn()
+            result = _run("SOCCER",train_soccer,db,candidate_errors=(SoccerCandidateUnavailable,))
+            # Prospective evidence for each competition's frozen candidate.
+            # Isolated: never raises and never changes the maintenance status.
+            try:
+                from v17.forward_evidence_adapters import soccer_forward_evidence_after_maintenance
+                forward = soccer_forward_evidence_after_maintenance(db)
+            except Exception as exc:  # noqa: BLE001
+                forward = {"status":"FAILED","code":f"FORWARD_EVIDENCE_HOOK_{type(exc).__name__.upper()}",
+                           "probability_publishable":False,"can_execute":False}
+            return {**result,"forward_evidence":forward}
 
     if "/internal/v17/tennis-model-maintenance" not in routes:
         @app.post("/internal/v17/tennis-model-maintenance",dependencies=[dependency],operation_id="runWowV17TennisModelMaintenance")
