@@ -100,7 +100,7 @@ def test_unknown_provider_market_stays_typed_hold(monkeypatch):
         )
 
     monkeypatch.setattr(sources, "fetch", fake_fetch)
-    result = live.sharpapi_market_evidence("icehockey_nhl", market_filter="main")
+    result = live.sharpapi_market_evidence("icehockey_nhl", main_only=True)
     assert not result.ok
     assert result.code == "SHARPAPI_SCHEMA_UNRECOGNISED"
     assert result.can_execute is False
@@ -109,7 +109,7 @@ def test_unknown_provider_market_stays_typed_hold(monkeypatch):
 def test_free_core_does_not_invoke_provider_even_with_mainline_filter(monkeypatch):
     monkeypatch.setattr(source_policy, "free_core_enabled", lambda: True)
     monkeypatch.setattr(sources, "fetch", lambda *_a, **_k: pytest.fail("provider call forbidden"))
-    result = live.sharpapi_market_evidence("icehockey_nhl", market_filter="main")
+    result = live.sharpapi_market_evidence("icehockey_nhl", main_only=True)
     assert result.ok is False
     assert result.can_execute is False
     assert result.request_audit["paid_provider_network_attempted"] is False
