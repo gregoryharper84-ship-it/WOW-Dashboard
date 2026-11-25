@@ -47,3 +47,7 @@ where s.outcome <> 'VOID'
   and l.created_at < s.event_start_time_utc
   and l.artifact_checksum = r.artifact_checksum
   and not (r.outcome_space = 'BINARY_HOME_AWAY' and s.outcome = 'DRAW');
+
+-- Least privilege: the view inherited default write grants for service_role.
+revoke insert, update, delete, truncate, references, trigger
+  on table public.wow_v17_forward_evidence_graded from service_role;

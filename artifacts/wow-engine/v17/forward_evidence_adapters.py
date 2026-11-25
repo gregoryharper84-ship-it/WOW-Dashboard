@@ -621,7 +621,7 @@ class NHLRegularSeasonAdapter:
                 continue
             out.append({
                 "official_event_id": event_id,
-                "event_start_time_utc": start.isoformat(),
+                "event_start_time_utc": _aware(final.get("event_start_time")).isoformat(),  # final's own kickoff
                 "outcome": "HOME" if hs > as_ else "AWAY",
                 "home_score": hs,
                 "away_score": as_,
@@ -830,7 +830,7 @@ class NCAABResultFormAdapter:
                 continue
             out.append({
                 "official_event_id": event_id,
-                "event_start_time_utc": start.isoformat(),
+                "event_start_time_utc": _aware(game["event_start"]).isoformat(),  # final's own kickoff
                 "outcome": "HOME" if hs > as_ else "AWAY",
                 "home_score": hs,
                 "away_score": as_,
