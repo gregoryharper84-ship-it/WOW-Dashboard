@@ -272,6 +272,20 @@ def test_refit_never_moves_frozen_candidate_and_reruns_are_idempotent():
     assert newest["probabilities"]["HOME"] == frozen_p != refit_p
 
 
+def test_refetched_identical_history_is_a_duplicate_not_a_new_capture():
+    # Maintenance re-acquires CFBD results every run, which moves each row's
+    # retrieval timestamp. Same games and scores must not count as new evidence.
+    db, state = make_db(NOW)
+    assert run(db, NOW)["captured"] == 2
+    later = NOW + timedelta(hours=6)
+    for row in db.tables["wow_ncaaf_training_games"]:
+        row["result_source_timestamp"] = (later - timedelta(minutes=30)).isoformat()
+    state["now"] = later
+    receipt = run(db, later)
+    assert receipt["captured"] == 0 and receipt["duplicate"] == 2, receipt
+    assert len(db.tables[fe.CAPTURE_TABLE]) == 2
+
+
 def test_invalid_newest_candidate_is_skipped_not_frozen():
     db, _ = make_db(NOW)
     db.tables["wow_d1_candidate_artifacts"].append(candidate("cand-bad", "2026-11-24T00:00:00+00:00", valid=False))
@@ -531,6 +545,36 @@ def test_soccer_hook_isolates_each_league(monkeypatch):
     assert out["leagues"]["EPL"]["captured"] == 1
     others = {k: v for k, v in out["leagues"].items() if k != "EPL"}
     assert others and all(v["status"] in ("BLOCKED", "FAILED") for v in others.values())
+
+
+def test_soccer_untimed_placeholder_fixture_is_blocked_not_captured():
+    # OpenFootball lists future rounds with one placeholder date and no time;
+    # the real kickoff can be days earlier, so no pregame anchor is provable.
+    season = soccer_season() + [{"date": "2026-11-29", "team1": "Gamma FC", "team2": "Delta FC"}]
+    adapter = SoccerOpenFootballAdapter("EPL", fetch_season=lambda code, s: season if s == "2026-27" else [])
+    db = soccer_db()
+    receipt = fe.run_forward_evidence(db, adapter, now=SOCCER_NOW)
+    assert receipt["captured"] == 1, receipt
+    assert receipt["blocked_by_code"]["SOCCER_KICKOFF_TIME_UNVERIFIED"] == 1
+    assert all(r["home_participant"] != "Gamma FC" or r["away_participant"] != "Delta FC"
+               for r in db.tables[fe.CAPTURE_TABLE])
+
+
+def test_soccer_stale_source_results_block_only_affected_teams():
+    # A past league match without a result means the form features are not
+    # as of now; teams with complete history are still captured.
+    season = soccer_season() + [
+        {"date": "2026-11-14", "time": "15:00", "team1": "Alpha FC", "team2": "Delta FC"},  # played, no result
+        {"date": "2026-11-27", "time": "20:00", "team1": "Gamma FC", "team2": "Beta FC"},
+        {"date": "2026-11-25", "time": "19:30", "team1": "Beta FC", "team2": "Gamma FC", "score": {"ft": [1, 0]}},
+    ]
+    season[-1].pop("score")  # dated today and not yet recorded: not stale
+    adapter = SoccerOpenFootballAdapter("EPL", fetch_season=lambda code, s: season if s == "2026-27" else [])
+    db = soccer_db()
+    receipt = fe.run_forward_evidence(db, adapter, now=SOCCER_NOW)
+    assert receipt["blocked_by_code"]["SOCCER_SOURCE_RESULTS_STALE"] == 1, receipt
+    pairs = {(r["home_participant"], r["away_participant"]) for r in db.tables[fe.CAPTURE_TABLE]}
+    assert ("Gamma FC", "Beta FC") in pairs and ("Alpha FC", "Beta FC") not in pairs
 
 
 # --- NHL adapter (reuses the fitted-specialist test fixtures) -------------
