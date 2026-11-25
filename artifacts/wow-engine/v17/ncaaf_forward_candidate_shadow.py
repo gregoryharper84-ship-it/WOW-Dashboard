@@ -135,7 +135,9 @@ def score_forward_shadow(
         hp, ap, won = row.get("home_points"), row.get("away_points"), row.get("home_won")
         _require(type(hp) is int and type(ap) is int and hp != ap and type(won) is bool
                  and won == (hp > ap), "NCAAF_SHADOW_HISTORY_OUTCOME_INCONSISTENT")
-        used.append((eid,when.isoformat(),sourced.isoformat(),h,a,hp,ap))
+        # Content only: re-acquiring the same result moves its retrieval
+        # timestamp (checked as-of above) but is not new history.
+        used.append((eid,when.isoformat(),h,a,hp,ap))
         if h in prior:
             prior[h].append((when, hp > ap, hp - ap))
         if a in prior:
