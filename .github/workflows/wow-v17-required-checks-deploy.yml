@@ -1,13 +1,12 @@
 name: wow-v17-required-checks-deploy
 
-# Deploy recovery keyed ONLY to the three ruleset-required checks (redesign
-# chunk 1, approved by the owner 2026-11-20). Render's native checksPass
-# auto-deploy stays configured and preferred, but it skips any main commit
-# carrying one failing check, and optional QA/Release/canary jobs attach
-# failures to nearly every main commit. This automates the V27 recovery
-# action: once the 3 required checks are green on the exact current main SHA
-# and Render has not started a deploy of it, POST one deploy per missing
-# service, then require both LIVE on that SHA plus health.
+# The single production deploy writer, keyed ONLY to the three
+# ruleset-required checks (redesign chunk 1, owner-approved 2026-11-20;
+# render.yaml native auto-deploy off 2026-11-25). Native checksPass skipped
+# any main commit carrying one failing optional check and rebuilt the rest a
+# second time. Once the 3 required checks are green on the exact current main
+# SHA and no deploy of it exists, POST one deploy per service, then require
+# both LIVE on that SHA plus health.
 # Sanctioned Render writer (v17.github_release_journal.SANCTIONED_RENDER_WRITERS):
 # method "POST" to https://api.render.com/v1/services/<id>/deploys only.
 # Non-advancing outcomes (incl. a transient read failure before any write)

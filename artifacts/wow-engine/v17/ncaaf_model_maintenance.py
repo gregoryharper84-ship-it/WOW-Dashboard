@@ -264,6 +264,15 @@ def run_ncaaf_model_maintenance(
     status = "CANDIDATE_EVIDENCE_UPDATED" if training and training.get("ok") is True else "BLOCKED"
     blockers = sorted(set(acquisition_blockers) | ({str(training_blocker["code"])} if training_blocker else set()))
     lane = development_lane("NCAAF")
+    # Prospective evidence for the frozen research candidate. Isolated: the
+    # hook never raises and never changes this maintenance status.
+    try:
+        from v17.forward_evidence_adapters import ncaaf_forward_evidence_after_maintenance
+        forward_evidence = ncaaf_forward_evidence_after_maintenance(
+            db, fresh_acquisition_complete=bool(fresh_acquisition_complete))
+    except Exception as exc:  # noqa: BLE001
+        forward_evidence = {"status": "FAILED", "code": f"FORWARD_EVIDENCE_HOOK_{type(exc).__name__.upper()}",
+                            "probability_publishable": False, "can_execute": False}
     return {
         "status": status, "generated_at": datetime.now(timezone.utc).isoformat(),
         "seasons": list(season_values), "weeks": [min(week_values), max(week_values)],
@@ -279,6 +288,7 @@ def run_ncaaf_model_maintenance(
         "candidate_training": training, "training_blocker": training_blocker,
         "blockers": blockers,
         "model_development": lane.as_dict() if lane is not None else None,
+        "forward_evidence": forward_evidence,
         "automatic_certification": False,
         "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
     }
