@@ -12,6 +12,7 @@ partition is evaluation-only.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from hashlib import sha256
 import json
 from math import isfinite, log, sqrt
@@ -114,16 +115,30 @@ def _verified_receipt(db: Any, candidate: Mapping[str, Any]) -> dict[str, Any]:
         .eq("model_artifact_version", candidate["model_artifact_version"])
         .eq("training_dataset_hash", candidate["training_dataset_hash"])
         .eq("artifact_checksum", candidate["artifact_checksum"])
-        .eq("source_review_status", "PASS")
-        .eq("replay_status", "PASS")
+        # Read the actual latest outcome, including FAIL/HOLD. Filtering
+        # PASS first would resurrect stale approval from an older receipt.
         .order("created_at", desc=True)
-        .limit(1)
+        .limit(2)
         .execute()
     )
     rows = [dict(row) for row in (getattr(result, "data", None) or [])]
-    if len(rows) != 1:
+    if not rows or len(rows) > 2:
         raise NCAAFPublicationBoundExperimentError("NCAAF_BOUND_SOURCE_REPLAY_NOT_VERIFIED")
     receipt = rows[0]
+    if (receipt.get("source_review_status") != "PASS"
+        or receipt.get("replay_status") != "PASS"):
+        raise NCAAFPublicationBoundExperimentError("NCAAF_BOUND_SOURCE_REPLAY_NOT_VERIFIED")
+    # Equal or malformed latest timestamps are not an authoritative ordering.
+    try:
+        latest = datetime.fromisoformat(str(receipt["created_at"]).replace("Z", "+00:00"))
+        if latest.utcoffset() is None:
+            raise ValueError("naive timestamp")
+        if len(rows) > 1:
+            preceding = datetime.fromisoformat(str(rows[1]["created_at"]).replace("Z", "+00:00"))
+            if preceding.utcoffset() is None or preceding >= latest:
+                raise ValueError("ambiguous timestamp ordering")
+    except (ValueError, KeyError, TypeError, OverflowError) as exc:
+        raise NCAAFPublicationBoundExperimentError("NCAAF_BOUND_SOURCE_REPLAY_NOT_VERIFIED") from exc
     if receipt.get("probability_publishable") is not False or receipt.get("can_execute") is not False:
         raise NCAAFPublicationBoundExperimentError("NCAAF_BOUND_EVIDENCE_GOVERNANCE_INVALID")
     return receipt

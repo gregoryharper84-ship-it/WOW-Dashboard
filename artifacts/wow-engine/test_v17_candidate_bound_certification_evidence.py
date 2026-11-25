@@ -40,6 +40,7 @@ def _receipt(row, **overrides):
         "artifact_checksum": row["artifact_checksum"],
         "source_review_status": "PASS",
         "replay_status": "PASS",
+        "created_at": "2026-09-26T18:55:24+00:00",
     }
     value.update(overrides)
     return value
@@ -196,3 +197,46 @@ def test_candidate_verifier_separates_frozen_replay_from_source_rights(monkeypat
     )
     assert response["status"] == "CERTIFICATION_EVIDENCE_FAILED"
     assert captured[-1][1] is False
+
+
+def test_latest_explicit_source_and_replay_failure_revokes_old_pass():
+    """Observed validation shape: same candidate has Sept PASS, Oct FAIL."""
+    row = _candidate(source_review_status="PASS")
+    older = _receipt(row, created_at="2026-09-26T18:55:24+00:00")
+    newer = _receipt(row, created_at="2026-10-10T04:14:34+00:00",
+                     source_review_status="FAIL", replay_status="FAIL")
+    # Ordering may differ between database and in-memory test callers.
+    for rows in ([older, newer], [newer, older]):
+        report = build_certification_report([row], certification_evidence_receipts=rows)
+        lane = next(item for item in report["sports"] if item["sport"] == "NCAAF")["lanes"][0]
+        assert lane["candidate_bound_evidence_pass"] is False
+        assert lane["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+        assert lane["probability_publishable"] is False
+
+
+def test_malformed_ambiguous_or_revoked_receipts_never_restore_readiness():
+    row = _candidate(source_review_status="PASS")
+    valid = _receipt(row)
+    cases = (
+        [valid, valid],
+        [valid, _receipt(row, created_at="not-a-timestamp")],
+        [valid, _receipt(row, created_at="2026-10-10T04:14:34")],
+        [valid, _receipt(row, created_at="2026-10-11T04:14:34Z", replay_status="FAIL")],
+    )
+    for receipts in cases:
+        report = build_certification_report([row], certification_evidence_receipts=receipts)
+        lane = next(item for item in report["sports"] if item["sport"] == "NCAAF")["lanes"][0]
+        assert lane["candidate_bound_evidence_pass"] is False
+
+
+def test_legacy_helper_cannot_override_explicit_exact_candidate_fail():
+    row = _candidate(source_review_status="PASS")
+    failed = _receipt(row, replay_status="FAIL")
+    report = build_certification_report(
+        [row],
+        certification_evidence_receipts=[failed],
+        replay_evidence_by_lane={"NCAAF:NCAAF:NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2": True},
+    )
+    lane = next(item for item in report["sports"] if item["sport"] == "NCAAF")["lanes"][0]
+    assert lane["candidate_bound_evidence_pass"] is False
+    assert lane["status"] == "CERTIFICATION_REPLAY_BLOCKED"
