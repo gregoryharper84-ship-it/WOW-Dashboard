@@ -163,6 +163,8 @@
 /artifacts/wow-engine/v17/experiments/ncaaf_publication_bound_route.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/first_six_open_data_maintenance.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/fitted_team_event_certification.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/forward_evidence.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/forward_evidence_adapters.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/host_routing.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/interactive_latency_telemetry.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/llp_governed_package_scoring.py @gregoryharper84-ship-it
