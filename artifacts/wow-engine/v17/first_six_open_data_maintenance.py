@@ -294,13 +294,33 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
         @app.post("/internal/v17/ncaab-model-maintenance",dependencies=[dependency],operation_id="runWowV17NcaabModelMaintenance")
         def run_ncaab_maintenance() -> dict[str, Any]:
             from v17.ncaab_sportsdataverse_candidate import NCAABCandidateUnavailable, train_and_persist as train_ncaab
-            return _run("NCAAB",train_ncaab,db_client_fn(),candidate_errors=(NCAABCandidateUnavailable,))
+            db = db_client_fn()
+            result = _run("NCAAB",train_ncaab,db,candidate_errors=(NCAABCandidateUnavailable,))
+            # Prospective evidence for the frozen research candidate. Isolated:
+            # never raises and never changes the maintenance status.
+            try:
+                from v17.forward_evidence_adapters import ncaab_forward_evidence_after_maintenance
+                forward = ncaab_forward_evidence_after_maintenance(db)
+            except Exception as exc:  # noqa: BLE001
+                forward = {"status":"FAILED","code":f"FORWARD_EVIDENCE_HOOK_{type(exc).__name__.upper()}",
+                           "probability_publishable":False,"can_execute":False}
+            return {**result,"forward_evidence":forward}
 
     if "/internal/v17/soccer-model-maintenance" not in routes:
         @app.post("/internal/v17/soccer-model-maintenance",dependencies=[dependency],operation_id="runWowV17SoccerModelMaintenance")
         def run_soccer_maintenance() -> dict[str, Any]:
             from v17.soccer_openfootball_candidate import SoccerCandidateUnavailable, train_all as train_soccer
-            return _run("SOCCER",train_soccer,db_client_fn(),candidate_errors=(SoccerCandidateUnavailable,))
+            db = db_client_fn()
+            result = _run("SOCCER",train_soccer,db,candidate_errors=(SoccerCandidateUnavailable,))
+            # Prospective evidence for each competition's frozen candidate.
+            # Isolated: never raises and never changes the maintenance status.
+            try:
+                from v17.forward_evidence_adapters import soccer_forward_evidence_after_maintenance
+                forward = soccer_forward_evidence_after_maintenance(db)
+            except Exception as exc:  # noqa: BLE001
+                forward = {"status":"FAILED","code":f"FORWARD_EVIDENCE_HOOK_{type(exc).__name__.upper()}",
+                           "probability_publishable":False,"can_execute":False}
+            return {**result,"forward_evidence":forward}
 
     if "/internal/v17/tennis-model-maintenance" not in routes:
         @app.post("/internal/v17/tennis-model-maintenance",dependencies=[dependency],operation_id="runWowV17TennisModelMaintenance")

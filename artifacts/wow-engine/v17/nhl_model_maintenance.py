@@ -163,7 +163,17 @@ def install_nhl_model_maintenance_route(
         operation_id="runWowV17NhlModelMaintenance",
     )
     def run_maintenance() -> dict[str, Any]:
-        return run_nhl_model_maintenance(db_client_fn())
+        db = db_client_fn()
+        result = run_nhl_model_maintenance(db)
+        # Prospective evidence for the frozen research candidate. Isolated:
+        # never raises and never changes the maintenance status.
+        try:
+            from v17.forward_evidence_adapters import nhl_forward_evidence_after_maintenance
+            forward = nhl_forward_evidence_after_maintenance(db)
+        except Exception as exc:  # noqa: BLE001
+            forward = {"status": "FAILED", "code": f"FORWARD_EVIDENCE_HOOK_{type(exc).__name__.upper()}",
+                       "probability_publishable": False, "can_execute": False}
+        return {**result, "forward_evidence": forward}
 
 
 __all__ = [

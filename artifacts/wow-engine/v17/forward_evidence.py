@@ -284,12 +284,27 @@ def scorecard(db: Any, registration: Mapping[str, Any]) -> dict[str, Any]:
         db.table(GRADED_VIEW).select("official_event_id,brier,log_loss,outcome_probability,probabilities,outcome")
         .eq("registration_id", registration["registration_id"]).limit(10000).execute()
     )
+    captured = _rows(
+        db.table(CAPTURE_TABLE).select("official_event_id")
+        .eq("registration_id", registration["registration_id"]).limit(20000).execute()
+    )
     n = len(rows)
-    card: dict[str, Any] = {"graded_n": n, "can_execute": False}
+    card: dict[str, Any] = {
+        "graded_n": n,
+        "captured_events": len({str(row["official_event_id"]) for row in captured}),
+        "capture_rows": len(captured),
+        # Research candidates carry no calibrated lower bound; certification needs one.
+        "lower_bound": "NOT_AVAILABLE_RESEARCH_CANDIDATE",
+        "can_execute": False,
+    }
     if n:
         card["brier"] = sum(float(row["brier"]) for row in rows) / n
         card["log_loss"] = sum(float(row["log_loss"]) for row in rows) / n
         card["mean_outcome_probability"] = sum(float(row["outcome_probability"]) for row in rows) / n
+        homes = [float(row["probabilities"]["HOME"]) for row in rows]
+        card["mean_home_probability"] = sum(homes) / n
+        card["observed_home_rate"] = sum(1 for row in rows if row["outcome"] == "HOME") / n
+        card["home_calibration_bias"] = card["mean_home_probability"] - card["observed_home_rate"]
     return card
 
 

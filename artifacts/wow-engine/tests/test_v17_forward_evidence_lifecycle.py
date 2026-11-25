@@ -155,7 +155,8 @@ class FakeDB:
             p = c["probabilities"]
             out.append({"registration_id": reg_id, "official_event_id": event_id, "outcome": s["outcome"],
                         "probabilities": p, "outcome_probability": p[s["outcome"]],
-                        "brier": (p["HOME"] - (s["outcome"] == "HOME")) ** 2,
+                        "brier": ((p["HOME"] - (s["outcome"] == "HOME")) ** 2 if reg["outcome_space"] == "BINARY_HOME_AWAY"
+                                  else sum((v - (k == s["outcome"])) ** 2 for k, v in p.items())),
                         "log_loss": -__import__("math").log(p[s["outcome"]])})
         return out
 
@@ -290,6 +291,9 @@ def test_settlement_after_kickoff_grades_the_latest_pregame_capture():
     assert settlement["outcome"] == "AWAY" and settlement["settlement_source"] == "CFBD:/games"
     card = receipt["scorecard"]
     assert card["graded_n"] == 1 and 0 < card["brier"] < 1 and card["log_loss"] > 0
+    assert card["captured_events"] == 2 and card["observed_home_rate"] == 0.0
+    assert card["home_calibration_bias"] == card["mean_home_probability"]
+    assert card["lower_bound"] == "NOT_AVAILABLE_RESEARCH_CANDIDATE"
     assert run(db, after)["settled"] == 0  # idempotent
 
 
@@ -385,3 +389,319 @@ def test_migration_grants_nothing_to_client_roles_and_touches_no_reducer():
     for forbidden in ("wow_v17_reduce_", "terminal_label", "drop table", "security definer",
                       "wow_team_event_specialist_certifications", "update public.", "delete from"):
         assert forbidden not in lowered, forbidden
+
+
+# --- soccer 1X2 adapter --------------------------------------------------
+
+from v17 import soccer_openfootball_candidate as soccer_mod
+from v17.forward_evidence_adapters import (SoccerOpenFootballAdapter, score_multinomial,
+                                           soccer_forward_evidence_after_maintenance)
+
+
+def test_multinomial_scorer_matches_sklearn_with_temperature():
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+    from v17.multiclass_candidate_lifecycle import _temperature_scale
+
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(300, 4)) * [1, 3, 0.5, 2] + [0, 5, -1, 2]
+    y = np.array(["HOME", "DRAW", "AWAY"])[rng.integers(0, 3, size=300)]
+    scaler = StandardScaler().fit(X)
+    model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=0).fit(scaler.transform(X), y)
+    artifact = {"classes": [str(c) for c in model.classes_], "scaler_mean": scaler.mean_.tolist(),
+                "scaler_scale": scaler.scale_.tolist(), "intercepts": model.intercept_.tolist(),
+                "coefficients": model.coef_.tolist()}
+    sample = X[:5]
+    expected = _temperature_scale(model.predict_proba(scaler.transform(sample)), 1.37)
+    for row, exp in zip(sample, expected):
+        got = score_multinomial(artifact, {"temperature": 1.37}, row.tolist())
+        for label, value in zip(artifact["classes"], exp):
+            assert abs(got[label] - value) < 1e-12
+
+
+SOCCER_NOW = datetime(2026, 11, 25, 12, 10, tzinfo=timezone.utc)
+
+
+def soccer_candidate(created="2026-11-20T00:00:00+00:00"):
+    names = list(soccer_mod.FEATURE_NAMES)
+    artifact = {"model_family": "SOCCER_1X2_MULTINOMIAL_LOGIT_V1_EPL",
+                "artifact_format": "STANDARDIZED_MULTINOMIAL_LOGISTIC_JSON_V1", "feature_names": names,
+                "classes": ["AWAY", "DRAW", "HOME"], "scaler_mean": [0.5] * len(names), "scaler_scale": [1.0] * len(names),
+                "intercepts": [-0.2, -0.4, 0.3],
+                "coefficients": [[0.1 * ((i + k) % 3 - 1) for i in range(len(names))] for k in range(3)],
+                "split_policy": "CHRONOLOGICAL_60_20_20"}
+    return {"candidate_id": "soc-1", "sport": "SOCCER", "league": "EPL", "market_family": "OUTRIGHT_WINNER",
+            "model_family": "SOCCER_1X2_MULTINOMIAL_LOGIT_V1_EPL",
+            "feature_schema_version": soccer_mod.FEATURE_SCHEMA_VERSION, "source_policy_id": soccer_mod.SOURCE_POLICY_ID,
+            "artifact_payload": artifact, "artifact_checksum": soccer_mod._hash_json(artifact),
+            "calibrator_payload": {"method": "TEMPERATURE_SCALE_CHRONOLOGICAL_V1", "temperature": 1.1},
+            "lifecycle_state": "CANDIDATE", "research_screen_pass": True, "active": False, "promoted": False,
+            "probability_publishable": False, "can_execute": False, "automatic_certification": False,
+            "automatic_promotion": False, "created_at": created, "training_dataset_hash": "e" * 64,
+            "model_artifact_version": "SOCCER_1X2_MULTINOMIAL_LOGIT_V1_EPL_" + "e" * 16 + "_abcdef123456"}
+
+
+def soccer_season(scores=None):
+    teams = ["Alpha FC", "Beta FC", "Gamma FC", "Delta FC"]
+    matches = []
+    day = datetime(2026, 8, 15, tzinfo=timezone.utc)
+    for week in range(12):
+        for i in range(0, 4, 2):
+            home, away = teams[(i + week) % 4], teams[(i + 1 + week) % 4]
+            matches.append({"date": (day + timedelta(days=7 * week)).date().isoformat(), "time": "15:00",
+                            "team1": home, "team2": away, "score": {"ft": [week % 3, (week + i) % 2]}})
+    matches.append({"date": "2026-11-28", "time": "20:00", "team1": "Alpha FC", "team2": "Beta FC"})
+    matches.append({"date": "2026-11-29", "time": "16:30", "team1": "Gamma FC", "team2": "New FC"})  # no history
+    matches.append({"date": "2026-12-20", "time": "15:00", "team1": "Delta FC", "team2": "Gamma FC"})  # outside horizon
+    for m in matches:
+        key = (m["date"], m["team1"], m["team2"])
+        if scores and key in scores:
+            m["score"] = {"ft": list(scores[key])}
+    return matches
+
+
+def soccer_db():
+    db = FakeDB(lambda: SOCCER_NOW)
+    db.tables["wow_d1_candidate_artifacts"] = [soccer_candidate()]
+    return db
+
+
+def test_soccer_captures_three_way_with_conservative_pregame_anchor():
+    db = soccer_db()
+    adapter = SoccerOpenFootballAdapter("EPL", fetch_season=lambda code, season: soccer_season() if season == "2026-27" else [])
+    receipt = fe.run_forward_evidence(db, adapter, now=SOCCER_NOW)
+    assert receipt["status"] == "FORWARD_EVIDENCE_UPDATED", receipt
+    assert receipt["captured"] == 1 and receipt["blocked_by_code"] == {"SOCCER_PRIOR_SAMPLE_INSUFFICIENT": 1}
+    row = db.tables[fe.CAPTURE_TABLE][0]
+    assert set(row["probabilities"]) == {"HOME", "DRAW", "AWAY"}
+    assert abs(sum(row["probabilities"].values()) - 1) < 1e-9
+    # 20:00 London (GMT in November) = 20:00Z kickoff; anchor keeps a two-hour safety margin.
+    assert row["event_start_time_utc"] == "2026-11-28T18:00:00+00:00"
+    assert db.tables[fe.REGISTRATION_TABLE][0]["outcome_space"] == "THREE_WAY_1X2"
+
+
+def test_soccer_settles_draw_and_grades_multiclass_brier():
+    db = soccer_db()
+    adapter = SoccerOpenFootballAdapter("EPL", fetch_season=lambda code, season: soccer_season() if season == "2026-27" else [])
+    fe.run_forward_evidence(db, adapter, now=SOCCER_NOW)
+    later = datetime(2026, 11, 29, 12, 10, tzinfo=timezone.utc)
+    db.clock = lambda: later
+    scored = SoccerOpenFootballAdapter(
+        "EPL", fetch_season=lambda code, season: soccer_season({("2026-11-28", "Alpha FC", "Beta FC"): (1, 1)})
+        if season == "2026-27" else [])
+    receipt = fe.run_forward_evidence(db, scored, now=later)
+    assert receipt["settled"] == 1
+    assert db.tables[fe.SETTLEMENT_TABLE][0]["outcome"] == "DRAW"
+    p = db.tables[fe.CAPTURE_TABLE][0]["probabilities"]
+    expected = (p["HOME"]) ** 2 + (p["AWAY"]) ** 2 + (p["DRAW"] - 1) ** 2
+    assert abs(receipt["scorecard"]["brier"] - expected) < 1e-12
+
+
+def test_soccer_anchor_uses_league_zone_and_falls_back_to_midnight():
+    laliga = SoccerOpenFootballAdapter("LALIGA")
+    event_id, anchor, _, _ = laliga._identity({"date": "2026-11-28", "time": "21:00", "team1": "A", "team2": "B"})
+    assert anchor.isoformat() == "2026-11-28T18:00:00+00:00"  # 21:00 CET = 20:00Z, minus 2 h
+    _, no_time, _, _ = laliga._identity({"date": "2026-11-28", "team1": "A", "team2": "B"})
+    assert no_time.isoformat() == "2026-11-28T00:00:00+00:00"
+    same_id, _, _, _ = laliga._identity({"date": "2026-11-28", "time": "18:30", "team1": "A", "team2": "B"})
+    assert same_id == event_id  # a kickoff-time change keeps identity, so settlement still binds
+
+
+def test_soccer_rejects_tampered_artifact():
+    bad = soccer_candidate()
+    bad["artifact_payload"]["intercepts"] = [0, 0, 0]
+    with pytest.raises(fe.ForwardEvidenceBlocked) as err:
+        SoccerOpenFootballAdapter("EPL").verify_candidate(bad, SOCCER_NOW)
+    assert err.value.code == "SOCCER_ARTIFACT_CHECKSUM_MISMATCH"
+
+
+def test_soccer_hook_isolates_each_league(monkeypatch):
+    def fetch(self, code, season):
+        if self.league != "EPL":
+            raise fe.ForwardEvidenceBlocked("SOCCER_OPENFOOTBALL_HTTP_FAILED")
+        return soccer_season() if season == "2026-27" else []
+
+    monkeypatch.setattr(SoccerOpenFootballAdapter, "_fetch_season", fetch)
+    db = soccer_db()
+    real_run = fe.run_forward_evidence
+    monkeypatch.setattr(fe, "run_forward_evidence", lambda db_, adapter: real_run(db_, adapter, now=SOCCER_NOW))
+    out = soccer_forward_evidence_after_maintenance(db)
+    assert out["status"] == "COMPLETED" and out["can_execute"] is False
+    assert out["leagues"]["EPL"]["captured"] == 1
+    others = {k: v for k, v in out["leagues"].items() if k != "EPL"}
+    assert others and all(v["status"] in ("BLOCKED", "FAILED") for v in others.values())
+
+
+# --- NHL adapter (reuses the fitted-specialist test fixtures) -------------
+
+import sys as _sys
+
+_sys.path.insert(0, str(Path(__file__).parent))
+import test_v17_nhl_fitted_specialist as nhlt  # noqa: E402
+import v17.nhl_fitted_specialist as nhl_mod  # noqa: E402
+from v17.forward_evidence_adapters import NHLRegularSeasonAdapter  # noqa: E402
+
+
+@pytest.fixture
+def nhl_receipts():
+    def provider(*, season, event_start_time, home_team="", away_team="", session=None, db=None, as_of_utc=None, **_):
+        return nhlt._timeline_receipt(nhlt._events(), target_start=event_start_time, season=str(season))
+
+    nhl_mod.install_nhl_timeline_receipt_provider(provider)
+    yield
+    nhl_mod.reset_nhl_timeline_receipt_provider()
+
+
+def nhl_schedule(team, season_id):
+    return [{"id": 2026029001, "gameType": 2, "startTimeUTC": nhlt.START.isoformat().replace("+00:00", "Z"),
+             "homeTeam": {"abbrev": "BOS"}, "awayTeam": {"abbrev": "NYR"}, "neutralSite": False},
+            {"id": 2026019002, "gameType": 1, "startTimeUTC": nhlt.START.isoformat(),  # preseason: excluded
+             "homeTeam": {"abbrev": "TOR"}, "awayTeam": {"abbrev": "MTL"}, "neutralSite": False}]
+
+
+def nhl_db():
+    db = FakeDB(lambda: nhlt.NOW)
+    db.tables["wow_d1_candidate_artifacts"] = [nhlt._candidate_row()]
+    db.tables["wow_d1_source_events"] = nhlt._events()
+    return db
+
+
+def test_nhl_capture_equals_specialist_probability(nhl_receipts):
+    db = nhl_db()
+    receipt = fe.run_forward_evidence(db, NHLRegularSeasonAdapter(fetch_club_schedule=nhl_schedule), now=nhlt.NOW)
+    assert receipt["status"] == "FORWARD_EVIDENCE_UPDATED", receipt
+    assert receipt["captured"] == 1 and receipt["events_considered"] == 1
+    row = db.tables[fe.CAPTURE_TABLE][0]
+    expected = nhl_mod.score_nhl_fitted_candidate(
+        nhl_mod._verify_candidate(nhlt._candidate_row()), nhlt._reconstruction(), event_key="NHL:2026029001",
+        evidence={})["calibrated_home_probability"]
+    assert row["official_event_id"] == "2026029001"
+    assert row["probabilities"]["HOME"] == expected
+    assert row["home_participant"] == "BOS" and row["away_participant"] == "NYR"
+
+
+def test_nhl_settles_from_official_finals(nhl_receipts):
+    db = nhl_db()
+    adapter = NHLRegularSeasonAdapter(fetch_club_schedule=nhl_schedule)
+    fe.run_forward_evidence(db, adapter, now=nhlt.NOW)
+    later = nhlt.START + timedelta(hours=6)
+    db.clock = lambda: later
+    final = nhlt._event(50, "BOS", "NYR", 1, 4)
+    final.update(official_event_id="2026029001", event_start_time=nhlt.START.isoformat(),
+                 source_retrieved_at=(nhlt.START + timedelta(hours=4)).isoformat())
+    db.tables["wow_d1_source_events"].append(final)
+    receipt = fe.run_forward_evidence(db, adapter, now=later)
+    assert receipt["settled"] == 1 and db.tables[fe.SETTLEMENT_TABLE][0]["outcome"] == "AWAY"
+    assert receipt["scorecard"]["graded_n"] == 1
+
+
+def test_nhl_schedule_outage_is_typed():
+    def down(team, season_id):
+        raise RuntimeError("503")
+
+    receipt = fe.run_forward_evidence(nhl_db(), NHLRegularSeasonAdapter(fetch_club_schedule=down), now=nhlt.NOW)
+    assert receipt["status"] == "BLOCKED" and receipt["code"] == "NHL_OFFICIAL_SCHEDULE_UNAVAILABLE"
+
+
+# --- NCAAB adapter -------------------------------------------------------
+
+from v17 import ncaab_sportsdataverse_candidate as ncaab_mod  # noqa: E402
+from v17.forward_evidence_adapters import NCAABResultFormAdapter  # noqa: E402
+
+NCAAB_NOW = datetime(2026, 11, 25, 12, 10, tzinfo=timezone.utc)
+NCAAB_TIP = datetime(2026, 11, 26, 0, 30, tzinfo=timezone.utc)
+
+
+def ncaab_candidate():
+    names = list(ncaab_mod.FEATURE_NAMES)
+    artifact = {"model_family": "NCAAB_RESULT_FORM_LOGIT_V1", "artifact_format": "STANDARDIZED_LOGISTIC_JSON_V1",
+                "feature_names": names, "scaler_mean": [1.0] * len(names), "scaler_scale": [2.0] * len(names),
+                "intercept": 0.2, "coefficients": [0.05 * ((i % 3) - 1) for i in range(len(names))],
+                "split_policy": "CHRONOLOGICAL_60_20_20"}
+    return {"candidate_id": "ncaab-1", "sport": "NCAAB", "league": "NCAAB", "market_family": "OUTRIGHT_WINNER",
+            "model_family": "NCAAB_RESULT_FORM_LOGIT_V1", "feature_schema_version": ncaab_mod.FEATURE_SCHEMA_VERSION,
+            "source_policy_id": ncaab_mod.SOURCE_POLICY_ID, "artifact_payload": artifact,
+            "artifact_checksum": ncaab_mod._json_hash(artifact),
+            "calibrator_payload": {"method": "EMPIRICAL_WILSON_BINS_V1",
+                                   "bins": [{"raw_mean": 0.3, "calibrated_probability": 0.35},
+                                            {"raw_mean": 0.6, "calibrated_probability": 0.58}]},
+            "lifecycle_state": "CANDIDATE", "research_screen_pass": True, "active": False, "promoted": False,
+            "probability_publishable": False, "can_execute": False, "automatic_certification": False,
+            "automatic_promotion": False, "created_at": "2026-11-20T00:00:00+00:00", "training_dataset_hash": "f" * 64,
+            "model_artifact_version": "NCAAB_RESULT_FORM_LOGIT_V1_" + "f" * 16 + "_abcdef123456"}
+
+
+def ncaab_games(extra=()):
+    def side(team, score, reb):
+        return {"team_id": team, "team_score": str(score), "total_rebounds": str(reb), "turnovers": "11",
+                "field_goal_pct": "45.0", "three_point_field_goal_pct": "33.0"}
+    games = []
+    for i in range(8):
+        for home, away in (("2250", "9"), ("2", "52")):
+            start = NCAAB_NOW - timedelta(days=30 - 3 * i)
+            hs, as_ = 70 + i, 65 + (i % 4) * 3
+            games.append({"game_id": f"g{home}-{i}", "event_start": start, "home_team_id": home, "away_team_id": away,
+                          "home_score": hs, "away_score": as_, "home": side(home, hs, 35), "away": side(away, as_, 31)})
+    return games + list(extra)
+
+
+def ncaab_schedule(season):
+    assert season == 2027
+    base = {"time_valid": "true", "status_type_completed": "false", "neutral_site": "false"}
+    return [{**base, "id": "401900001", "start_date": "2026-11-26T00:30Z", "home_id": "2250", "away_id": "2"},
+            {**base, "id": "401900002", "start_date": "2026-11-26T02:00Z", "home_id": "2250", "away_id": "777"},
+            {**base, "id": "401900003", "start_date": "2026-11-27T02:00Z", "home_id": "9", "away_id": "52",
+             "time_valid": "false"},
+            {**base, "id": "401900004", "start_date": "2026-11-20T02:00Z", "home_id": "9", "away_id": "52"}]
+
+
+def ncaab_db():
+    db = FakeDB(lambda: NCAAB_NOW)
+    db.tables["wow_d1_candidate_artifacts"] = [ncaab_candidate()]
+    return db
+
+
+def test_ncaab_captures_with_calibrated_probability_and_settles():
+    from v17.binary_candidate_lifecycle import _map_calibrator
+    import numpy as np
+
+    db = ncaab_db()
+    adapter = NCAABResultFormAdapter(fetch_schedule=ncaab_schedule, fetch_games=lambda seasons: ncaab_games())
+    receipt = fe.run_forward_evidence(db, adapter, now=NCAAB_NOW)
+    assert receipt["status"] == "FORWARD_EVIDENCE_UPDATED", receipt
+    assert receipt["captured"] == 1 and receipt["blocked_by_code"] == {"NCAAB_PRIOR_SAMPLE_INSUFFICIENT": 1}
+    row = db.tables[fe.CAPTURE_TABLE][0]
+    assert row["official_event_id"] == "401900001"
+    assert row["probabilities"]["HOME"] in (0.35, 0.58)  # an empirical bin value, so calibration was applied
+    assert set(row["features"]) == set(ncaab_mod.FEATURE_NAMES)
+
+    later = NCAAB_TIP + timedelta(hours=5)
+    db.clock = lambda: later
+    final = {"game_id": "401900001", "event_start": NCAAB_TIP, "home_team_id": "2250", "away_team_id": "2",
+             "home_score": 61, "away_score": 66, "home": {}, "away": {}}
+    settled = NCAABResultFormAdapter(fetch_schedule=ncaab_schedule, fetch_games=lambda seasons: ncaab_games([final]))
+    receipt = fe.run_forward_evidence(db, settled, now=later)
+    assert receipt["settled"] == 1 and db.tables[fe.SETTLEMENT_TABLE][0]["outcome"] == "AWAY"
+
+
+def test_ncaab_history_source_failure_is_typed():
+    def boom(seasons):
+        raise ncaab_mod.NCAABCandidateUnavailable("NCAAB_SPORTSDATAVERSE_HTTP_FAILED", "503")
+
+    receipt = fe.run_forward_evidence(ncaab_db(), NCAABResultFormAdapter(fetch_schedule=ncaab_schedule, fetch_games=boom),
+                                      now=NCAAB_NOW)
+    assert receipt["status"] == "BLOCKED" and receipt["code"] == "NCAAB_SPORTSDATAVERSE_HTTP_FAILED"
+
+
+def test_ncaab_season_naming():
+    assert NCAABResultFormAdapter.season_for(datetime(2026, 11, 25, tzinfo=timezone.utc)) == 2027
+    assert NCAABResultFormAdapter.season_for(datetime(2027, 3, 1, tzinfo=timezone.utc)) == 2027
+
+
+def test_view_least_privilege_migration_leaves_service_role_select_only():
+    sql = (ROOT / "migrations" / "20261125_v17_forward_evidence_view_least_privilege.sql").read_text().lower()
+    assert ("revoke insert, update, delete, truncate, references, trigger\n"
+            "  on table public.wow_v17_forward_evidence_graded from service_role;") in sql
+    assert "grant select on table public.wow_v17_forward_evidence_graded to service_role;" in sql
+    assert re.search(r"grant [^;]* to (public|anon|authenticated)", sql) is None
