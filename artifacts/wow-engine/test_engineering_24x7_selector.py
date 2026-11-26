@@ -198,7 +198,14 @@ class Test24x7(unittest.TestCase):
         helper = (Path(__file__).resolve().parent / "v17" /
                   "engineering_intake_api.py").read_text(encoding="utf-8")
         self.assertEqual(wf.count("python artifacts/wow-engine/v17/engineering_intake_api.py"), 5)
-        self.assertEqual(wf.count("gh api --paginate"), 4)
+        # Four check inventories and two bounded submitted-review inventories;
+        # no unvalidated paginated issue/PR/worker intake is admitted.
+        self.assertEqual(wf.count("gh api --paginate"), 6)
+        pages = [line for line in wf.splitlines() if "gh api --paginate" in line]
+        self.assertEqual(sum("/check-runs?" in line for line in pages), 4)
+        self.assertEqual(sum("/reviews?per_page=100" in line for line in pages), 2)
+        self.assertIn('--reviews "$RUNNER_TEMP/shadow-reviews.json"', wf)
+        self.assertIn('--reviews "$RUNNER_TEMP/reviews.json"', wf)
         self.assertNotIn('gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?', wf)
         self.assertNotIn('gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?', wf)
         self.assertIn("WORKER_RUN_HISTORY_TRUNCATED", helper)
