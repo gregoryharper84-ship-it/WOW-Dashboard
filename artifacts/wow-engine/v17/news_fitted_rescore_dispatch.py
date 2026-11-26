@@ -282,6 +282,12 @@ def dispatch_news_rescore(
         return finish("NEWS_RESCORE_FEATURE_UNCHANGED", blockers=["FEATURE_SNAPSHOT_UNCHANGED"])
 
     prop_target = _prop_target(candidate)
+    # Prior identity is request/store authority, not an optional scorer claim.
+    known_prior = (
+        str(candidate.get("prior_immutable_prediction_id") or "").strip()
+        or str(handoff.get("prior_immutable_prediction_id") or "").strip()
+        or None
+    )
     request = {
         "sport_key": sport_key,
         "official_event_id": official_event_id,
@@ -294,6 +300,7 @@ def dispatch_news_rescore(
         "feature_snapshot": after,
         "feature_snapshot_hash": after["feature_snapshot_hash"],
         "prior_feature_snapshot_hash": prior.get("feature_snapshot_hash"),
+        "prior_immutable_prediction_id": known_prior,
         "news_research_handoff_sha256": handoff.get("receipt_sha256"),
         "source_receipt_sha256": handoff.get("source_receipt_sha256"),
         "material_news_facts": after["material_news_facts"],

@@ -34,6 +34,7 @@ def _candidate(**overrides):
         "home_team": "New York Islanders",
         "away_team": "Toronto Maple Leafs",
         "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
+        "prior_immutable_prediction_id": "pred-original-pregame-001",
         "can_execute": False,
         "news_research_handoff": {
             "research_status": "NEWS_RESEARCH_RESCORE_REQUESTED",
@@ -84,10 +85,19 @@ def _ok_persistence(request, response):
         "prior_immutable_prediction_preserved": True,
         "calibration_receipt_id": response.get("calibration_receipt_id"),
         "official_event_id": request.get("official_event_id"),
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "feature_snapshot_hash": request.get("feature_snapshot_hash"),
+        "model_version": response.get("model_version"),
+        "calibrated_probability": response.get("calibrated_probability"),
+        "calibrated_lower_bound": response.get("calibrated_lower_bound"),
+        "prop_target": request.get("prop_target"),
         "terminal_readback": {
             "authority": "V17_TERMINAL_REDUCER",
             "status": "HOLD_RESEARCH_RESCORE",
             "can_execute": False,
+            "immutable_prediction_id": response.get("immutable_prediction_id"),
+            "calibration_receipt_id": response.get("calibration_receipt_id"),
+            "feature_snapshot_hash": request.get("feature_snapshot_hash"),
         },
         "store_attestation": {
             "source": "TEST_DOUBLE_NOT_PRODUCTION",
@@ -378,10 +388,25 @@ def test_route_mismatch_and_prior_receipt_collision_never_verify():
 
     def reused_prior(request):
         body = _ok_scorer(request)
+        # Scorer rewrites prior to the new id; request still carries the original.
         body["prior_immutable_prediction_id"] = body["immutable_prediction_id"]
         return body
 
     out = _dispatch_ok(score_fn=reused_prior)
+    assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_NOT_PRESERVED"
+    assert out["model_rescore_verified"] is False
+
+    def colliding_store(request, response):
+        body = _ok_persistence(request, response)
+        body["prior_immutable_prediction_id"] = response.get("immutable_prediction_id")
+        body["prior_immutable_prediction_preserved"] = True
+        return body
+
+    out = _dispatch_ok(
+        candidate=_candidate(prior_immutable_prediction_id="pred-news-rescore-001"),
+        score_fn=reused_prior,
+        persistence_readback_fn=colliding_store,
+    )
     assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_COLLISION"
     assert out["model_rescore_verified"] is False
 

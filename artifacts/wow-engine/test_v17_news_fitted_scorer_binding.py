@@ -36,6 +36,7 @@ def _candidate():
         "home_team": "Indianapolis Colts",
         "away_team": "Houston Texans",
         "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
+        "prior_immutable_prediction_id": "pred-nfl-original-001",
         "can_execute": False,
         "news_research_handoff": {
             "research_status": "NEWS_RESEARCH_RESCORE_REQUESTED",
@@ -76,10 +77,19 @@ def _ok_persistence(request, response):
         "prior_immutable_prediction_preserved": True,
         "calibration_receipt_id": response.get("calibration_receipt_id"),
         "official_event_id": request.get("official_event_id"),
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "feature_snapshot_hash": request.get("feature_snapshot_hash"),
+        "model_version": response.get("model_version"),
+        "calibrated_probability": response.get("calibrated_probability"),
+        "calibrated_lower_bound": response.get("calibrated_lower_bound"),
+        "prop_target": request.get("prop_target"),
         "terminal_readback": {
             "authority": "V17_TERMINAL_REDUCER",
             "status": "HOLD_RESEARCH_RESCORE",
             "can_execute": False,
+            "immutable_prediction_id": response.get("immutable_prediction_id"),
+            "calibration_receipt_id": response.get("calibration_receipt_id"),
+            "feature_snapshot_hash": request.get("feature_snapshot_hash"),
         },
         "store_attestation": {
             "source": "TEST_DOUBLE_NOT_PRODUCTION",
