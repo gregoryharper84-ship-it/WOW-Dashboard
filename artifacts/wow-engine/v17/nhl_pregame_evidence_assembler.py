@@ -16,6 +16,7 @@ independent source review and certification register the fitted candidate.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
@@ -36,6 +37,10 @@ CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
 DEFAULT_SETTLEMENT_BASIS = SETTLEMENT_CONTRACT
 ACCEPTED_ASSEMBLER_SETTLEMENT = frozenset({FULL_GAME_SETTLEMENT, SETTLEMENT_CONTRACT})
+# Same anchored schedule URL contract as nhl_pregame_gamecenter_capture.
+_SCHEDULE_URL = re.compile(
+    r"https://api-web\.nhle\.com/v1/club-schedule-season/[A-Z]{3}/\d{8}\Z"
+)
 
 
 def _held(
@@ -289,7 +294,7 @@ def reset_nhl_pregame_action_seams() -> None:
 
 def _schedule_url_ok(value: Any) -> bool:
     token = str(value or "").strip()
-    return bool(token) and "api-web.nhle.com" in token and "club-schedule-season" in token
+    return isinstance(value, str) and _SCHEDULE_URL.fullmatch(token) is not None
 
 
 def _identity_receipt_complete(identity: Mapping[str, Any]) -> bool:
