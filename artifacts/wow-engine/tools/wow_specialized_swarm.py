@@ -94,6 +94,57 @@ def _has_forbidden_key(value: Any) -> bool:
     return False
 
 
+NRE_RECEIPT_SCHEMA = "WOW_NRE_SWARM_RECEIPT_V1"
+_NRE_SPORT_PREFIX = {"SOCCER": ("soccer_",), "NFL": ("americanfootball_nfl",), "NCAAF": ("americanfootball_ncaaf",),
+                     "NBA": ("basketball_nba",), "NCAAB": ("basketball_ncaab",), "WNBA": ("basketball_wnba",),
+                     "NHL": ("icehockey_nhl",), "MLB": ("baseball_mlb",), "TENNIS": ("tennis_",)}
+_NRE_SOCCER_LEAGUE = {"soccer_epl": "EPL", "soccer_spain_la_liga": "LALIGA", "soccer_germany_bundesliga": "BUNDESLIGA",
+                      "soccer_italy_serie_a": "SERIE_A", "soccer_france_ligue_one": "LIGUE_1"}
+
+
+def _nre_digest(body: dict[str, Any]) -> str:
+    # Same canonical form as v17.native_research.contract.sha256_json; kept
+    # local so the Swarm imports nothing that could reach the network.
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+                          .encode("utf-8")).hexdigest()
+
+
+def _nre_rejection(receipt: Any, sport_key: str) -> str | None:
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != NRE_RECEIPT_SCHEMA:
+        return "NRE_RECEIPT_SCHEMA_INVALID"
+    body = {k: v for k, v in receipt.items() if k != "receipt_sha256"}
+    if receipt.get("receipt_sha256") != _nre_digest(body):
+        return "NRE_RECEIPT_DIGEST_MISMATCH"
+    if (receipt.get("evidence_only") is not True or receipt.get("prediction_authority") is not False
+            or receipt.get("can_execute") is not False):
+        return "NRE_RECEIPT_AUTHORITY_INVALID"
+    if _has_forbidden_key(receipt):
+        return "NRE_RECEIPT_FORBIDDEN_FIELD"
+    sport = str(receipt.get("sport") or "")
+    if not str(sport_key).startswith(_NRE_SPORT_PREFIX.get(sport, ("\0",))):
+        return "NRE_RECEIPT_SPORT_MISMATCH"
+    league = _NRE_SOCCER_LEAGUE.get(str(sport_key))
+    if sport == "SOCCER" and league and receipt.get("league") not in (None, league):
+        return "NRE_RECEIPT_LEAGUE_MISMATCH"
+    return None
+
+
+def consume_research_receipts(receipts: list[Any] | None, sport_key: str) -> dict[str, Any]:
+    """Read persisted Native Research receipts. Network-free; evidence context only."""
+    consumed, rejected = [], []
+    for receipt in receipts or []:
+        reason = _nre_rejection(receipt, sport_key)
+        if reason:
+            rejected.append(reason)
+            continue
+        consumed.append({k: receipt[k] for k in ("task_id", "sport", "league", "season", "blocker_code",
+                                                 "outcome", "progress_stage", "remaining_blockers", "sources",
+                                                 "receipt_sha256")})
+    return {"consumed": consumed, "rejected": rejected,
+            "remaining_blockers": sorted({b for c in consumed for b in c["remaining_blockers"]}),
+            "evidence_only": True, "network_calls": 0}
+
+
 def _canonical_event(event: dict[str, Any], now: datetime) -> dict[str, Any]:
     if not isinstance(event, dict):
         raise ValueError("candidate must be an object")
@@ -343,7 +394,7 @@ def _local_worker(worker_id: str, manifest: dict[str, Any],
 
 
 def run_swarm(candidate: dict[str, Any], *, now: datetime | None = None,
-              max_parallel: int = 2) -> dict[str, Any]:
+              max_parallel: int = 2, research_receipts: list[Any] | None = None) -> dict[str, Any]:
     """Execute genuine bounded local workers and a per-wave fail-closed barrier.
 
     No call to the existing fitted specialist is performed. All findings remain
@@ -407,9 +458,12 @@ def run_swarm(candidate: dict[str, Any], *, now: datetime | None = None,
     conflicts = sorted({reason for result in results for reason in result["conflicts"]})
     status = ("RESEARCH_ONLY_HOLD" if missing or conflicts or audit["missing_critical_features"]
               else "RESEARCH_ONLY_SCREENED")
+    native = consume_research_receipts(research_receipts, manifest["event"]["sport_key"])
+    digests = [c["receipt_sha256"] for c in native["consumed"]]
     receipt_id = hashlib.sha256(json.dumps({
         "manifest_id": manifest["run_id"], "as_of": now.isoformat(),
-        "workers": results, "audit": audit}, sort_keys=True, default=str).encode()).hexdigest()
+        "workers": results, "audit": audit, **({"native_research": digests} if digests else {})},
+        sort_keys=True, default=str).encode()).hexdigest()
     return {
         "schema_version": SCHEMA, "status": status, "receipt_sha256": receipt_id,
         "run_id": manifest["run_id"], "event": manifest["event"],
@@ -418,6 +472,7 @@ def run_swarm(candidate: dict[str, Any], *, now: datetime | None = None,
         "max_parallel": max_parallel, "waves_completed": len(reviews),
         "worker_reports": results, "wave_reviews": reviews,
         "matchup_discovery": audit,
+        "native_research": native,
         "handoff": {
             "destination": "existing V17 sport_scout_enrichment / research handoff",
             "source_screened_research_facts": forwarded,
@@ -438,13 +493,21 @@ def main() -> int:
     parser.add_argument("--candidate", required=True, help="local existing candidate snapshot JSON")
     parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--output", help="optional local JSON receipt file; never writes to production")
+    parser.add_argument("--research-receipt", action="append", default=[],
+                        help="persisted Native Research receipt JSON (repeatable); read locally, never fetched")
     args = parser.parse_args()
     try:
         candidate_path = Path(args.candidate)
         if candidate_path.stat().st_size > MAX_FILE_BYTES:
             raise ValueError("candidate exceeds bounded size limit")
         candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
-        receipt = run_swarm(candidate, max_parallel=args.max_parallel)
+        research = []
+        for item in args.research_receipt:
+            path = Path(item)
+            if path.stat().st_size > MAX_FILE_BYTES:
+                raise ValueError("research receipt exceeds bounded size limit")
+            research.append(json.loads(path.read_text(encoding="utf-8")))
+        receipt = run_swarm(candidate, max_parallel=args.max_parallel, research_receipts=research)
         payload = json.dumps(receipt, sort_keys=True, indent=2, allow_nan=False)
         if args.output:
             Path(args.output).write_text(payload + "\n", encoding="utf-8")
