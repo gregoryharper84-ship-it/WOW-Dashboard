@@ -136,8 +136,16 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
+      - name: Check out exact maintenance source
+        uses: actions/checkout@v6
+        id: source
+        continue-on-error: true
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Assert non-execution governance and OIDC context
         id: gov
+        if: steps.source.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -153,9 +161,33 @@ jobs:
         # governance assertion succeeded.
         if: steps.gov.outcome == 'success'
         shell: bash
+        env:
+          PYTHONPATH: artifacts/wow-engine
         run: |
           python - <<'PY'
           import json, os, time, urllib.error, urllib.parse, urllib.request
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from v17 import season_readiness
+
+          as_of = datetime.now(ZoneInfo("America/Chicago")).date()
+          try:
+              season_registry = season_readiness.load_json(season_readiness._default_registry_path())
+          except (OSError, ValueError, TypeError, KeyError):
+              season_registry = {}
+
+          # Competition-driven scopes keep their own source/event checks.
+          # Only bounded league maintenance uses a league season admission.
+          bounded_scopes = {"NBA", "WNBA", "MLB", "NFL", "NFL_EVENT_V2", "NCAAF"}
+          deferred_scopes = {}
+          def admitted(scope):
+              if scope not in bounded_scopes:
+                  return True
+              sport = "NFL" if scope == "NFL_EVENT_V2" else scope
+              allowed, reason = season_readiness.new_work_admission_for_sport(season_registry, sport, as_of)
+              if not allowed:
+                  deferred_scopes[scope] = reason
+              return allowed
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           program = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
@@ -238,6 +270,13 @@ jobs:
           ancillary_results = {}
 
           def run_ancillary(name, path):
+              if not admitted(name):
+                  ancillary_results[name] = {
+                      "status": "SEASON_DEFERRED", "reason": deferred_scopes[name],
+                      "can_execute": False, "probability_publishable": False,
+                      "automatic_certification": False, "automatic_promotion": False,
+                  }
+                  return
               payload = post_bounded(name, path, attempts=3, timeout=180)
               assert payload.get("can_execute") is False, (name, payload)
               assert payload.get("probability_publishable") is False, (name, payload)
@@ -258,15 +297,16 @@ jobs:
 
           team_state_results = {}
           if not push_fast_lane:
-              nfl_event_v2 = post_bounded(
-                  "TEAM_STATE_NFL_EVENT_V2",
-                  "/internal/v17/team-state-challenger-maintenance/NFL_EVENT_V2",
-                  attempts=3,
-                  timeout=180,
-              )
-              assert nfl_event_v2.get("program") == program, nfl_event_v2
-              assert isinstance(nfl_event_v2.get("rows"), list) and nfl_event_v2.get("rows"), nfl_event_v2
-              team_state_results["NFL_EVENT_V2"] = nfl_event_v2
+              if admitted("NFL_EVENT_V2"):
+                  nfl_event_v2 = post_bounded(
+                      "TEAM_STATE_NFL_EVENT_V2",
+                      "/internal/v17/team-state-challenger-maintenance/NFL_EVENT_V2",
+                      attempts=3,
+                      timeout=180,
+                  )
+                  assert nfl_event_v2.get("program") == program, nfl_event_v2
+                  assert isinstance(nfl_event_v2.get("rows"), list) and nfl_event_v2.get("rows"), nfl_event_v2
+                  team_state_results["NFL_EVENT_V2"] = nfl_event_v2
 
           team_state_scopes = (
               ["NCAAF"]
@@ -278,6 +318,8 @@ jobs:
               ]
           )
           for scope in team_state_scopes:
+              if not admitted(scope):
+                  continue
               payload = post_bounded(
                   f"TEAM_STATE_{scope}",
                   f"/internal/v17/team-state-challenger-maintenance/{scope}",
@@ -291,7 +333,10 @@ jobs:
               payload for payload in team_state_results.values()
               if payload.get("program") == program
           ]
-          assert governed_team_state_payloads, team_state_results
+          if team_state_results:
+              assert governed_team_state_payloads, team_state_results
+          else:
+              assert all(scope in deferred_scopes for scope in team_state_scopes), deferred_scopes
           for payload in governed_team_state_payloads:
               assert payload.get("can_execute") is False, payload
               assert payload.get("probability_publishable") is False, payload
@@ -322,7 +367,9 @@ jobs:
           }
           print(json.dumps({
               "checkpoint": {
-                  "TEAM_STATE": "SCOPED_MAINTENANCE_COMPLETED",
+                  "TEAM_STATE": "SCOPED_MAINTENANCE_COMPLETED" if team_state_results else "SEASON_DEFERRED",
+                  "season_admission_date": as_of.isoformat(),
+                  "season_deferred_scopes": deferred_scopes,
                   "team_state_scopes_attempted": len(team_state_results),
                   "team_state_scopes_with_governed_response": len(governed_team_state_payloads),
                   "team_state_candidate_rows_updated": scope_updated,
@@ -345,15 +392,19 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
+          SOURCE_OUTCOME: ${{ steps.source.outcome }}
           GOV_OUTCOME: ${{ steps.gov.outcome }}
           WORK_OUTCOME: ${{ steps.work.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "governance_outcome=$GOV_OUTCOME work_outcome=$WORK_OUTCOME"
+            echo "source_outcome=$SOURCE_OUTCOME governance_outcome=$GOV_OUTCOME work_outcome=$WORK_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$GOV_OUTCOME" != "success" ]; then
+          if [ "$SOURCE_OUTCOME" != "success" ]; then
+            echo "FIRST_SIX_MODEL_MAINTENANCE_SOURCE_CHECKOUT_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_MODEL_MAINTENANCE_SOURCE_CHECKOUT_FAILED"
+          elif [ "$GOV_OUTCOME" != "success" ]; then
             echo "FIRST_SIX_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
             echo "::error::FIRST_SIX_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED"
           elif [ "$WORK_OUTCOME" = "success" ]; then

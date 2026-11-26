@@ -10,7 +10,10 @@ import io
 import json
 import textwrap
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
+
+from v17 import season_readiness
 
 import pytest
 
@@ -33,8 +36,30 @@ class _Response(io.BytesIO):
         return False
 
 
-def _run(monkeypatch, event_name: str, *, ncaaf_status: str = "OK") -> list[str]:
+def _run(monkeypatch, event_name: str, *, ncaaf_status: str = "OK",
+         as_of: datetime = datetime(2026, 11, 24, 12, tzinfo=timezone.utc)) -> list[str]:
     calls: list[str] = []
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return as_of.astimezone(tz) if tz else as_of.replace(tzinfo=None)
+
+    def season(start, end, valid):
+        return {
+            "calendar_kind": "bounded", "regular_season_start": start,
+            "regular_season_end": end, "calendar_valid_through": valid,
+            "calendar_sources": [{"url": "https://example.com/schedule", "verified_at": "2026-01-01"}],
+        }
+    registry = {"version": "1.0", "sports": {
+        "NFL": season("2026-09-10", "2027-01-10", "2027-01-10"),
+        "NCAAF": season("2026-08-29", "2026-12-12", "2026-12-12"),
+        "NBA": season("2026-10-20", "2027-04-11", "2027-04-11"),
+        "WNBA": season("2026-05-08", "2026-09-24", "2026-10-31"),
+        "MLB": season("2026-03-25", "2026-09-27", "2026-10-31"),
+    }}
+    monkeypatch.setattr("datetime.datetime", FixedClock)
+    monkeypatch.setattr(season_readiness, "load_json", lambda _: registry)
 
     def fake_urlopen(request, timeout=None):  # noqa: ARG001
         url = request.full_url if hasattr(request, "full_url") else str(request)
@@ -103,3 +128,22 @@ def test_pull_request_runs_cannot_cancel_live_maintenance():
     group_line = next(line for line in text.splitlines() if line.strip().startswith("group:"))
     assert "github.event_name == 'pull_request' && github.ref || 'live'" in group_line
     assert "cancel-in-progress: true" in text
+
+
+def test_scheduled_maintenance_does_not_refit_deferred_leagues(monkeypatch, capsys):
+    calls = _run(monkeypatch, "schedule")
+    for sport in ("MLB", "WNBA"):
+        assert f"/internal/v17/team-state-challenger-maintenance/{sport}" not in calls
+    assert "/internal/v17/team-state-challenger-maintenance/NBA" in calls
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["checkpoint"]["season_deferred_scopes"]["MLB"] == "CALENDAR_REFRESH_REQUIRED"
+    assert payload["checkpoint"]["season_deferred_scopes"]["WNBA"] == "CALENDAR_REFRESH_REQUIRED"
+
+
+def test_offseason_push_does_not_hydrate_or_refit_ncaaf(monkeypatch, capsys):
+    calls = _run(monkeypatch, "push", as_of=datetime(2026, 6, 1, 12, tzinfo=timezone.utc))
+    assert not calls
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["checkpoint"]["TEAM_STATE"] == "SEASON_DEFERRED"
+    assert payload["checkpoint"]["team_state_scopes_attempted"] == 0
+    assert payload["ancillary"]["NCAAF"]["status"] == "SEASON_DEFERRED"

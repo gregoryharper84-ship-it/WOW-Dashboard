@@ -282,6 +282,59 @@ def phase_for(spec: dict[str, Any], on_date: date) -> str:
     return "REGULAR_SEASON"
 
 
+def new_work_admission(spec: dict[str, Any] | None, on_date: date) -> tuple[bool, str]:
+    """Gate new scheduled work; never gate settlement of already captured rows."""
+    if not isinstance(spec, dict):
+        return False, "CALENDAR_UNVERIFIED"
+    kind = spec.get("calendar_kind")
+    if kind == "competition_driven":
+        return False, "COMPETITION_CALENDAR_REQUIRED"
+    if kind != "bounded":
+        return False, "CALENDAR_UNVERIFIED"
+    try:
+        start = _parse_date(spec.get("regular_season_start"))
+        end = _parse_date(spec.get("regular_season_end"))
+        valid_through = _parse_date(spec.get("calendar_valid_through"))
+        if not start or not end or not valid_through or start > end or valid_through < end:
+            return False, "CALENDAR_UNVERIFIED"
+        post_start = _parse_date(spec.get("postseason_start"))
+        post_end = _parse_date(spec.get("postseason_end"))
+        championship = _parse_date(spec.get("championship_start"))
+        if ((post_start and post_start < end)
+                or (post_end and (not post_start or post_end < post_start))
+                or (championship and (not post_start or championship < post_start
+                                      or (post_end and championship > post_end)))):
+            return False, "CALENDAR_UNVERIFIED"
+        phase = phase_for(spec, on_date)
+    except (ValueError, TypeError, KeyError, AssertionError):
+        return False, "CALENDAR_UNVERIFIED"
+    return phase in {"OPENING_RAMP", "REGULAR_SEASON", "STRETCH_RUN", "POSTSEASON_PREP", "POSTSEASON", "CHAMPIONSHIP"}, phase
+
+
+def new_work_admission_for_sport(registry: dict[str, Any], sport: str, on_date: date) -> tuple[bool, str]:
+    """Read one league without allowing unrelated calendar defects to block it."""
+    if not isinstance(registry, dict) or registry.get("version") != REGISTRY_VERSION:
+        return False, "CALENDAR_UNVERIFIED"
+    sports = registry.get("sports")
+    if not isinstance(sports, dict):
+        return False, "CALENDAR_UNVERIFIED"
+    spec = sports.get(sport)
+    if not isinstance(spec, dict):
+        return False, "CALENDAR_UNVERIFIED"
+    sources = spec.get("calendar_sources")
+    if not isinstance(sources, list) or not sources or not all(
+        isinstance(source, dict) and str(source.get("url", "")).startswith("https://")
+        and isinstance(source.get("verified_at"), str) for source in sources
+    ):
+        return False, "CALENDAR_UNVERIFIED"
+    try:
+        if any(_parse_date(source["verified_at"]) is None or _parse_date(source["verified_at"]) > on_date for source in sources):
+            return False, "CALENDAR_UNVERIFIED"
+    except (ValueError, TypeError):
+        return False, "CALENDAR_UNVERIFIED"
+    return new_work_admission(spec, on_date)
+
+
 def readiness_checkpoint(spec: dict[str, Any], on_date: date) -> dict[str, Any]:
     if spec["calendar_kind"] == "competition_driven":
         return {
@@ -481,7 +534,24 @@ def main(argv: list[str] | None = None) -> int:
     board_cmd.add_argument("--json-out")
     board_cmd.add_argument("--markdown-out")
 
+    admission_cmd = subparsers.add_parser("admission")
+    admission_cmd.add_argument("--registry", default=str(_default_registry_path()))
+    admission_cmd.add_argument("--sport", required=True)
+    admission_cmd.add_argument("--date", dest="on_date", required=True)
+
     args = parser.parse_args(argv)
+    if args.command == "admission":
+        try:
+            on_date = date.fromisoformat(args.on_date)
+            registry = load_json(args.registry)
+            allowed, reason = new_work_admission_for_sport(registry, args.sport, on_date)
+        except (OSError, ValueError, TypeError, KeyError):
+            allowed, reason = False, "CALENDAR_UNVERIFIED"
+        print(json.dumps({"sport": args.sport, "date": args.on_date,
+                          "new_work_allowed": allowed, "reason": reason,
+                          "can_execute": False}, sort_keys=True))
+        return 0 if allowed else 3
+
     registry = load_json(args.registry)
     errors = validate_registry(registry)
     if errors:

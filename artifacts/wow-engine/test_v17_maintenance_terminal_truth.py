@@ -198,3 +198,24 @@ def test_basketball_workflow_unknown_source_readback_fails_to_verified_summary()
         "latest_persisted_settlement_date": None,
         "new_settled_games": None,
     }
+
+
+def test_basketball_deferred_source_receipt_preserves_only_validated_season_reason(capsys):
+    text = _workflow("wow-v17-basketball-model-maintenance.yml")
+    start, end = '          source_summary = {}', '          challengers = {}'
+    script = dedent(start + text.split(start, 1)[1].split(end, 1)[0])
+    payload = {"rows": [
+        {"sport": "WNBA", "hydration_status": "SEASON_DEFERRED",
+         "season_admission": "CALENDAR_REFRESH_REQUIRED"},
+        {"sport": "NBA", "hydration_status": "SEASON_DEFERRED",
+         "season_admission": {"secret": "NEVER_LOG_THIS"}},
+    ]}
+    values = {"payload": payload, "basketball": payload, "json": json}
+    exec(compile(script, "<season-receipt>", "exec"), values)
+    summary = values["source_summary"]
+    assert summary["WNBA"] == {"status": "SEASON_DEFERRED",
+                               "latest_persisted_settlement_date": None,
+                               "new_settled_games": None,
+                               "season_admission": "CALENDAR_REFRESH_REQUIRED"}
+    assert summary["NBA"]["season_admission"] == "CALENDAR_UNVERIFIED"
+    assert "NEVER_LOG_THIS" not in capsys.readouterr().out

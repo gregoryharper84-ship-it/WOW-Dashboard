@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updated_at": "2026-09-22",
+  "updated_at": "2026-11-24",
   "sports": {
     "MLB": {
       "engine": "WOW_PROP_ENGINE+LLP_TEAM_EVENT_ENGINE",
@@ -157,6 +157,90 @@
       "readiness_milestones_days": [30, 14, 7, 3, 1],
       "calendar_sources": [
         {"url": "https://www.pgatour.com/schedule", "verified_at": "2026-09-22"}
+      ]
+    },
+    "NCAAB": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "competition-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "NCAAB_COMPETITION_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [
+        30,
+        14,
+        7,
+        3,
+        1
+      ],
+      "calendar_sources": [
+        {
+          "url": "https://www.ncaa.com/scoreboard/basketball-men/d1",
+          "verified_at": "2026-11-24"
+        },
+        {
+          "url": "https://www.ncaa.com/news/basketball-men/article/2026-08-28/when-does-2026-27-college-basketball-season-start",
+          "verified_at": "2026-11-24"
+        }
+      ]
+    },
+    "NCAAW": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "competition-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "NCAAW_COMPETITION_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [
+        30,
+        14,
+        7,
+        3,
+        1
+      ],
+      "calendar_sources": [
+        {
+          "url": "https://www.ncaa.com/scoreboard/basketball-women/d1",
+          "verified_at": "2026-11-24"
+        },
+        {
+          "url": "https://www.ncaa.com/womens-final-four",
+          "verified_at": "2026-11-24"
+        }
+      ]
+    },
+    "BOXING": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "event-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "BOXING_EVENT_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [
+        30,
+        14,
+        7,
+        3,
+        1
+      ],
+      "calendar_sources": [
+        {
+          "url": "https://worldboxing.org/world-boxing-publishes-updated-2026-competition-calendar/",
+          "verified_at": "2026-11-24"
+        }
+      ]
+    },
+    "CRICKET": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "competition-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "CRICKET_COMPETITION_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [
+        30,
+        14,
+        7,
+        3,
+        1
+      ],
+      "calendar_sources": [
+        {
+          "url": "https://www.icc-cricket.com/fixtures-results",
+          "verified_at": "2026-11-24"
+        }
       ]
     }
   }

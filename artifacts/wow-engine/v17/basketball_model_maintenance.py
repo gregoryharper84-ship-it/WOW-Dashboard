@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Any, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -35,6 +36,7 @@ from basketball_training_replay import (
 )
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_model_development_manifest import development_lane
+from v17 import season_readiness
 
 CAN_EXECUTE = False
 SUPPORTED_SPORTS = ("NBA", "WNBA")
@@ -506,6 +508,7 @@ def run_basketball_model_maintenance(
     sports: Iterable[str] = SUPPORTED_SPORTS,
     seasons: Iterable[int] | None = None,
     now: datetime | None = None,
+    active_only: bool = False,
 ) -> dict[str, Any]:
     """Hydrate and replay governed current evidence while preserving native holds."""
     clock = now or datetime.now(timezone.utc)
@@ -515,12 +518,30 @@ def run_basketball_model_maintenance(
     reported_base_seasons = explicit_seasons or default_seasons(now=clock)
     seasons_by_sport: dict[str, list[int]] = {}
     results: list[dict[str, Any]] = []
+    season_registry: dict[str, Any] = {}
+    if active_only:
+        try:
+            season_registry = season_readiness.load_json(season_readiness._default_registry_path())
+        except (OSError, ValueError, TypeError, KeyError):
+            pass  # Missing or malformed calendar never authorizes new work.
 
     for raw_sport in sports:
         sport = str(raw_sport or "").strip().upper()
         if sport not in SUPPORTED_SPORTS:
             results.append(_blocked(sport or "UNKNOWN", "BASKETBALL_SPORT_UNSUPPORTED"))
             continue
+
+        if active_only:
+            allowed, phase = season_readiness.new_work_admission_for_sport(
+                season_registry, sport, clock.astimezone(ZoneInfo("America/Chicago")).date(),
+            )
+            if not allowed:
+                results.append({
+                    "sport": sport, "status": "SEASON_DEFERRED", "season_admission": phase,
+                    "hydration_status": "SEASON_DEFERRED", "promotion_attempted": False,
+                    "probability_publishable": False, "can_execute": False,
+                })
+                continue
 
         season_values = explicit_seasons if explicit_seasons is not None else default_seasons(now=clock, sport=sport)
         seasons_by_sport[sport] = list(season_values)
@@ -682,14 +703,20 @@ def run_basketball_model_maintenance(
         row.get("hydration_status") == "FRESH_ACQUISITION_NOT_VERIFIED"
         for row in results
     )
+    deferred = sum(row["status"] == "SEASON_DEFERRED" for row in results)
+    blocked = len(results) - updated - deferred
+    status = ("PARTIAL" if updated else "BLOCKED") if blocked else (
+        "COMPLETE" if updated else ("SEASON_DEFERRED" if deferred else "BLOCKED")
+    )
     return {
-        "status": "COMPLETE" if updated == len(results) else ("PARTIAL" if updated else "BLOCKED"),
+        "status": status,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seasons": list(reported_base_seasons),
         "seasons_by_sport": seasons_by_sport,
         "rows": results,
         "rows_updated": updated,
-        "rows_blocked": len(results) - updated,
+        "rows_blocked": blocked,
+        "rows_season_deferred": deferred,
         "rows_fresh_acquisition_degraded": degraded,
         "rows_no_new_settlements": no_new,
         "rows_fresh_acquisition_unverified": unverified,
@@ -719,7 +746,7 @@ def install_basketball_model_maintenance_route(
     def run_maintenance() -> Any:
         """Run authenticated maintenance using the configured database client."""
         try:
-            return run_basketball_model_maintenance(db_client_fn())
+            return run_basketball_model_maintenance(db_client_fn(), active_only=True)
         except Exception:  # noqa: BLE001 - sanitize the authenticated HTTP boundary
             # Never expose database, provider, or stack-trace detail to the
             # caller. A fixed typed hold keeps the route fail-closed.
