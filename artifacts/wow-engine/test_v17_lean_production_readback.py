@@ -77,7 +77,7 @@ def test_source_provenance_rejected(mutate):
     ({"target": OLD}, "TARGET_NOT_CURRENT_MAIN"),
     ({"target": "not-sha"}, "SHA_INVALID"),
     ({"health": False}, "HEALTH_LIVE_NOT_SUCCESS"),
-    ({"services": {"web": service("web"), "worker": service("worker", trigger=None)}},
+    ({"services": {"web": service("web"), "worker": service("worker", trigger="off")}},
      "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:worker"),
     ({"services": {"web": service("web", trigger="commit"), "worker": service("worker")}},
      "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web"),

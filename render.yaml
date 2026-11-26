@@ -20,9 +20,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health/live
-    # Single deploy writer: .github/workflows/wow-v17-required-checks-deploy.yml
-    # (3 required checks green on the exact main SHA, then LIVE + health).
-    autoDeployTrigger: "off"
+    autoDeployTrigger: "checksPass"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
@@ -161,8 +159,7 @@ services:
     buildCommand: pip install -r requirements.txt
     # Keep the engine root importable for dependencies loaded inside tasks.
     startCommand: python -m celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
-    # Same single writer as the web service.
-    autoDeployTrigger: "off"
+    autoDeployTrigger: "checksPass"
     maxShutdownDelaySeconds: 120
     envVars:
       - key: PYTHON_VERSION

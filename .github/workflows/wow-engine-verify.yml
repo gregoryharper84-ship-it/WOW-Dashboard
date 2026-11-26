@@ -237,7 +237,7 @@ jobs:
           assert service["rootDir"] == "artifacts/wow-engine"
           assert service["healthCheckPath"] == "/health/live"
           assert service["startCommand"] == "uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT"
-          assert service["autoDeployTrigger"] == "off"  # single writer: wow-v17-required-checks-deploy
+          assert service["autoDeployTrigger"] == "checksPass"
           secret_vars = {item["key"]: item for item in service["envVars"] if item["key"] in {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}}
           assert set(secret_vars) == {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}
           assert all(item.get("sync") is False for item in secret_vars.values())
@@ -253,7 +253,7 @@ jobs:
           assert worker["runtime"] == "python"
           assert worker["rootDir"] == "artifacts/wow-engine"
           # Worker remains non-executing and follows protected-main CI admission.
-          assert worker["autoDeployTrigger"] == "off"
+          assert worker["autoDeployTrigger"] == "checksPass"
           assert worker["autoDeployTrigger"] == service["autoDeployTrigger"]
           assert worker["startCommand"] == "python -m celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2"
           worker_env_by_key = {item["key"]: item for item in worker["envVars"]}
