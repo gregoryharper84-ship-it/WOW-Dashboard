@@ -20,6 +20,7 @@ import { createV17McpServer } from "./v17_server.js";
 const PORT = Number(process.env.PORT || "3000");
 const AUTH_MODE = (process.env.WOW_MCP_AUTH_MODE || "shared-token").toLowerCase();
 const SHARED_TOKEN = process.env.WOW_MCP_SHARED_TOKEN || "";
+const HEALTH_ONLY = process.env.WOW_MCP_HEALTH_ONLY === "1";
 const BACKEND_CREDENTIAL_MODE = (process.env.WOW_MCP_BACKEND_CREDENTIAL_MODE || "action").toLowerCase();
 const MAX_BODY_BYTES = Number(process.env.WOW_MCP_MAX_BODY_BYTES || String(2 * 1024 * 1024));
 const OAUTH_CONFIG = oauthConfig();
@@ -172,7 +173,7 @@ async function readJsonBody(req) {
 
 async function createSession(authContext) {
   let transport;
-  const server = createV17McpServer();
+  const server = createV17McpServer({ healthOnly: HEALTH_ONLY });
   const authFingerprint = oauthSessionFingerprint(authContext);
   transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
@@ -275,6 +276,7 @@ const server = http.createServer(async (req, res) => {
         terminal_authority: TERMINAL_AUTHORITY,
         can_execute: CAN_EXECUTE,
         auth_mode: AUTH_MODE,
+        health_only: HEALTH_ONLY,
         oauth_configured: Boolean(OAUTH_CONFIG.issuer && OAUTH_CONFIG.jwksUrl && OAUTH_CONFIG.allowedClientIds.size),
         backend_credential_mode: BACKEND_CREDENTIAL_MODE,
         backend_key_present: backendKeyPresent,

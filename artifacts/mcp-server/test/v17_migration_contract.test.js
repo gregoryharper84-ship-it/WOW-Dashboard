@@ -16,7 +16,7 @@ import {
   errorPayload,
   invokeV17Operation,
 } from "../src/v17_backend.js";
-import { createV17McpServer } from "../src/v17_server.js";
+import { createV17McpServer, getV17VisibleTools } from "../src/v17_server.js";
 
 const EXPECTED_TOOLS = [
   "getWowV17BackendHealth",
@@ -256,5 +256,14 @@ test("error payload remains typed and non-executable", () => {
 
 test("MCP server factory loads using the installed protocol SDK", () => {
   const server = createV17McpServer({ backend: { backendKey: "test-only" } });
+  assert.ok(server);
+});
+
+
+test("health-only candidate exposes the safe single-tool surface; normal production registry stays unchanged", () => {
+  assert.deepEqual(getV17VisibleTools({ healthOnly: true }).map((entry) => entry.name), ["getWowV17BackendHealth"]);
+  assert.equal(getV17VisibleTools({ healthOnly: true })[0].annotations.readOnlyHint, true);
+  assert.deepEqual(getV17VisibleTools().map((entry) => entry.name), EXPECTED_TOOLS);
+  const server = createV17McpServer({ healthOnly: true, backend: { backendKey: "test-only" } });
   assert.ok(server);
 });

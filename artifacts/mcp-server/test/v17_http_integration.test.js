@@ -76,3 +76,47 @@ test("Streamable HTTP performs MCP initialize and exposes exactly the governed V
   assert.equal(names.length, 16);
   assert.equal(names.some((name) => /bet|wager|order/i.test(name) && /place|execute|submit|cancel|approve/i.test(name)), false);
 });
+
+test("Streamable HTTP health-only mode hides scoring tools and refuses invocation", async (t) => {
+  const port = 42000 + (process.pid % 10000);
+  const child = spawn(process.execPath, ["src/v17_http.js"], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      WOW_MCP_AUTH_MODE: "disabled", // loopback-only test transport; never an internet service
+      WOW_MCP_HEALTH_ONLY: "1",
+      WOW_ACTION_API_KEY: "integration-placeholder-never-sent",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill("SIGTERM");
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      child.once("exit", resolve);
+      setTimeout(resolve, 1000).unref();
+    });
+  });
+
+  const base = `http://127.0.0.1:${port}`;
+  const health = await waitForHealth(`${base}/healthz`, child);
+  assert.equal(health.health_only, true);
+  assert.equal(health.can_execute, false);
+  assert.equal(health.terminal_authority, "V17_TERMINAL_REDUCER");
+
+  const client = new Client({ name: "wow-v17-health-only-ci", version: "1.0.0" }, { capabilities: {} });
+  const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`));
+  t.after(async () => {
+    try { await client.close(); } catch {}
+  });
+  await client.connect(transport);
+  const listed = await client.listTools();
+  assert.deepEqual(listed.tools.map((entry) => entry.name), ["getWowV17BackendHealth"]);
+  assert.equal(listed.tools[0].annotations.readOnlyHint, true);
+
+  const denied = await client.callTool({ name: "scoreWowPickRequest", arguments: { rows: [] } });
+  assert.equal(denied.isError, true);
+  assert.equal(denied.structuredContent.gateway_status, "MCP_TOOL_NOT_REGISTERED");
+  assert.equal(denied.structuredContent.can_execute, false);
+});
