@@ -733,6 +733,25 @@ def audit_research_slips(
                 or any(isinstance(l, Mapping) and _text(l.get("platform")).upper() == "PRIZEPICKS"
                        for l in legs)):
             blockers.extend(_prizepicks_lineup_blockers(slip, at, legs))
+        # A requested 2x/3x/5x gross payout is a construction constraint,
+        # not evidence that the platform actually offers that payout.
+        # Only the existing exact-lineup PrizePicks receipt shape can
+        # support a research comparison here; other platforms need their
+        # own authenticated whole-card adapter. Never multiply leg prices.
+        if "target_gross_payout_multiple" in slip:
+            target = _number(slip.get("target_gross_payout_multiple"))
+            is_pp = (_text(slip.get("platform")).upper() == "PRIZEPICKS"
+                     or any(isinstance(l, Mapping) and
+                            _text(l.get("platform")).upper() == "PRIZEPICKS"
+                            for l in legs))
+            if target not in (2.0, 3.0, 5.0):
+                blockers.append("RESEARCH_PAYOUT_TARGET_INVALID")
+            elif not is_pp or _prizepicks_lineup_blockers(slip, at, legs):
+                blockers.append("RESEARCH_PAYOUT_TARGET_UNVERIFIED")
+            else:
+                quoted = _number(slip["platform_lineup_payout"].get("gross_payout_multiple"))
+                if quoted is None or quoted < target:
+                    blockers.append("RESEARCH_PAYOUT_TARGET_NOT_MET")
         if any(x > 1 for x in event_counts.values()):
             blockers.append("SAME_EVENT_JOINT_DEPENDENCE_UNVERIFIED")
         if len({exact_key(l) for l in legs if isinstance(l, Mapping)}) < len(legs):
