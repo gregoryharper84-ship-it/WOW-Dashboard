@@ -381,10 +381,10 @@ def test_maintenance_hook_researches_only_stale_leagues_and_never_raises(monkeyp
                            "BUNDESLIGA": {"status": "COMPLETED", "blocked_by_code": {}},
                            "LALIGA": {"blocked_by_code": {"SOCCER_KICKOFF_TIME_UNVERIFIED": 2}}}}
     with pytest.raises(RuntimeError):
-        soccer_results_research_after_forward(object(), forward, now=NOW)
+        soccer_results_research_after_forward(object(), forward, now=NOW, intake_issues=())
     assert seen["leagues"] == ["EPL"]
-    assert soccer_results_research_after_forward(object(), {"leagues": {}}, now=NOW)["status"] == \
-        "NO_RESEARCHABLE_BLOCKERS"
+    assert soccer_results_research_after_forward(object(), {"leagues": {}}, now=NOW, intake_issues=())["status"] \
+        == "NO_RESEARCHABLE_BLOCKERS"
 
 
 def test_run_never_raises_on_store_failure():
@@ -396,3 +396,90 @@ def test_run_never_raises_on_store_failure():
     out = run(Broken(), FakeSession(routes()))
     assert out["status"] == "COMPLETED" and out["tasks"][0]["code"] == "NRE_DB_42P01"
     assert out["can_execute"] is False and out["prediction_authority"] is False
+
+
+# -- external intake (temporary ChatGPT handoff) and prop feeds ------------------
+from v17.native_research.intake import (blockers_from_submissions, fetch_submissions,  # noqa: E402
+                                        parse_comment, validate_submission)
+
+
+def _evidence(**over):
+    body = {"schema_version": "WOW_EXTERNAL_RESEARCH_EVIDENCE_V1", "sport": "SOCCER", "league": "EPL",
+            "season": "2026-27", "blocker_code": "SOCCER_SOURCE_RESULTS_STALE",
+            "sources": [{"url": "https://github.com/acme/results", "claimed_license": "CC0"},
+                        {"url": "https://www.example-feed.com/epl", "title": "paid feed"}]}
+    return {**body, **over}
+
+
+def _comment(payload, author="gregoryharper84-ship-it", cid=1):
+    return {"id": cid, "user": {"login": author}, "created_at": "2026-11-26T03:00:00Z",
+            "body": "notes\n```wow-research-evidence\n" + json.dumps(payload) + "\n```\n"}
+
+
+def test_intake_accepts_only_owner_structured_evidence_and_refuses_probabilities():
+    ok, code = validate_submission(parse_comment(_comment(_evidence())["body"])[0], author="gregoryharper84-ship-it")
+    assert code is None and [lead.kind for lead in ok["leads"]] == ["GITHUB_REPOSITORY", "URL"]
+    assert validate_submission(_evidence(), author="someone-else")[1] == "NRE_INTAKE_AUTHOR_NOT_ALLOWED"
+    assert validate_submission(_evidence(win_probability=0.7), author="gregoryharper84-ship-it")[1] \
+        == "NRE_INTAKE_SCHEMA_INVALID"
+    nested = _evidence(sources=[{"url": "https://github.com/a/b", "note": "x"}], summary="ok")
+    assert validate_submission(nested, author="gregoryharper84-ship-it")[1] is None
+    bad_src = _evidence(sources=[{"url": "https://github.com/a/b", "confidence": 0.9}])
+    assert validate_submission(bad_src, author="gregoryharper84-ship-it")[1] == "NRE_INTAKE_FORBIDDEN_FIELD"
+    assert validate_submission(_evidence(blocker_code="MAKE_PICKS"), author="gregoryharper84-ship-it")[1] \
+        == "NRE_INTAKE_BLOCKER_UNMAPPED"
+    assert validate_submission(_evidence(sources=[{"url": "http://x.test"}]),
+                               author="gregoryharper84-ship-it")[1] == "NRE_INTAKE_URL_INVALID"
+    assert parse_comment("```wow-research-evidence\n{not json\n```")[0]["_invalid"] == "NRE_INTAKE_JSON_INVALID"
+
+
+def test_intake_lead_is_verified_natively_and_unapproved_domains_are_not_fetched():
+    r = routes(search_items=[])  # native search finds nothing; the reported lead must carry it
+    r["https://api.github.com/repos/gregoryharper84-ship-it/WOW-Dashboard/issues/2880/comments"] = (
+        200, json.dumps([_comment(_evidence()), _comment(_evidence(), author="mallory", cid=2)]).encode())
+    session = FakeSession(r)
+    f = fetcher(session)
+    subs = fetch_submissions(f, (2880,))
+    assert len(subs["accepted"]) == 1 and subs["rejected"][0]["code"] == "NRE_INTAKE_AUTHOR_NOT_ALLOWED"
+    blockers = blockers_from_submissions(subs["accepted"])
+    store = MemoryResearchStore()
+    task = run_native_research(store, blockers, fetcher=f, now=NOW, owner="t")["tasks"][0]
+    assert task["outcome"] == "CANDIDATE_VERIFIED_RIGHTS_REVIEW_REQUIRED" or \
+        task["outcome"] == "CANDIDATE_VERIFIED_PENDING_INDEPENDENT_REVIEW"
+    assert all(urlsplit(u).hostname != "www.example-feed.com" for u, _ in session.calls)
+    url_finding = [x for x in store.tables["wow_nre_findings"].values() if x["source_id"].startswith("url:")][0]
+    assert url_finding["verification"]["domain_approval_required"] == "www.example-feed.com"
+    assert url_finding["outcome"] == "CANDIDATE_FOUND_UNVERIFIED"
+    attempt = next(iter(store.tables["wow_nre_research_attempts"].values()))
+    intake = [s for s in attempt["strategies"] if s["strategy"] == "EXTERNAL_EVIDENCE_INTAKE"][0]
+    assert intake["verified"] == 1  # learning credits the handoff only for natively verified sources
+    native = [s for s in attempt["strategies"] if s["strategy"] == "GITHUB_DATASET_DISCOVERY"][0]
+    assert native["verified"] == 0  # and does not credit native search for the reported lead
+    # Same blocker with a new lead is new evidence; identical leads are not.
+    same = blockers_from_submissions(subs["accepted"])[0]
+    assert build_task(same).blocker_fingerprint == build_task(blockers[0]).blocker_fingerprint
+    more = _evidence(sources=[{"url": "https://github.com/other/feed"}])
+    extra = blockers_from_submissions(subs["accepted"] + [{"comment_id": 9, "submission":
+                                      validate_submission(more, author="gregoryharper84-ship-it")[0]}])[0]
+    assert build_task(extra).blocker_fingerprint != build_task(blockers[0]).blocker_fingerprint
+
+
+def test_prop_feed_blocker_surfaces_candidates_with_rights_but_never_verifies():
+    nfl = BlockerInput(sport="NFL", market_route="NFL:PLAYER_PROP", specialist_id="NFL_PROP",
+                       blocker_code="NFLVERSE_INJURY_REPORT_STALE", season="2026")
+    task = build_task(nfl)
+    assert task.required_source_type == "INJURY_REPORT_FEED" and task.priority == 1
+    r = {"https://raw.githubusercontent.com/robots.txt": (404,),
+         "search:": (200, json.dumps({"items": [{"full_name": "acme/injuries", "default_branch": "main",
+                                                 "pushed_at": "2026-11-25T00:00:00Z", "license": None}]}).encode()),
+         "https://raw.githubusercontent.com/acme/injuries/main/README.md": (200, README_NC)}
+    store = MemoryResearchStore()
+    out = run_native_research(store, [nfl], fetcher=fetcher(FakeSession(r)), now=NOW, owner="t")["tasks"][0]
+    assert out["outcome"] == "CANDIDATE_FOUND_UNVERIFIED" and out["factory_status"] is None
+    assert out["remaining_blockers"] == ["NFLVERSE_INJURY_REPORT_STALE", "SOURCE_FRESHNESS_UNVERIFIED"]
+    right = next(iter(store.tables["wow_nre_source_rights"].values()))
+    assert right["unresolved_upstream_rights"] is True and right["production_use_authorized"] is False
+    empty = {"https://raw.githubusercontent.com/robots.txt": (404,), "search:": (200, b'{"items": []}')}
+    neg = run_native_research(MemoryResearchStore(), [nfl], fetcher=fetcher(FakeSession(empty)), now=NOW,
+                              owner="t")["tasks"][0]
+    assert neg["outcome"] == "NO_SOURCE_FOUND"
