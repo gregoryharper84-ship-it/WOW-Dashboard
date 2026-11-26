@@ -21,16 +21,16 @@ from typing import Any, Callable, Mapping, Sequence
 
 import requests
 
-from v17.nhl_candidate_preflight import NHLCandidatePreflightError
+from v17.nhl_certified_scoring_adapter import (
+    NHLCertifiedScoringError,
+    resolve_server_confirmed_goalies,
+)
 from v17.nhl_fitted_specialist import (
     FULL_GAME_SETTLEMENT,
     SETTLEMENT_CONTRACT,
 )
 from v17.nhl_pregame_gamecenter_capture import capture_nhl_pregame_gamecenter
-from v17.nhl_starter_goalie_confirmation import (
-    TrustedProvider,
-    confirm_starting_goalies,
-)
+from v17.nhl_starter_goalie_confirmation import TrustedProvider
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -154,9 +154,6 @@ def assemble_nhl_pregame_action_evidence(
         "away_team": away,
         "event_start_time_utc": _iso(start),
         "settlement_basis": settlement,
-        "neutral_site": bool(resolved_identity.get("neutral_site"))
-        if type(resolved_identity.get("neutral_site")) is bool
-        else False,
         "season": str(resolved_identity.get("season") or "").strip() or None,
     }
     if snapshot_ok:
@@ -167,10 +164,11 @@ def assemble_nhl_pregame_action_evidence(
     else:
         blockers.append("NHL_SOURCE_SNAPSHOT_MISSING")
 
-    if type(resolved_identity.get("neutral_site")) is not bool:
-        # Prefer explicit identity; if absent keep False above but flag unverified.
-        if "neutral_site" not in resolved_identity:
-            blockers.append("NHL_NEUTRAL_SITE_UNVERIFIED")
+    neutral_site = resolved_identity.get("neutral_site")
+    if isinstance(neutral_site, bool):
+        evidence["neutral_site"] = neutral_site
+    else:
+        blockers.append("NHL_NEUTRAL_SITE_UNVERIFIED")
 
     if not isinstance(injury_report, Mapping) or not injury_report:
         blockers.append("NHL_INJURY_REPORT_UNAVAILABLE")
@@ -190,11 +188,11 @@ def assemble_nhl_pregame_action_evidence(
             starter_blockers.append("NHL_STARTER_SOURCE_NOT_TRUSTED")
     else:
         try:
-            confirmed = confirm_starting_goalies(
-                list(starter_provider_receipts),
-                now=now,
+            confirmed = resolve_server_confirmed_goalies(
+                {**evidence, "starter_provider_receipts": starter_provider_receipts},
+                now_utc=now,
                 trusted_providers=trusted_providers,
-                attestation_key=bytes(attestation_key),
+                attestation_key=attestation_key,
             )
             evidence["goalie_status"] = str(confirmed["goalie_status"])
             evidence["goalie_identity_snapshot_id"] = str(
@@ -208,9 +206,9 @@ def assemble_nhl_pregame_action_evidence(
                 "derived_server_side": True,
                 "provider_receipts": confirmed.get("provider_receipts"),
             }
-        except NHLCandidatePreflightError as exc:
-            starter_blockers.append(str(exc.code))
-            if getattr(exc, "detail", None) and str(exc.detail) != str(exc.code):
+        except NHLCertifiedScoringError as exc:
+            starter_blockers.extend(exc.blockers)
+            if exc.detail:
                 evidence["starter_hold_detail"] = str(exc.detail)
 
     blockers.extend(starter_blockers)
