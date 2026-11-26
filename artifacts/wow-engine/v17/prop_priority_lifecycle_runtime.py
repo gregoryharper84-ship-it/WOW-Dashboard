@@ -320,6 +320,7 @@ def run_pregame_forward_scoring(
     """
     started = clock()
     routes: list[dict[str, Any]] = []
+    generic: list[tuple[str, frozenset]] = []
     for token in tokens:
         sport, stat_type = token.split(":", 1)
         collector, _status, blocker = _collector_for(route_key(sport, stat_type))
@@ -327,16 +328,27 @@ def run_pregame_forward_scoring(
             routes.append({"route": token, "status": "SKIPPED_NOT_GENERIC_COLLECTOR",
                            "collector": collector, "blocker": blocker, "can_execute": False})
             continue
-        if clock() - started > deadline_seconds:
-            routes.append({"route": token, "status": "DEFERRED_DEADLINE", "can_execute": False})
+        try:
+            skip = _captured_theses_for_active_artifact(db, sport, stat_type, now)
+        except Exception:  # noqa: BLE001 - lookup failure only costs a rescore (upsert dedupes)
+            skip = frozenset()
+        generic.append((token, skip))
+    # Least-covered route first, so a slow scorer cannot starve the other routes.
+    generic.sort(key=lambda item: (len(item[1]), item[0]))
+
+    def over_budget() -> bool:
+        return clock() - started > deadline_seconds
+
+    for token, skip in generic:
+        sport, stat_type = token.split(":", 1)
+        if over_budget():
+            routes.append({"route": token, "status": "DEFERRED_DEADLINE",
+                           "skipped_captured_for_active_artifact": len(skip), "can_execute": False})
             continue
         try:
-            try:
-                skip = _captured_theses_for_active_artifact(db, sport, stat_type, now)
-            except Exception:  # noqa: BLE001 - lookup failure only costs a rescore (upsert dedupes)
-                skip = frozenset()
             out = run_generic_forward_route(sport=sport, stat_type=stat_type, max_snapshots=max_snapshots,
-                                            db=db, market_api=market_api, now=now, skip_theses=skip)
+                                            db=db, market_api=market_api, now=now, skip_theses=skip,
+                                            should_stop=over_budget)
         except Exception as exc:  # noqa: BLE001 - one route never blocks another
             routes.append({"route": token, "status": "FAILED", "error_type": type(exc).__name__,
                            "can_execute": False})
