@@ -320,7 +320,16 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
             except Exception as exc:  # noqa: BLE001
                 forward = {"status":"FAILED","code":f"FORWARD_EVIDENCE_HOOK_{type(exc).__name__.upper()}",
                            "probability_publishable":False,"can_execute":False}
-            return {**result,"forward_evidence":forward}
+            # Native Research: evidence-only work on the leagues blocked by stale
+            # results. Bounded, deduplicated, never raises, never changes status.
+            try:
+                from v17.native_research.fetcher import NativeFetcher
+                from v17.native_research.runner import soccer_results_research_after_forward
+                research = soccer_results_research_after_forward(db, forward, fetcher=NativeFetcher(deadline_s=60))
+            except Exception as exc:  # noqa: BLE001
+                research = {"status":"FAILED","code":f"NATIVE_RESEARCH_HOOK_{type(exc).__name__.upper()}",
+                            "evidence_only":True,"can_execute":False}
+            return {**result,"forward_evidence":forward,"native_research":research}
 
     if "/internal/v17/tennis-model-maintenance" not in routes:
         @app.post("/internal/v17/tennis-model-maintenance",dependencies=[dependency],operation_id="runWowV17TennisModelMaintenance")
