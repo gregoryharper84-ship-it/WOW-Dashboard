@@ -11,7 +11,16 @@ ROLES = (
     'wow-v17-independent-qa-check',
     'wow-v17-release-authority-check',
 )
-QA_EXPRESSION = "${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || github.run_id }}"
+MAIN_TIP_CLAUSE = (
+    "(github.event_name == 'workflow_run' && "
+    "github.event.workflow_run.event == 'push' && "
+    "github.event.workflow_run.head_branch == 'main' && "
+    "format('main-callback-{0}', github.run_id))"
+)
+QA_EXPRESSION = (
+    "${{ inputs.pr_number || " + MAIN_TIP_CLAUSE +
+    " || github.event.workflow_run.pull_requests[0].number || github.run_id }}"
+)
 RELEASE_EXPRESSION = "${{ needs.admit-release.outputs.pr_number }}"
 
 
@@ -59,6 +68,49 @@ def test_manual_and_upstream_same_pr_share_a_serialized_queue(role):
     assert _group(role, manual='2012', run_id=11) != _group(role, upstream=2011, run_id=12)
 
 
+def test_post_merge_callbacks_never_share_a_lane():
+    # GitHub attaches the merge commit's pull_requests[0] (the merged PR) to
+    # every post-merge push callback. Keying those by that PR parks them
+    # behind the PR's long exact-head review lane. Keying them by the commit
+    # still let one callback wait behind another, so they get no shared lane:
+    # each push callback is keyed by its own run_id. That cannot skip a
+    # decision, because such a callback's PR is the merged (closed) one and
+    # targets(neutral_superseded=True) classifies it neutral before any check
+    # is published (test_qa_source_superseded_is_neutral_only_for_verified_
+    # workflow_run pins the closed-PR case).
+    group = config(ROLES[0])['concurrency']['group']
+    assert MAIN_TIP_CLAUSE in group, 'post-merge callbacks must be run-keyed'
+    # Order matters: the run-keyed branch has to win before the merged PR's
+    # number fallback, or a push callback inherits the review lane again.
+    assert group.index(MAIN_TIP_CLAUSE) < group.index(
+        'github.event.workflow_run.pull_requests[0].number')
+    assert "format('main-{0}'" not in group, 'no commit-shared lane'
+    # Two callbacks for the same commit resolve to different lanes, so neither
+    # can be pending behind the other, and no commit SHA is a lane component.
+    assert f'{ROLES[0]}-main-callback-1' != f'{ROLES[0]}-main-callback-2'
+    assert 'a' * 40 not in group
+    assert config(ROLES[0])['concurrency']['cancel-in-progress'] is False
+    assert config(ROLES[0])['concurrency']['queue'] == 'max'
+
+
+QA_ADMISSION_IF = (
+    "github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && "
+    "github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && "
+    "(github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]) && "
+    "(github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || "
+    "(vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true' && vars.WOW_QA_ZERO_CREDIT_MODE != 'true'))"
+)
+
+
+def test_scheduling_change_leaves_admission_and_decisions_untouched():
+    # Scheduling-only fix: the admission guard and the step sequence are
+    # exactly what they were, so no target can be dropped or re-decided.
+    job = config(ROLES[0])['jobs']['qa']
+    assert job['if'] == QA_ADMISSION_IF
+    assert [step.get('name') for step in job['steps']][:2] == [
+        'Checkout protected main', 'Set up Python']
+
+
 def test_qa_release_principals_have_disjoint_queues():
     assert _group(ROLES[0], manual='2012', run_id=11) != _group(ROLES[1], manual='2012', run_id=11)
     assert _group(ROLES[0], run_id=40107281706) != _group(ROLES[1], run_id=40107281706)
@@ -79,6 +131,7 @@ def test_unidentified_runs_do_not_displace_unrelated_prs(role):
         assert _group(role, run_id=40107281706) != _group(role, run_id=40107306470)
         group = config(role)['concurrency']['group']
         assert group.endswith("|| github.run_id }}")
+        assert "format('main-callback-{0}', github.run_id)" in group
         assert '(github.event_name != \'workflow_run\' || github.event.workflow_run.pull_requests[0])' in str(config(role)['jobs']['qa']['if'])
     assert _group(role, run_id=40107281706) != _group(role, manual='2012', run_id=40107281706)
     assert _group(role, run_id=40107281706) != _group(role, upstream=1977, run_id=40104744926)

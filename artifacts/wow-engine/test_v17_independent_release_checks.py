@@ -1056,6 +1056,10 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
         concurrency = workflow["concurrency"]
         assert concurrency["group"] == (
             wf.stem + "-${{ inputs.pr_number || "
+            "(github.event_name == 'workflow_run' && "
+            "github.event.workflow_run.event == 'push' && "
+            "github.event.workflow_run.head_branch == 'main' && "
+            "format('main-callback-{0}', github.run_id)) || "
             "github.event.workflow_run.pull_requests[0].number || github.run_id }}"
         )
     else:
