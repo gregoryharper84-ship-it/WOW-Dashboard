@@ -58,14 +58,54 @@ def test_pregame_snapshots_become_immutable_forward_predictions_and_past_events_
     assert fresh["routes"][0]["skipped_captured_for_active_artifact"] == 0
 
 
-def test_non_generic_routes_are_skipped_and_deadline_and_failures_are_isolated(monkeypatch):
-    ticks = iter([0.0, 0.0, 100.0, 100.0, 100.0])
-    out = run_pregame_forward_scoring(_db(), _Market(), ["MLB:PITCHER_STRIKEOUTS", NFL_ROUTE, "NFL:RUSHING_YARDS"],
-                                      now=NOW, deadline_seconds=45, clock=lambda: next(ticks))
-    status = {r["route"]: r["status"] for r in out["routes"]}
-    assert status["MLB:PITCHER_STRIKEOUTS"] == "SKIPPED_NOT_GENERIC_COLLECTOR"
-    assert status[NFL_ROUTE] == "COMPLETED"
-    assert status["NFL:RUSHING_YARDS"] == "DEFERRED_DEADLINE"
+class _SlowMarket(_Market):
+    """Production scorer calls took ~5 s each (11-26 05:46-05:47 UTC); simulate 15 s."""
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def score_prop(self, req, identity):
+        self.clock[0] += 15.0
+        return super().score_prop(req, identity)
+
+
+def _rush_snapshot(snapshot_id, hours_to_start=2):
+    row = _nfl_snapshot(snapshot_id, hours_to_start=hours_to_start, player=f"Rusher {snapshot_id[-1]}")
+    row["stat_type"] = "RUSHING_YARDS"
+    return row
+
+
+def test_budget_stops_between_snapshots_and_defers_remaining_routes():
+    t = [0.0]
+    db = _db(*[_nfl_snapshot(f"00000000-0000-0000-0000-00000000b00{i}", player=f"Receiver {i}") for i in range(3)],
+             *[_rush_snapshot(f"00000000-0000-0000-0000-00000000c00{i}") for i in range(3)])
+    out = run_pregame_forward_scoring(db, _SlowMarket(t), ["MLB:PITCHER_STRIKEOUTS", NFL_ROUTE, "NFL:RUSHING_YARDS"],
+                                      now=NOW, deadline_seconds=45, clock=lambda: t[0])
+    by_route = {r["route"]: r for r in out["routes"]}
+    assert by_route["MLB:PITCHER_STRIKEOUTS"]["status"] == "SKIPPED_NOT_GENERIC_COLLECTOR"
+    receiving = by_route[NFL_ROUTE]
+    assert receiving["captured_forward_predictions"] == 4  # 2 snapshots, then the budget stops it
+    assert receiving["row_reconciliation"]["balanced"] is True
+    assert by_route["NFL:RUSHING_YARDS"]["status"] == "DEFERRED_DEADLINE"
+    assert t[0] < 45 + 2 * 15 + 1  # overshoot is at most one snapshot
+
+
+def test_least_covered_route_is_scored_first():
+    t = [0.0]
+    db = _db(_nfl_snapshot("00000000-0000-0000-0000-00000000d001"), _rush_snapshot("00000000-0000-0000-0000-00000000d002"))
+    db.tables["wow_prop_fitted_model_artifacts"].append(
+        {"sport": "NFL", "stat_type": "RUSHING_YARDS", "active": True, "model_artifact_version": "WNBA_POINTS_MODEL_V1"})
+    run_pregame_forward_scoring(db, _Market(), [NFL_ROUTE], now=NOW)  # receiving now has 1 captured thesis
+    db.tables["wow_prop_evidence_snapshots"].append(
+        _nfl_snapshot("00000000-0000-0000-0000-00000000d003", hours_to_start=4, player="Another Receiver"))
+    out = run_pregame_forward_scoring(db, _SlowMarket(t), [NFL_ROUTE, "NFL:RUSHING_YARDS"], now=NOW,
+                                      deadline_seconds=10, clock=lambda: t[0])
+    assert [r["route"] for r in out["routes"]] == ["NFL:RUSHING_YARDS", NFL_ROUTE]
+    assert out["routes"][0]["captured_forward_predictions"] == 2
+    assert out["routes"][1]["status"] == "DEFERRED_DEADLINE"
+
+
+def test_route_failures_are_isolated(monkeypatch):
 
     def boom(**kwargs):
         if kwargs["stat_type"] == "RECEIVING_YARDS":
