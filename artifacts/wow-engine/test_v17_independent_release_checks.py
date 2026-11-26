@@ -581,6 +581,122 @@ def test_missing_aggregate_does_not_defer_after_native_run_exceeds_pending_bound
     assert m.pending_required_regressions(ev) == []
 
 
+def _native_engine_verify_run(**overrides):
+    """An authentic active ``wow-engine-verify`` run whose governed job is not
+    created yet: GitHub only materializes the needs-gated aggregate afterwards."""
+    run = {
+        "id": 8001,
+        "run_attempt": 1,
+        "workflow_id": m.NATIVE_ENGINE_VERIFY_WORKFLOW_ID,
+        "path": m.NATIVE_ENGINE_VERIFY_WORKFLOW_PATH,
+        "event": "pull_request",
+        "head_sha": HEAD,
+        "head_branch": "fix/issue-1830",
+        "status": "in_progress",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "repository": {"full_name": REPO},
+        "head_repository": {"full_name": REPO},
+        "pull_requests": [{
+            "number": 7,
+            "head": {"sha": HEAD, "ref": "fix/issue-1830"},
+        }],
+        "jobs": [
+            {"name": "WOW governed backend shard / 0", "status": "in_progress"},
+            {"name": "WOW Render and Action release contracts", "status": "queued"},
+        ],
+    }
+    run.update(overrides)
+    return run
+
+
+def _evidence_without_governed_backend():
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] != m.GOVERNED_PROBABILITY_CHECK
+    ]
+    return ev
+
+
+def test_fresh_head_defers_while_governed_backend_job_does_not_exist_yet():
+    ev = _evidence_without_governed_backend()
+    ev["native_workflow_runs"] = [_native_engine_verify_run()]
+
+    # The absent check would otherwise be published as a visible HOLD finding...
+    assert f"QA_EVIDENCE_MISSING:{m.GOVERNED_PROBABILITY_CHECK}" in m.qa_findings(ev)
+    # ...but the active authentic workflow run proves that evidence is still coming,
+    # so QA and Release defer silently at this head instead.
+    assert m.pending_required_regressions(ev) == [m.GOVERNED_PROBABILITY_CHECK]
+
+
+def test_governed_backend_deferral_ends_once_its_own_check_is_published():
+    ev = evidence()   # includes a completed governed-backend check run
+    ev["native_workflow_runs"] = [_native_engine_verify_run()]
+
+    assert m.pending_required_regressions(ev) == []
+
+
+def test_failed_governed_backend_is_never_deferred_as_pending():
+    ev = _evidence_without_governed_backend()
+    ev["check_runs"].append(run_(m.GOVERNED_PROBABILITY_CHECK, "failure", rid=950))
+    ev["native_workflow_runs"] = [_native_engine_verify_run()]
+
+    assert m.pending_required_regressions(ev) == []
+    assert f"QA_EVIDENCE_FAILED:{m.GOVERNED_PROBABILITY_CHECK}" in m.qa_findings(ev)
+
+
+@pytest.mark.parametrize("run_changes", [
+    {"workflow_id": m.NATIVE_REGRESSION_WORKFLOW_ID},
+    {"path": ".github/workflows/wow-verify.yml"},
+    {"event": "workflow_dispatch"},
+    {"head_sha": OLD},
+    {"head_branch": "stale-branch"},
+    {"repository": {"full_name": "fork/WOW-Dashboard"}},
+    {"head_repository": {"full_name": "fork/WOW-Dashboard"}},
+    {"pull_requests": [{"number": 8, "head": {"sha": HEAD, "ref": "fix/issue-1830"}}]},
+    {"status": "completed"},
+    {"created_at": "invalid"},
+    {"created_at": (datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat()},
+])
+def test_governed_backend_deferral_requires_an_authentic_recent_engine_verify_run(run_changes):
+    ev = _evidence_without_governed_backend()
+    ev["native_workflow_runs"] = [_native_engine_verify_run(**run_changes)]
+
+    assert m.pending_required_regressions(ev) == []
+
+
+def test_governed_backend_job_identity_is_pinned_to_the_engine_verify_workflow():
+    assert m.GOVERNED_PROBABILITY_CHECK in m.REQUIRED_REGRESSION_CHECKS
+    text = (ROOT / ".github/workflows/wow-engine-verify.yml").read_text()
+    assert m.NATIVE_ENGINE_VERIFY_WORKFLOW_PATH == ".github/workflows/wow-engine-verify.yml"
+    assert "governed-probability-backend:" in text
+    assert f"name: {m.GOVERNED_PROBABILITY_CHECK}" in text
+
+
+def test_native_evidence_collects_active_engine_verify_run_from_one_inventory_read():
+    calls = []
+
+    def fetch(path):
+        calls.append(path)
+        if "/jobs" in path:
+            return 200, {"total_count": 1, "jobs": [
+                {"name": "WOW governed backend shard / 0", "status": "in_progress"},
+            ]}
+        return 200, {"total_count": 2, "workflow_runs": [
+            _native_verify_run(id=7001, status="completed"),
+            _native_engine_verify_run(),
+        ]}
+
+    errors = []
+    evidence_runs = m._native_workflow_evidence(
+        REPO, {"number": 7, "head_ref": "fix/issue-1830"}, HEAD, fetch=fetch, errors=errors,
+    )
+
+    assert errors == []
+    assert [run["id"] for run in evidence_runs] == [8001]
+    assert sum("/actions/runs?" in path for path in calls) == 1
+
+
 def test_qa_check_published_by_another_app_is_a_foreign_source():
     findings = m.release_findings(with_qa(evidence(), app=REL_APP), qa_app_id=QA_APP, release_app_id=REL_APP)
     assert "RELEASE_QA_FOREIGN_SOURCE" in findings and "RELEASE_QA_MISSING" in findings

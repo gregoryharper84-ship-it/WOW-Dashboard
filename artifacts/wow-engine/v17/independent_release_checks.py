@@ -53,6 +53,19 @@ MAX_PAGES = 10
 PER_PAGE = 100
 NATIVE_REGRESSION_WORKFLOW_ID = 338954264
 NATIVE_REGRESSION_WORKFLOW_PATH = ".github/workflows/wow-verify.yml"
+# The governed-backend aggregate check is published by a needs-gated job in a
+# *different* workflow. GitHub creates that job (and its check run) only after all
+# five dependencies finish, so for the first minutes of a fresh head there is no
+# check run to observe. An authentic active run of this workflow at the exact head
+# is then the only evidence that the required context is still coming.
+NATIVE_ENGINE_VERIFY_WORKFLOW_ID = 343452862
+NATIVE_ENGINE_VERIFY_WORKFLOW_PATH = ".github/workflows/wow-engine-verify.yml"
+GOVERNED_PROBABILITY_CHECK = "WOW governed probability backend"
+assert GOVERNED_PROBABILITY_CHECK in REQUIRED_REGRESSION_CHECKS
+NATIVE_WORKFLOW_IDENTITIES = (
+    (NATIVE_REGRESSION_WORKFLOW_ID, NATIVE_REGRESSION_WORKFLOW_PATH),
+    (NATIVE_ENGINE_VERIFY_WORKFLOW_ID, NATIVE_ENGINE_VERIFY_WORKFLOW_PATH),
+)
 MAX_NATIVE_RUN_AGE = timedelta(hours=2)
 ACTIVE_WORK_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting"})
 
@@ -127,6 +140,8 @@ def _paged_exact(
 
 def _native_workflow_run_matches(
     run: dict, *, repo: str, pr_number: int, head: str, head_ref: str,
+    workflow_id: int = NATIVE_REGRESSION_WORKFLOW_ID,
+    workflow_path: str = NATIVE_REGRESSION_WORKFLOW_PATH,
 ) -> bool:
     repository = run.get("repository")
     head_repository = run.get("head_repository")
@@ -140,8 +155,8 @@ def _native_workflow_run_matches(
         and isinstance(run.get("run_attempt"), int)
         and not isinstance(run.get("run_attempt"), bool)
         and run["run_attempt"] > 0
-        and run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID
-        and run.get("path") == NATIVE_REGRESSION_WORKFLOW_PATH
+        and run.get("workflow_id") == workflow_id
+        and run.get("path") == workflow_path
         and run.get("event") == "pull_request"
         and run.get("head_sha") == head
         and run.get("head_branch") == head_ref
@@ -170,41 +185,46 @@ def _native_workflow_evidence(
         errors,
         "NATIVE_WORKFLOW_RUNS",
     )
-    matching = [
-        run for run in runs
-        if isinstance(run, dict)
-        and _native_workflow_run_matches(
-            run,
-            repo=repo,
-            pr_number=int(pr.get("number") or 0),
-            head=head,
-            head_ref=str(pr.get("head_ref") or ""),
-        )
-    ]
-    latest = max(matching, key=lambda run: run["id"], default=None)
-    if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
-        return []
+    evidence: list[dict] = []
+    for workflow_id, workflow_path in NATIVE_WORKFLOW_IDENTITIES:
+        matching = [
+            run for run in runs
+            if isinstance(run, dict)
+            and _native_workflow_run_matches(
+                run,
+                repo=repo,
+                pr_number=int(pr.get("number") or 0),
+                head=head,
+                head_ref=str(pr.get("head_ref") or ""),
+                workflow_id=workflow_id,
+                workflow_path=workflow_path,
+            )
+        ]
+        latest = max(matching, key=lambda run: run["id"], default=None)
+        if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
+            continue
 
-    jobs = _paged_exact(
-        fetch,
-        f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
-        "jobs",
-        errors,
-        "NATIVE_WORKFLOW_JOBS",
-    )
-    return [{
-        key: latest.get(key)
-        for key in (
-            "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
-            "head_branch", "created_at", "status", "repository",
-            "head_repository", "pull_requests",
+        jobs = _paged_exact(
+            fetch,
+            f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
+            "jobs",
+            errors,
+            "NATIVE_WORKFLOW_JOBS",
         )
-    } | {
-        "jobs": [
-            {"name": job.get("name"), "status": job.get("status")}
-            for job in jobs if isinstance(job, dict)
-        ],
-    }]
+        evidence.append({
+            key: latest.get(key)
+            for key in (
+                "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
+                "head_branch", "created_at", "status", "repository",
+                "head_repository", "pull_requests",
+            )
+        } | {
+            "jobs": [
+                {"name": job.get("name"), "status": job.get("status")}
+                for job in jobs if isinstance(job, dict)
+            ],
+        })
+    return evidence
 
 
 def _recent_active_timestamp(value: Any, *, now: datetime | None = None) -> bool:
@@ -630,23 +650,47 @@ def pending_required_regressions(ev: dict) -> list[str]:
     native_runs = ev.get("native_workflow_runs")
     if not isinstance(native_runs, list):
         return pending
+    # Once the governed-backend aggregate has published a completed run, whatever
+    # its conclusion, that run is the evidence: the surrounding workflow still
+    # being active must not keep deferring a verdict that already exists.
+    governed_published = any(
+        run.get("name") == GOVERNED_PROBABILITY_CHECK
+        and run.get("head_sha") == head
+        and str(run.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+        and run.get("status") == "completed"
+        for run in runs if isinstance(run, dict)
+    )
     for run in native_runs:
-        if (
-            not isinstance(run, dict)
-            or not _native_workflow_run_matches(
-                run,
-                repo=str(ev.get("repository") or ""),
-                pr_number=int(pr.get("number") or 0),
-                head=head,
-                head_ref=str(pr.get("head_ref") or ""),
-            )
-            or run.get("status") not in ACTIVE_WORK_STATUSES
-        ):
+        if not isinstance(run, dict) or run.get("status") not in ACTIVE_WORK_STATUSES:
             continue
         if not _recent_active_timestamp(run.get("created_at")):
             continue
+        identity = next(
+            (
+                (workflow_id, workflow_path)
+                for workflow_id, workflow_path in NATIVE_WORKFLOW_IDENTITIES
+                if _native_workflow_run_matches(
+                    run,
+                    repo=str(ev.get("repository") or ""),
+                    pr_number=int(pr.get("number") or 0),
+                    head=head,
+                    head_ref=str(pr.get("head_ref") or ""),
+                    workflow_id=workflow_id,
+                    workflow_path=workflow_path,
+                )
+            ),
+            None,
+        )
+        if identity is None:
+            continue
         jobs = run.get("jobs")
         if not isinstance(jobs, list):
+            continue
+        if identity[0] == NATIVE_ENGINE_VERIFY_WORKFLOW_ID:
+            # The needs-gated aggregate has no job or check run yet; the active
+            # authentic run at this exact head is the pending evidence.
+            if not governed_published:
+                pending.append(GOVERNED_PROBABILITY_CHECK)
             continue
         active_jobs = {
             str(job.get("name"))
