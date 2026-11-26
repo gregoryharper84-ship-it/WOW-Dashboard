@@ -62,10 +62,28 @@ def _ok_scorer(request):
         "prior_immutable_prediction_id": "pred-nfl-original-001",
         "calibration_receipt_id": "calib-nfl-bind-001",
         "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+
+def _ok_persistence(request, response):
+    return {
+        "ok": True,
+        "authenticated": True,
+        "immutable_prediction_id": response.get("immutable_prediction_id"),
+        "prior_immutable_prediction_id": response.get("prior_immutable_prediction_id"),
+        "prior_immutable_prediction_preserved": True,
+        "calibration_receipt_id": response.get("calibration_receipt_id"),
+        "official_event_id": request.get("official_event_id"),
         "terminal_readback": {
             "authority": "V17_TERMINAL_REDUCER",
             "status": "HOLD_RESEARCH_RESCORE",
             "can_execute": False,
+        },
+        "store_attestation": {
+            "source": "TEST_DOUBLE_NOT_PRODUCTION",
+            "read_at_utc": NOW.isoformat(),
         },
         "prediction_authority": False,
         "can_execute": False,
@@ -111,11 +129,13 @@ def test_registered_adapter_can_complete_verified_news_rescore():
     out = dispatch_news_rescore(
         _candidate(),
         score_fn=production_news_fitted_scorer,
+        persistence_readback_fn=_ok_persistence,
         observed_at=NOW,
         baseline_features={"qb_status": "ACTIVE"},
     )
     assert out["dispatch_status"] == "NEWS_RESCORE_VERIFIED"
     assert out["model_rescore_verified"] is True
+    assert out["persistence_authenticated"] is True
     assert out["calibrated_probability"] == 0.57
     assert out["calibrated_lower_bound"] == 0.49
     assert out["immutable_prediction_id"] == "pred-nfl-news-bind-001"

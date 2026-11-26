@@ -63,6 +63,7 @@ def _ok_scorer(request):
         "calibration_receipt_id": "calib-nhl-llp-v17-test",
         "controlling_specialist_route": request.get("controlling_specialist_route"),
         "prop_target": request.get("prop_target"),
+        # Caller-echoed terminal objects are intentionally insufficient alone.
         "terminal_readback": {
             "authority": "V17_TERMINAL_REDUCER",
             "status": "HOLD_RESEARCH_RESCORE",
@@ -71,6 +72,41 @@ def _ok_scorer(request):
         "prediction_authority": False,
         "can_execute": False,
     }
+
+
+def _ok_persistence(request, response):
+    """Shape-only store double for unit tests — not production acceptance."""
+    return {
+        "ok": True,
+        "authenticated": True,
+        "immutable_prediction_id": response.get("immutable_prediction_id"),
+        "prior_immutable_prediction_id": response.get("prior_immutable_prediction_id"),
+        "prior_immutable_prediction_preserved": True,
+        "calibration_receipt_id": response.get("calibration_receipt_id"),
+        "official_event_id": request.get("official_event_id"),
+        "terminal_readback": {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+        },
+        "store_attestation": {
+            "source": "TEST_DOUBLE_NOT_PRODUCTION",
+            "read_at_utc": NOW.isoformat(),
+        },
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+
+def _dispatch_ok(**kwargs):
+    return dispatch_news_rescore(
+        kwargs.pop("candidate", _candidate()),
+        score_fn=kwargs.pop("score_fn", _ok_scorer),
+        persistence_readback_fn=kwargs.pop("persistence_readback_fn", _ok_persistence),
+        observed_at=kwargs.pop("observed_at", NOW),
+        baseline_features=kwargs.pop("baseline_features", {"goalie_status": "UNCONFIRMED"}),
+        **kwargs,
+    )
 
 
 def test_feature_snapshot_hash_changes_when_material_news_is_added():
@@ -82,14 +118,10 @@ def test_feature_snapshot_hash_changes_when_material_news_is_added():
 
 
 def test_genuine_scorer_response_verifies_rescore_with_immutable_receipt():
-    out = dispatch_news_rescore(
-        _candidate(),
-        score_fn=_ok_scorer,
-        observed_at=NOW,
-        baseline_features={"goalie_status": "UNCONFIRMED"},
-    )
+    out = _dispatch_ok()
     assert out["dispatch_status"] == "NEWS_RESCORE_VERIFIED"
     assert out["model_rescore_verified"] is True
+    assert out["persistence_authenticated"] is True
     assert out["scoring_attempted"] is True
     assert out["feature_snapshot_changed"] is True
     assert out["before_feature_snapshot_hash"] != out["after_feature_snapshot_hash"]
@@ -99,6 +131,20 @@ def test_genuine_scorer_response_verifies_rescore_with_immutable_receipt():
     assert out["can_execute"] is False
     assert out["prediction_authority"] is False
     assert len(out["receipt_sha256"]) == 64
+
+
+def test_scorer_echoed_terminal_alone_never_verifies_without_store_readback():
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=_ok_scorer,
+        persistence_readback_fn=None,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PERSISTENCE_UNVERIFIED"
+    assert out["model_rescore_verified"] is False
+    assert out["persistence_authenticated"] is False
+    assert "NEWS_PERSISTENCE_STORE_NOT_BOUND" in out["blockers"]
 
 
 def test_forged_provider_id_and_unverified_identity_cannot_rescore():
@@ -203,12 +249,7 @@ def test_prop_target_is_passed_to_scorer_and_receipt():
             "point": 2.5,
         },
     )
-    out = dispatch_news_rescore(
-        candidate,
-        score_fn=capture,
-        observed_at=NOW,
-        baseline_features={"goalie_status": "UNCONFIRMED"},
-    )
+    out = _dispatch_ok(candidate=candidate, score_fn=capture)
     assert out["dispatch_status"] == "NEWS_RESCORE_VERIFIED"
     assert seen["request"]["prop_target"] == {
         "participant": "Ilya Sorokin",
@@ -306,26 +347,16 @@ def test_missing_immutable_or_terminal_evidence_never_verifies():
         del body["immutable_prediction_id"]
         return body
 
-    out = dispatch_news_rescore(
-        _candidate(),
-        score_fn=missing_immutable,
-        observed_at=NOW,
-        baseline_features={"goalie_status": "UNCONFIRMED"},
-    )
+    out = _dispatch_ok(score_fn=missing_immutable)
     assert out["dispatch_status"] == "NEWS_RESCORE_IMMUTABLE_PREDICTION_MISSING"
     assert out["model_rescore_verified"] is False
 
-    def missing_terminal(request):
-        body = _ok_scorer(request)
+    def missing_store_terminal(request, response):
+        body = _ok_persistence(request, response)
         del body["terminal_readback"]
         return body
 
-    out = dispatch_news_rescore(
-        _candidate(),
-        score_fn=missing_terminal,
-        observed_at=NOW,
-        baseline_features={"goalie_status": "UNCONFIRMED"},
-    )
+    out = _dispatch_ok(persistence_readback_fn=missing_store_terminal)
     assert out["dispatch_status"] == "NEWS_RESCORE_TERMINAL_READBACK_MISSING"
     assert out["model_rescore_verified"] is False
 
@@ -350,11 +381,18 @@ def test_route_mismatch_and_prior_receipt_collision_never_verify():
         body["prior_immutable_prediction_id"] = body["immutable_prediction_id"]
         return body
 
-    out = dispatch_news_rescore(
-        _candidate(),
-        score_fn=reused_prior,
-        observed_at=NOW,
-        baseline_features={"goalie_status": "UNCONFIRMED"},
-    )
+    out = _dispatch_ok(score_fn=reused_prior)
     assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_COLLISION"
+    assert out["model_rescore_verified"] is False
+
+
+def test_prior_receipt_must_remain_in_authenticated_store():
+    def drop_prior(request, response):
+        body = _ok_persistence(request, response)
+        body["prior_immutable_prediction_id"] = None
+        body["prior_immutable_prediction_preserved"] = False
+        return body
+
+    out = _dispatch_ok(persistence_readback_fn=drop_prior)
+    assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_NOT_PRESERVED"
     assert out["model_rescore_verified"] is False

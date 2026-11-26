@@ -18,6 +18,7 @@ on:
       - "artifacts/wow-engine/v17/news_reviewed_fact_producer.py"
       - "artifacts/wow-engine/v17/news_fitted_rescore_dispatch.py"
       - "artifacts/wow-engine/v17/news_fitted_scorer_binding.py"
+      - "artifacts/wow-engine/v17/news_fitted_persistence_readback.py"
       - "artifacts/wow-engine/v17/news_material_lead.py"
       - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
       - "artifacts/wow-engine/v17/gdelt_gkg_fallback.py"
@@ -55,6 +56,7 @@ on:
       - "artifacts/wow-engine/v17/news_reviewed_fact_producer.py"
       - "artifacts/wow-engine/v17/news_fitted_rescore_dispatch.py"
       - "artifacts/wow-engine/v17/news_fitted_scorer_binding.py"
+      - "artifacts/wow-engine/v17/news_fitted_persistence_readback.py"
       - "artifacts/wow-engine/v17/news_material_lead.py"
       - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
       - "artifacts/wow-engine/v17/gdelt_gkg_fallback.py"
@@ -109,6 +111,7 @@ jobs:
           test_v17_news_reviewed_fact_producer.py
           test_v17_news_fitted_rescore_dispatch.py
           test_v17_news_fitted_scorer_binding.py
+          test_v17_news_fitted_persistence_readback.py
           test_v17_news_material_lead.py
           test_v17_nhl_multiscout_identity.py
           test_v17_news_to_model_e2e.py
