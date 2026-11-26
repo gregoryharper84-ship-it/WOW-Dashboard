@@ -5,6 +5,8 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from v17.nhl_pregame_evidence_assembler import assemble_nhl_pregame_action_evidence
 from v17.nhl_starter_goalie_confirmation import (
     ATTESTATION_FIELD,
@@ -177,3 +179,54 @@ def test_gamecenter_identity_mismatch_blocks_snapshot():
         "NHL_GAMECENTER_CANONICAL_IDENTITY_MISMATCH" in result["blockers"]
     )
     assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "blocker"),
+    [
+        ({"official_event_id": "2026021235"}, "NHL_STARTER_EVENT_IDENTITY_MISMATCH"),
+        ({"home_team_id": "TOR"}, "NHL_STARTER_EVENT_IDENTITY_MISMATCH"),
+        ({"away_team_id": "TOR"}, "NHL_STARTER_EVENT_IDENTITY_MISMATCH"),
+        (
+            {"event_start_time_utc": (EVENT_START + timedelta(minutes=10)).isoformat()},
+            "NHL_STARTER_START_TIME_DISAGREEMENT",
+        ),
+    ],
+)
+def test_starters_must_match_resolved_game(overrides, blocker):
+    receipts = _attested_receipts()
+    for receipt in receipts:
+        receipt.update(overrides)
+        receipt[ATTESTATION_FIELD] = attest_receipt(receipt, ATTESTATION_KEY)
+
+    result = assemble_nhl_pregame_action_evidence(
+        resolved_identity=_identity(),
+        as_of_utc=NOW,
+        starter_provider_receipts=receipts,
+        trusted_providers=TRUSTED,
+        attestation_key=ATTESTATION_KEY,
+        injury_report={"source": "TEST_FIXTURE"},
+        get=_get,
+    )
+
+    assert result["status"] == "HELD"
+    assert blocker in result["blockers"]
+    assert "NHL_STARTING_GOALIE_NOT_CONFIRMED" in result["blockers"]
+    assert "goalie_identity_snapshot_id" not in result["sport_specific_evidence"]
+
+
+@pytest.mark.parametrize("neutral_site", [None, 1, "true"])
+def test_malformed_neutral_site_holds(neutral_site):
+    result = assemble_nhl_pregame_action_evidence(
+        resolved_identity=_identity(neutral_site=neutral_site),
+        as_of_utc=NOW,
+        starter_provider_receipts=_attested_receipts(),
+        trusted_providers=TRUSTED,
+        attestation_key=ATTESTATION_KEY,
+        injury_report={"source": "TEST_FIXTURE"},
+        get=_get,
+    )
+
+    assert result["status"] == "HELD"
+    assert "NHL_NEUTRAL_SITE_UNVERIFIED" in result["blockers"]
+    assert "neutral_site" not in result["sport_specific_evidence"]
