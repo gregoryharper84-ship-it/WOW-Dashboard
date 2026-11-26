@@ -58,6 +58,16 @@ def _ok_scorer(request):
         "feature_snapshot_hash": request["feature_snapshot_hash"],
         "calibrated_probability": 0.61,
         "calibrated_lower_bound": 0.54,
+        "immutable_prediction_id": "pred-news-rescore-001",
+        "prior_immutable_prediction_id": "pred-original-pregame-001",
+        "calibration_receipt_id": "calib-nhl-llp-v17-test",
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "prop_target": request.get("prop_target"),
+        "terminal_readback": {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+        },
         "prediction_authority": False,
         "can_execute": False,
     }
@@ -148,14 +158,9 @@ def test_scorer_claiming_execution_authority_is_rejected():
 
 def test_missing_or_mismatched_feature_hash_never_verifies():
     def missing_hash(request):
-        return {
-            "ok": True,
-            "code": "NEWS_FITTED_RESCORE_COMPLETE",
-            "model_version": "nhl-llp-fixture-v17.test",
-            "calibrated_probability": 0.61,
-            "prediction_authority": False,
-            "can_execute": False,
-        }
+        body = _ok_scorer(request)
+        del body["feature_snapshot_hash"]
+        return body
 
     out = dispatch_news_rescore(
         _candidate(),
@@ -168,7 +173,7 @@ def test_missing_or_mismatched_feature_hash_never_verifies():
 
     def wrong_hash(request):
         return {
-            **missing_hash(request),
+            **_ok_scorer(request),
             "feature_snapshot_hash": "d" * 64,
         }
 
@@ -228,4 +233,128 @@ def test_official_start_cutoff_blocks_post_start_rescore():
         baseline_features={"goalie_status": "UNCONFIRMED"},
     )
     assert out["dispatch_status"] == "NEWS_RESCORE_EVENT_ALREADY_STARTED"
+    assert out["model_rescore_verified"] is False
+
+
+def test_missing_calibrated_pair_never_verifies():
+    def missing_both(request):
+        body = _ok_scorer(request)
+        body["calibrated_probability"] = None
+        body["calibrated_lower_bound"] = None
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=missing_both,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PROBABILITY_INVALID"
+    assert out["model_rescore_verified"] is False
+    assert "CALIBRATED_PROBABILITY_REQUIRED" in out["blockers"]
+
+    def missing_lower(request):
+        body = _ok_scorer(request)
+        del body["calibrated_lower_bound"]
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=missing_lower,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_LOWER_BOUND_INVALID"
+    assert out["model_rescore_verified"] is False
+
+
+def test_nan_inf_and_inverted_lower_bound_never_verify():
+    def nan_prob(request):
+        body = _ok_scorer(request)
+        body["calibrated_probability"] = float("nan")
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=nan_prob,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PROBABILITY_INVALID"
+    assert out["model_rescore_verified"] is False
+
+    def inverted(request):
+        body = _ok_scorer(request)
+        body["calibrated_probability"] = 0.40
+        body["calibrated_lower_bound"] = 0.55
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=inverted,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_LOWER_BOUND_ORDER_INVALID"
+    assert out["model_rescore_verified"] is False
+    assert out["calibrated_probability"] is None
+
+
+def test_missing_immutable_or_terminal_evidence_never_verifies():
+    def missing_immutable(request):
+        body = _ok_scorer(request)
+        del body["immutable_prediction_id"]
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=missing_immutable,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_IMMUTABLE_PREDICTION_MISSING"
+    assert out["model_rescore_verified"] is False
+
+    def missing_terminal(request):
+        body = _ok_scorer(request)
+        del body["terminal_readback"]
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=missing_terminal,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_TERMINAL_READBACK_MISSING"
+    assert out["model_rescore_verified"] is False
+
+
+def test_route_mismatch_and_prior_receipt_collision_never_verify():
+    def wrong_route(request):
+        body = _ok_scorer(request)
+        body["controlling_specialist_route"] = "WRONG_ROUTE"
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=wrong_route,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_ROUTE_MISMATCH"
+    assert out["model_rescore_verified"] is False
+
+    def reused_prior(request):
+        body = _ok_scorer(request)
+        body["prior_immutable_prediction_id"] = body["immutable_prediction_id"]
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=reused_prior,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_COLLISION"
     assert out["model_rescore_verified"] is False

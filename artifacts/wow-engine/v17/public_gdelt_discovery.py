@@ -18,27 +18,29 @@ try:
     from v17.gdelt_gkg_fallback import fetch_gdelt_gkg_news
     from v17.news_feed_research_adapter import fetch_gdelt_news
     from v17.news_active_slate import select_active_slate
+    from v17.news_material_lead import material_lead_count, material_query_for, prefer_material_leads
 except ModuleNotFoundError:
     from gdelt_gkg_fallback import fetch_gdelt_gkg_news
     from news_feed_research_adapter import fetch_gdelt_news
     from news_active_slate import select_active_slate
+    from news_material_lead import material_lead_count, material_query_for, prefer_material_leads
 
-# Exact, stable 13-sport inventory. Active-season selection prefers in-season
-# sports so four daily polls cover live leagues faster than a blind 13-cycle.
+# Exact, stable 13-sport inventory. Values are league labels; material topic
+# clauses rotate per 6-hour slot so DOC queries cover injury/lineup/availability.
 SPORT_QUERIES = (
-    ("americanfootball_nfl", "NFL injury"),
-    ("basketball_nba", "NBA injury"),
-    ("icehockey_nhl", "NHL injury"),
-    ("americanfootball_ncaaf", "college football injury"),
-    ("basketball_ncaab", "college basketball injury"),
-    ("baseball_mlb", "MLB injury"),
-    ("basketball_wnba", "WNBA injury"),
-    ("soccer", "soccer injury"),
-    ("tennis", "tennis injury"),
-    ("golf", "golf tournament injury"),
-    ("mma", "MMA UFC injury"),
-    ("boxing", "boxing bout injury"),
-    ("cricket", "cricket injury"),
+    ("americanfootball_nfl", "NFL"),
+    ("basketball_nba", "NBA"),
+    ("icehockey_nhl", "NHL"),
+    ("americanfootball_ncaaf", "college football"),
+    ("basketball_ncaab", "college basketball"),
+    ("baseball_mlb", "MLB"),
+    ("basketball_wnba", "WNBA"),
+    ("soccer", "soccer"),
+    ("tennis", "tennis"),
+    ("golf", "golf tournament"),
+    ("mma", "MMA UFC"),
+    ("boxing", "boxing bout"),
+    ("cricket", "cricket"),
 )
 SPORT_QUERY_MAP = dict(SPORT_QUERIES)
 
@@ -96,20 +98,37 @@ def active_sport_keys(at: datetime) -> tuple[str, ...]:
     return tuple(key for key in keys if key in SPORT_QUERY_MAP)
 
 
+def _slot_index(at: datetime) -> int:
+    return int(at.timestamp() // (6 * 3600))
+
+
+def query_for(sport_key: str, at: datetime) -> str:
+    label = SPORT_QUERY_MAP.get(sport_key)
+    if not label:
+        raise ValueError("GDELT_SPORT_QUERY_UNKNOWN")
+    return material_query_for(label, slot_index=_slot_index(at))
+
+
 def selection(at: datetime) -> tuple[str, str]:
     """Prefer active-season sports for the fixed four-daily source refresh."""
     if at.tzinfo is None:
         raise ValueError("GDELT_SLOT_REQUIRES_UTC_AWARE_TIME")
     active = active_sport_keys(at)
-    index = int(at.timestamp() // (6 * 3600)) % len(active)
+    index = _slot_index(at) % len(active)
     sport_key = active[index]
-    return sport_key, SPORT_QUERY_MAP[sport_key]
+    return sport_key, query_for(sport_key, at)
 
 
 def discover(at: datetime | None = None, *, sport: str | None = None,
              client=None) -> dict:
     at = at or datetime.now(timezone.utc)
-    selected = next(((key, query) for key, query in SPORT_QUERIES if key == sport), None) if sport else selection(at)
+    if sport:
+        if sport not in SPORT_QUERY_MAP:
+            selected = None
+        else:
+            selected = (sport, query_for(sport, at))
+    else:
+        selected = selection(at)
     if selected is None:
         return {
             "schema_version": "wow.v17.public_news_receipt.v1",
@@ -164,7 +183,11 @@ def discover(at: datetime | None = None, *, sport: str | None = None,
             fallback_status = "RECOVERED"
         else:
             fallback_status = fallback.code or "SOURCE_FALLBACK_FAILED"
-    articles = result.data.get("articles", []) if isinstance(result.data, dict) else []
+    raw_articles = result.data.get("articles", []) if isinstance(result.data, dict) else []
+    articles = prefer_material_leads(
+        raw_articles if isinstance(raw_articles, list) else [],
+        limit=20,
+    )
     active_keys = list(active_sport_keys(at))
     return {
         "schema_version": "wow.v17.public_news_receipt.v1",
@@ -174,6 +197,7 @@ def discover(at: datetime | None = None, *, sport: str | None = None,
         "source_observed_at": result.observed_at,
         "articles": articles,
         "article_count": len(articles),
+        "material_lead_count": material_lead_count(articles),
         "attempt_count": len(attempts),
         "attempts": attempts,
         "acquisition_path": acquisition_path,
@@ -189,7 +213,8 @@ def discover(at: datetime | None = None, *, sport: str | None = None,
         "attribution": "The GDELT Project (https://www.gdeltproject.org/)",
         "query": query,
         "cadence": (
-            "active-season sport per 6-hour slot; GKG dump fallback on DOC "
+            "active-season sport per 6-hour slot with rotating material "
+            "injury/lineup/availability topics; GKG dump fallback on DOC "
             "429/timeout; not a full 13-sport feed"
         ),
         "active_season_sports": active_keys,

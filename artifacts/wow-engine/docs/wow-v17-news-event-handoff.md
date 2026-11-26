@@ -24,10 +24,14 @@ invokes a registered scorer.
    scorer, scheduler or database is introduced.
 5. A material reviewed change produces
    `research_status=NEWS_RESEARCH_RESCORE_REQUESTED`, not a model change.
-   The controlling model owner must fetch authoritative current inputs,
-   rerun the certified market-specific specialist, freeze a new pregame
-   model receipt and obtain an independently verified terminal readback.
-   The original pregame receipt must remain immutable.
+   Scout binds `production_news_fitted_scorer` (route registry). Unregistered
+   routes stay typed `MODEL_UNAVAILABLE`. A verified rescore requires both
+   calibrated probability and lower bound in `(0,1)` with
+   `lower_bound <= calibrated_probability`, matching feature hash, distinct
+   immutable prediction id (prior preserved), calibration receipt id, and a
+   non-executing `V17_TERMINAL_REDUCER` terminal readback. Missing either
+   calibrated field, inverted bounds, or missing immutable/terminal evidence
+   never sets `model_rescore_verified=true`.
 
 ## Explicit safety/acceptance
 

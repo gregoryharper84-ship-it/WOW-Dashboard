@@ -71,6 +71,15 @@ def _ok_scorer(request):
         "feature_snapshot_hash": request["feature_snapshot_hash"],
         "calibrated_probability": 0.58,
         "calibrated_lower_bound": 0.51,
+        "immutable_prediction_id": "pred-nhl-news-e2e-001",
+        "prior_immutable_prediction_id": "pred-nhl-original-001",
+        "calibration_receipt_id": "calib-nhl-e2e-001",
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "terminal_readback": {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+        },
         "prediction_authority": False,
         "can_execute": False,
     }
@@ -151,6 +160,7 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
             "team_event_candidates": [{
                 **identity,
                 "event_start_utc": "2026-11-24T00:30:00Z",
+                "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
                 "baseline_features": {"goalie_status": "UNCONFIRMED"},
             }],
             "prop_candidates": [],
@@ -162,13 +172,14 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
     assert attached["news_reviewed_facts_bridge"]["status"] == "NEWS_REVIEWED_FACTS_ATTACHED"
     assert attached["news_reviewed_facts_bridge"]["candidates_attached"] == 1
 
-    # Default enrich_handoff uses unbound scorer → MODEL_UNAVAILABLE.
-    # Re-dispatch with a genuine scorer to prove the fitted path.
+    # Default enrich_handoff binds the production registry; without a registered
+    # adapter the route remains typed MODEL_UNAVAILABLE (not a synthetic score).
     enriched = enrich_handoff(attached)
     candidate = enriched["model_handoff"]["team_event_candidates"][0]
     assert candidate["news_research_handoff"]["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
     assert candidate["news_research_rescore_requested"] is True
     assert candidate["news_fitted_rescore_receipt"]["dispatch_status"] == "NEWS_RESCORE_MODEL_UNAVAILABLE"
+    assert "MODEL_UNAVAILABLE" in candidate["news_fitted_rescore_receipt"]["blockers"]
     assert candidate["news_model_rescore_verified"] is False
     assert candidate["can_execute"] is False
 
@@ -182,6 +193,11 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
     assert receipt["fitted_model_version"] == "nhl-llp-fixture-v17.e2e"
     assert receipt["before_feature_snapshot_hash"] != receipt["after_feature_snapshot_hash"]
     assert receipt["calibrated_probability"] == 0.58
+    assert receipt["calibrated_lower_bound"] == 0.51
+    assert receipt["immutable_prediction_id"] == "pred-nhl-news-e2e-001"
+    assert receipt["prior_immutable_prediction_id"] == "pred-nhl-original-001"
+    assert receipt["calibration_receipt_id"] == "calib-nhl-e2e-001"
+    assert receipt["terminal_readback"]["authority"] == "V17_TERMINAL_REDUCER"
     assert receipt["can_execute"] is False
     assert verified["news_fitted_rescore_summary"]["rescore_verified"] == 1
     assert verified["can_execute"] is False

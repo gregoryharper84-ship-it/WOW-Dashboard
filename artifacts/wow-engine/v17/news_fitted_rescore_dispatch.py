@@ -10,13 +10,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 CAN_EXECUTE = False
 SCHEMA = "wow.v17.news_fitted_rescore_receipt.v1"
+TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 ScoreFn = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+
+
+def _finite_open_unit_interval(value: Any) -> float | None:
+    """Require a real number strictly inside (0, 1); reject bool/NaN/inf."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or not 0.0 < number < 1.0:
+        return None
+    return number
 
 
 def _utc(value: Any) -> datetime | None:
@@ -133,7 +145,10 @@ def dispatch_news_rescore(
     """Attempt one news-triggered controlling-specialist rescore for a candidate.
 
     ``model_rescore_verified`` becomes true only when a genuine scorer response
-    is returned with a changed permitted feature hash and no invented authority.
+    returns both calibrated probability and lower bound in (0, 1) with
+    lower_bound <= calibrated_probability, matching feature hash, immutable
+    prediction + calibration receipt ids, and a non-executing terminal
+    readback under ``V17_TERMINAL_REDUCER``.
     """
     now = observed_at or datetime.now(timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
@@ -175,6 +190,10 @@ def dispatch_news_rescore(
         "scoring_response_code": None,
         "calibrated_probability": None,
         "calibrated_lower_bound": None,
+        "immutable_prediction_id": None,
+        "prior_immutable_prediction_id": None,
+        "calibration_receipt_id": None,
+        "terminal_readback": None,
         "scoring_attempted": False,
         "model_rescore_verified": False,
         "prediction_authority": False,
@@ -319,16 +338,25 @@ def dispatch_news_rescore(
     if not receipt["fitted_model_version"]:
         return finish("NEWS_RESCORE_MODEL_VERSION_MISSING", blockers=["MODEL_VERSION_MISSING"])
 
-    calibrated = response.get("calibrated_probability")
-    lower = response.get("calibrated_lower_bound")
-    if calibrated is not None:
-        if not isinstance(calibrated, (int, float)) or isinstance(calibrated, bool) or not 0 < float(calibrated) < 1:
-            return finish("NEWS_RESCORE_PROBABILITY_INVALID", blockers=["CALIBRATED_PROBABILITY_INVALID"])
-        receipt["calibrated_probability"] = float(calibrated)
-    if lower is not None:
-        if not isinstance(lower, (int, float)) or isinstance(lower, bool) or not 0 < float(lower) < 1:
-            return finish("NEWS_RESCORE_LOWER_BOUND_INVALID", blockers=["CALIBRATED_LOWER_BOUND_INVALID"])
-        receipt["calibrated_lower_bound"] = float(lower)
+    calibrated = _finite_open_unit_interval(response.get("calibrated_probability"))
+    if calibrated is None:
+        return finish(
+            "NEWS_RESCORE_PROBABILITY_INVALID",
+            blockers=["CALIBRATED_PROBABILITY_REQUIRED"],
+        )
+    lower = _finite_open_unit_interval(response.get("calibrated_lower_bound"))
+    if lower is None:
+        return finish(
+            "NEWS_RESCORE_LOWER_BOUND_INVALID",
+            blockers=["CALIBRATED_LOWER_BOUND_REQUIRED"],
+        )
+    if lower > calibrated:
+        return finish(
+            "NEWS_RESCORE_LOWER_BOUND_ORDER_INVALID",
+            blockers=["CALIBRATED_LOWER_BOUND_EXCEEDS_PROBABILITY"],
+        )
+    receipt["calibrated_probability"] = calibrated
+    receipt["calibrated_lower_bound"] = lower
 
     response_feature_hash = response.get("feature_snapshot_hash")
     if (
@@ -345,6 +373,75 @@ def dispatch_news_rescore(
             blockers=["SCORER_FEATURE_HASH_MISMATCH"],
         )
 
+    response_route = response.get("controlling_specialist_route")
+    if response_route is not None and str(response_route).strip() != route:
+        return finish(
+            "NEWS_RESCORE_ROUTE_MISMATCH",
+            blockers=["CONTROLLING_ROUTE_MISMATCH"],
+        )
+
+    response_prop = response.get("prop_target")
+    if prop_target is not None and response_prop is not None:
+        if not isinstance(response_prop, Mapping) or dict(response_prop) != prop_target:
+            return finish(
+                "NEWS_RESCORE_PROP_TARGET_MISMATCH",
+                blockers=["PROP_TARGET_MISMATCH"],
+            )
+
+    immutable_id = str(response.get("immutable_prediction_id") or "").strip()
+    if not immutable_id:
+        return finish(
+            "NEWS_RESCORE_IMMUTABLE_PREDICTION_MISSING",
+            blockers=["IMMUTABLE_PREDICTION_ID_MISSING"],
+        )
+    prior_id_raw = response.get("prior_immutable_prediction_id")
+    prior_id = str(prior_id_raw).strip() if prior_id_raw is not None else None
+    if prior_id == "":
+        prior_id = None
+    if prior_id is not None and prior_id == immutable_id:
+        return finish(
+            "NEWS_RESCORE_PRIOR_RECEIPT_COLLISION",
+            blockers=["PRIOR_IMMUTABLE_ID_REUSED"],
+        )
+
+    calibration_id = str(response.get("calibration_receipt_id") or "").strip()
+    if not calibration_id:
+        return finish(
+            "NEWS_RESCORE_CALIBRATION_RECEIPT_MISSING",
+            blockers=["CALIBRATION_RECEIPT_ID_MISSING"],
+        )
+
+    terminal = response.get("terminal_readback")
+    if not isinstance(terminal, Mapping):
+        return finish(
+            "NEWS_RESCORE_TERMINAL_READBACK_MISSING",
+            blockers=["TERMINAL_READBACK_MISSING"],
+        )
+    if str(terminal.get("authority") or "").strip() != TERMINAL_AUTHORITY:
+        return finish(
+            "NEWS_RESCORE_TERMINAL_READBACK_INVALID",
+            blockers=["TERMINAL_AUTHORITY_INVALID"],
+        )
+    if not str(terminal.get("status") or "").strip():
+        return finish(
+            "NEWS_RESCORE_TERMINAL_READBACK_MISSING",
+            blockers=["TERMINAL_STATUS_MISSING"],
+        )
+    if terminal.get("can_execute") is True:
+        return finish(
+            "NEWS_RESCORE_AUTHORITY_REJECTED",
+            blockers=["TERMINAL_CLAIMED_EXECUTION"],
+        )
+
+    receipt["immutable_prediction_id"] = immutable_id
+    receipt["prior_immutable_prediction_id"] = prior_id
+    receipt["calibration_receipt_id"] = calibration_id
+    receipt["terminal_readback"] = {
+        "authority": TERMINAL_AUTHORITY,
+        "status": str(terminal.get("status")).strip(),
+        "can_execute": False,
+    }
+
     receipt["model_rescore_verified"] = True
     receipt["scoring_response_digest"] = _hash({
         "code": code,
@@ -353,6 +450,10 @@ def dispatch_news_rescore(
         "prop_target": prop_target,
         "calibrated_probability": receipt["calibrated_probability"],
         "calibrated_lower_bound": receipt["calibrated_lower_bound"],
+        "immutable_prediction_id": immutable_id,
+        "prior_immutable_prediction_id": prior_id,
+        "calibration_receipt_id": calibration_id,
+        "terminal_readback": receipt["terminal_readback"],
     })
     return finish("NEWS_RESCORE_VERIFIED")
 
