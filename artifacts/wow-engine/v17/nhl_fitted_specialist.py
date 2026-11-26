@@ -436,6 +436,12 @@ def load_nhl_fitted_candidate(
     This is the only artifact-resolution path. Request evidence cannot override
     it, and a malformed row is skipped with its typed blockers reported when no
     eligible row remains.
+
+    Among verified eligible rows, prefer ``EMPIRICAL_WILSON_BINS_V1`` over
+    ``IDENTITY_RAW_PROBABILITY_V1`` so a newer identity-only research row cannot
+    shadow a Wilson-bound Design A candidate. Within the preferred method, the
+    newest ``created_at`` wins. Identity remains eligible when no Wilson row
+    verifies.
     """
     if db is None:
         raise NHLFittedSpecialistError(
@@ -466,20 +472,27 @@ def load_nhl_fitted_candidate(
     )
     rows = [dict(item) for item in (getattr(result, "data", None) or []) if isinstance(item, Mapping)]
     rejected: list[str] = []
+    verified: list[NHLFittedCandidate] = []
     for row in rows:
         created_at = _aware(row.get("created_at"))
         if created_at is None or created_at > as_of + timedelta(minutes=5):
             rejected.append("NHL_FITTED_ARTIFACT_NOT_AVAILABLE_AS_OF")
             continue
         try:
-            return _verify_candidate(row)
+            verified.append(_verify_candidate(row))
         except NHLFittedSpecialistError as exc:
             rejected.extend(exc.blockers)
-    raise NHLFittedSpecialistError(
-        "MODEL_INPUTS_INSUFFICIENT",
-        rejected or ["NHL_FITTED_ARTIFACT_UNAVAILABLE"],
-        {"rows_examined": len(rows)},
-    )
+    if not verified:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            rejected or ["NHL_FITTED_ARTIFACT_UNAVAILABLE"],
+            {"rows_examined": len(rows)},
+        )
+    # Rows arrive newest-first; first Wilson match is the newest Wilson candidate.
+    for candidate in verified:
+        if str(candidate.calibrator.get("method") or "") == EMPIRICAL_CALIBRATION_METHOD:
+            return candidate
+    return verified[0]
 
 
 def _project_source_event(row: Mapping[str, Any]) -> dict[str, Any]:

@@ -251,6 +251,153 @@ def assemble_nhl_pregame_action_evidence(
     }
 
 
+# Server-owned Action seams. Production never invents trusted providers, HMAC
+# keys, injury reports, or starter receipts. Tests may install fixtures.
+_ACTION_SEAMS: dict[str, Any] = {
+    "trusted_providers": None,
+    "attestation_key": None,
+    "injury_report": None,
+    "starter_provider_receipts": None,
+    "get": None,
+    "capture": None,
+}
+
+
+def install_nhl_pregame_action_seams(
+    *,
+    trusted_providers: Mapping[str, TrustedProvider] | None = None,
+    attestation_key: bytes | None = None,
+    injury_report: Mapping[str, Any] | None = None,
+    starter_provider_receipts: Sequence[Any] | None = None,
+    get: Callable[..., Any] | None = None,
+    capture: Callable[..., Mapping[str, Any]] | None = None,
+) -> None:
+    """Install server-owned pregame Action seams (tests/ops only)."""
+    _ACTION_SEAMS["trusted_providers"] = trusted_providers
+    _ACTION_SEAMS["attestation_key"] = attestation_key
+    _ACTION_SEAMS["injury_report"] = injury_report
+    _ACTION_SEAMS["starter_provider_receipts"] = starter_provider_receipts
+    _ACTION_SEAMS["get"] = get
+    _ACTION_SEAMS["capture"] = capture
+
+
+def reset_nhl_pregame_action_seams() -> None:
+    """Clear Action seams so production fail-closed defaults apply."""
+    for key in list(_ACTION_SEAMS):
+        _ACTION_SEAMS[key] = None
+
+
+def _resolved_identity_from_request(req: Any) -> dict[str, Any]:
+    """Project TeamEventRequest fields into assembler identity shape."""
+    evidence = getattr(req, "sport_specific_evidence", None)
+    evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
+    event_id = str(
+        evidence_map.get("event_id")
+        or evidence_map.get("official_event_id")
+        or getattr(req, "official_event_id", "")
+        or ""
+    ).strip()
+    start = (
+        getattr(req, "event_start_time_utc", None)
+        or evidence_map.get("event_start_time_utc")
+        or evidence_map.get("event_start_time")
+    )
+    verified_at = (
+        evidence_map.get("identity_verified_at")
+        or getattr(req, "latest_material_update_timestamp", None)
+    )
+    identity = {
+        "event_id": event_id,
+        "home_team": str(getattr(req, "home_team", "") or evidence_map.get("home_team") or "").strip().upper(),
+        "away_team": str(getattr(req, "away_team", "") or evidence_map.get("away_team") or "").strip().upper(),
+        "event_start_time": start,
+        "identity_verified_at": verified_at,
+        "neutral_site": evidence_map.get("neutral_site"),
+        "season": evidence_map.get("season") or getattr(req, "season", None),
+        "market_features_used": False,
+        "prediction_authority": False,
+        "can_execute": CAN_EXECUTE,
+    }
+    # Pass through server-resolved identity receipt fields when present.
+    for key in (
+        "identity_provider",
+        "identity_source",
+        "identity_match_sha256",
+    ):
+        if key in evidence_map:
+            identity[key] = evidence_map[key]
+    return identity
+
+
+def hydrate_nhl_team_event_request_evidence(
+    req: Any,
+    *,
+    as_of_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Run the Action assembler against a TeamEventRequest before scoring.
+
+    Replaces caller ``sport_specific_evidence`` only when the assembler returns
+    ``ASSEMBLED``. A ``HELD`` package raises ``NHLFittedSpecialistError`` with
+    the typed blockers. Missing server seams remain fail-closed — this never
+    invents trusted providers, attestation keys, or injury reports.
+    """
+    from v17.nhl_fitted_specialist import NHLFittedSpecialistError
+
+    now = as_of_utc or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("as_of_utc must be timezone-aware")
+
+    kwargs: dict[str, Any] = {
+        "resolved_identity": _resolved_identity_from_request(req),
+        "as_of_utc": now,
+        "trusted_providers": _ACTION_SEAMS.get("trusted_providers"),
+        "attestation_key": _ACTION_SEAMS.get("attestation_key"),
+        "injury_report": _ACTION_SEAMS.get("injury_report"),
+        "starter_provider_receipts": _ACTION_SEAMS.get("starter_provider_receipts"),
+    }
+    get_fn = _ACTION_SEAMS.get("get")
+    capture_fn = _ACTION_SEAMS.get("capture")
+    if callable(get_fn):
+        kwargs["get"] = get_fn
+    if callable(capture_fn):
+        kwargs["capture"] = capture_fn
+
+    package = assemble_nhl_pregame_action_evidence(**kwargs)
+    if str(package.get("status") or "") != "ASSEMBLED":
+        blockers = package.get("blockers")
+        codes = (
+            sorted({str(code) for code in blockers if str(code).strip()})
+            if isinstance(blockers, (list, tuple))
+            else ["NHL_PREGAME_ACTION_EVIDENCE_HELD"]
+        )
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            codes or ["NHL_PREGAME_ACTION_EVIDENCE_HELD"],
+            {
+                "assembler_status": package.get("status"),
+                "assembler_code": package.get("code"),
+                "official_event_id": package.get("official_event_id"),
+            },
+        )
+
+    evidence = package.get("sport_specific_evidence")
+    if not isinstance(evidence, Mapping) or not evidence:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_PREGAME_ACTION_EVIDENCE_EMPTY"],
+        )
+    # Assign assembled evidence onto the request object used by the scorer.
+    try:
+        req.sport_specific_evidence = dict(evidence)
+    except Exception as exc:  # noqa: BLE001 - immutable request objects fail closed
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_PREGAME_ACTION_EVIDENCE_ASSIGNMENT_FAILED"],
+            {"reason": type(exc).__name__},
+        ) from exc
+    return package
+
+
 __all__ = [
     "ACCEPTED_ASSEMBLER_SETTLEMENT",
     "CAN_EXECUTE",
@@ -258,4 +405,7 @@ __all__ = [
     "PROBABILITY_PUBLISHABLE",
     "TrustedProvider",
     "assemble_nhl_pregame_action_evidence",
+    "hydrate_nhl_team_event_request_evidence",
+    "install_nhl_pregame_action_seams",
+    "reset_nhl_pregame_action_seams",
 ]

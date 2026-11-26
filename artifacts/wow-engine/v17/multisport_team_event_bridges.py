@@ -345,6 +345,20 @@ def _accepts_db_kwarg(fn: Any) -> bool:
         return False
 
 
+def _hydrate_nhl_pregame_action_evidence(req: Any) -> None:
+    """Fail-closed Action evidence assembly before the fitted NHL scorer runs.
+
+    Server seams (trusted providers, attestation key, injury) must be installed
+    by the rights/ops path. Without them the assembler HOLDs — never invents
+    OFFICIAL providers or injury reports from the caller body.
+    """
+    from v17.nhl_pregame_evidence_assembler import (
+        hydrate_nhl_team_event_request_evidence,
+    )
+
+    hydrate_nhl_team_event_request_evidence(req)
+
+
 def _score_one(
     sport: str,
     req: Any,
@@ -363,6 +377,8 @@ def _score_one(
         client = event_api
 
     try:
+        if sport == "NHL":
+            _hydrate_nhl_pregame_action_evidence(req)
         if sport == "NHL" and client is not None and _accepts_db_kwarg(scorer):
             raw_package = scorer(req, db=client)
         else:
@@ -565,6 +581,7 @@ __all__ = [
     "RUNTIME_CERTIFICATIONS",
     "SPORT_MODEL_INPUTS",
     "_apply_governed_calibration",
+    "_hydrate_nhl_pregame_action_evidence",
     "install_multisport_team_event_bridges",
     "score_mma_team_event_request",
     "score_nhl_team_event_request",
