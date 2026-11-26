@@ -210,3 +210,32 @@ publisher facts for material changes, a source-rights-approved durable
 persistence strategy if used as model data, and a fresh, immutable
 specialist+terminal receipt for *model* publication. A green CI test,
 artifact upload, or GDELT headline receipt is not that acceptance.
+
+
+## November 24, 2026 — GKG dump fallback + active-season sampling
+
+Live DOC ArtList probes and scheduled Actions receipts continue to show
+`SOURCE_RATE_LIMITED` / `SOURCE_TIMEOUT` with zero articles on shared egress.
+GDELT's own 429 body points high-traffic users at downloadable datasets.
+The GDELT Project ToU already covers those public dumps with attribution.
+
+**Engineering repair (acquisition path only):**
+
+1. Keep exactly one DOC ArtList request per run (no same-run DOC sleep/retry).
+2. On `SOURCE_RATE_LIMITED` or `SOURCE_TIMEOUT` only, attempt a **same-provider**
+   fallback: read `https://data.gdeltproject.org/gdeltv2/lastupdate.txt`, then
+   download at most two recent `*.gkg.csv.zip` slices (walk back 15-minute
+   stamps when the listed pointer 404s). Extract HTTPS `DocumentIdentifier`
+   URLs and `<PAGE_TITLE>` values matching the selected sport. Never download
+   publisher article bodies.
+3. Receipt fields: `acquisition_path` (`GDELT_DOC` or
+   `GDELT_GKG_DUMP_FALLBACK`), `fallback_status`, and per-attempt `channel`.
+4. Fixed source-refresh rotation now prefers **active-season** sports for the
+   current calendar month so four daily polls cover live leagues sooner.
+   Off-season sports remain in inventory as `NOT_SAMPLED_THIS_RUN` unless
+   explicitly requested. Multi-Scout compact-slate selection is unchanged.
+
+This does **not** enable ESPN/FOX/NewsAPI. Those remain rights-gated candidates.
+It does **not** authenticate publisher facts, map official events, or trigger
+fitted-specialist rescoring. Independent Verification must still confirm a
+scheduled nonempty artifact after merge. `can_execute=false`.

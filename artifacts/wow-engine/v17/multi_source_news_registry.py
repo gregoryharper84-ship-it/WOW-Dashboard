@@ -32,7 +32,8 @@ class NewsSource:
 SOURCES = (
     NewsSource("GDELT", "HEADLINES", "https://www.gdeltproject.org/",
                "EXISTING_PUBLIC_DISCOVERY", "EXISTING_NEEDS_RUNTIME_RECEIPT",
-               "Existing collector; 429s and actual articles must be audited per run."),
+               "DOC ArtList plus same-ToU GKG dump fallback on 429/timeout; "
+               "actual nonempty receipts must still be audited per run."),
     NewsSource("ESPN_RSS", "HEADLINES", "https://www.espn.com/espn/rss/news",
                "OPTIONAL_EDITORIAL_METADATA", "RIGHTS_AND_ACCESS_REVIEW",
                "RSS endpoint access and automated-use rights are unverified."),
