@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from v17.native_research.extract import ResultRow
 from v17.pitchapi_client import (
     LEAGUES_PATH,
     PITCHAPI_ORIGIN,
@@ -16,9 +17,11 @@ from v17.pitchapi_client import (
     PitchAPIError,
     PitchAPIRawResponse,
     _select_probe_season,
+    canonical_event_crosswalk,
     credential_class,
     find_wow_league,
     league_discovery_canary,
+    openfootball_season_token,
     soccer_pitchapi_probe_after_forward,
 )
 
@@ -227,7 +230,9 @@ def test_canary_receipt_shape_and_no_secret_leakage(monkeypatch):
         return _raw(200, matches_body, headers={"X-Request-Id": "req-2"}, url=request.full_url)
 
     client = PitchAPIClient.from_environment(transport=transport)
-    receipt = league_discovery_canary(client=client, wow_league="EPL", now=NOW)
+    receipt = league_discovery_canary(
+        client=client, wow_league="EPL", now=NOW, perform_crosswalk=False
+    )
     assert receipt["status"] == "OK"
     assert receipt["http_status"] == 200
     assert receipt["byte_count"] == len(json.dumps(leagues_body).encode("utf-8"))
@@ -241,11 +246,82 @@ def test_canary_receipt_shape_and_no_secret_leakage(monkeypatch):
     assert receipt["match_probe"]["season"] == "2026/2027"
     assert receipt["match_probe"]["freshness"]["status"] == "FRESH"
     assert receipt["match_probe"]["fresh_relative_to_soccer_source_results_stale"] is True
-    assert receipt["match_probe"]["canonical_event_crosswalk"] == "NOT_PERFORMED"
+    assert receipt["match_probe"]["canonical_event_crosswalk"]["status"] == "NOT_PERFORMED"
     assert receipt["rights"]["production_use_authorized"] is False
     dumped = json.dumps(receipt)
     assert SECRET not in dumped
     assert "pk_test_secret" not in dumped
+
+
+def test_openfootball_season_token_and_crosswalk_consistent():
+    assert openfootball_season_token("2026/2027") == "2026-27"
+    pitch = []
+    reference = []
+    for i in range(12):
+        day = __import__("datetime").date(2026, 9, 1 + i)
+        pitch.append(ResultRow(day=day, home=f"Home {i}", away=f"Away {i}", home_goals=2, away_goals=1))
+        reference.append(ResultRow(day=day, home=f"Home {i}", away=f"Away {i}", home_goals=2, away_goals=1))
+    out = canonical_event_crosswalk(pitch, reference, min_overlap=10)
+    assert out["status"] == "CONSISTENT"
+    assert out["overlap"] == 12
+    assert out["persisted"] is False
+    assert out["production_use_authorized"] is False
+
+
+def test_canary_crosswalk_uses_injected_openfootball_reference(monkeypatch):
+    monkeypatch.setenv("PITCHAPI_API_KEY", SECRET)
+    leagues_body = _leagues_payload(
+        {
+            "id": "l_4Kd0Wq",
+            "name": "Premier League",
+            "country_code": "ENG",
+            "seasons": ["2026/2027"],
+            "is_free": True,
+        }
+    )
+    matches = []
+    of_matches = []
+    for i in range(12):
+        day = f"2026-09-{i+1:02d}"
+        matches.append(
+            {
+                "id": f"m_A{i:05d}",
+                "date": day,
+                "status": "finished",
+                "score_home": 1,
+                "score_away": 0,
+                "home_team": {"id": f"t_H{i:05d}", "name": f"Home {i}"},
+                "away_team": {"id": f"t_A{i:05d}", "name": f"Away {i}"},
+            }
+        )
+        of_matches.append({"date": day, "team1": f"Home {i}", "team2": f"Away {i}", "score": {"ft": [1, 0]}})
+
+    matches_body = {
+        "data": {
+            "league": {"id": "l_4Kd0Wq", "name": "Premier League", "season": "2026/2027"},
+            "matches": matches,
+        }
+    }
+
+    def transport(request, timeout_s):
+        if request.full_url.endswith("/v1/leagues"):
+            return _raw(200, leagues_body, headers={"X-Request-Id": "req-1"})
+        return _raw(200, matches_body, headers={"X-Request-Id": "req-2"}, url=request.full_url)
+
+    def of_getter(url: str):
+        assert "2026-27/en.1.json" in url
+        return {"name": "English Premier League", "matches": of_matches}
+
+    client = PitchAPIClient.from_environment(transport=transport)
+    receipt = league_discovery_canary(
+        client=client, wow_league="EPL", now=NOW, openfootball_getter=of_getter
+    )
+    xref = receipt["match_probe"]["canonical_event_crosswalk"]
+    assert xref["status"] == "CONSISTENT"
+    assert xref["overlap"] == 12
+    assert xref["persisted"] is False
+    assert xref["reference"]["season_token"] == "2026-27"
+    assert receipt["blocker_progress"]["cleared"] is False if "blocker_progress" in receipt else True
 
 
 def test_match_probe_failure_preserves_discovery_receipt(monkeypatch):
@@ -320,7 +396,9 @@ def test_soccer_hook_selects_stale_league_and_never_clears_blocker(monkeypatch):
             "EPL": {"blocked_by_code": {}, "registration_id": "r2"},
         }
     }
-    receipt = soccer_pitchapi_probe_after_forward(forward, client=client, now=NOW)
+    receipt = soccer_pitchapi_probe_after_forward(
+        forward, client=client, now=NOW, openfootball_getter=lambda _url: {"matches": []}
+    )
     assert receipt["selected_stale_league"] == "LALIGA"
     assert receipt["stale_leagues"] == ["LALIGA"]
     assert receipt["blocker_progress"]["cleared"] is False

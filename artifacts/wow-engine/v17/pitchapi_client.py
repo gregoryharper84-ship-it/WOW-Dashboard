@@ -30,7 +30,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlencode, urlsplit
 
 from v17.native_research.extract import ResultRow, LEAGUE_NAMES
-from v17.native_research.verify import results_freshness
+from v17.native_research.verify import cross_check, results_freshness
 
 PITCHAPI_ORIGIN = "https://api.pitchapi.dev"
 LEAGUES_PATH = "/v1/leagues"
@@ -255,6 +255,141 @@ def _select_probe_season(seasons: Sequence[str], now: datetime | None = None) ->
     if normalized:
         return max(normalized)
     return preferred
+
+
+def openfootball_season_token(pitchapi_season: str) -> str:
+    """Map PitchAPI ``2026/2027`` (or ``2026-27``) to OpenFootball ``2026-27``."""
+    normalized = _season_for_pitchapi(pitchapi_season)
+    parts = normalized.split("/")
+    if len(parts) == 2 and len(parts[0]) == 4 and len(parts[1]) == 4:
+        return f"{parts[0]}-{parts[1][2:]}"
+    if len(parts) == 1 and len(parts[0]) == 4:
+        return parts[0]
+    raise PitchAPIError("PITCHAPI_SEASON_UNMAPPABLE", f"Cannot map season {pitchapi_season!r} to OpenFootball.")
+
+
+def openfootball_result_rows_from_payload(payload: Any) -> list[ResultRow]:
+    """Convert an OpenFootball competition JSON body into ResultRow evidence."""
+    if not isinstance(payload, Mapping):
+        raise PitchAPIError("OPENFOOTBALL_SCHEMA_INVALID", "OpenFootball body must be an object.")
+    matches = payload.get("matches")
+    if not isinstance(matches, list):
+        raise PitchAPIError("OPENFOOTBALL_SCHEMA_INVALID", "OpenFootball matches must be a list.")
+    rows: list[ResultRow] = []
+    for match in matches:
+        if not isinstance(match, Mapping):
+            continue
+        day_text = match.get("date")
+        home = match.get("team1")
+        away = match.get("team2")
+        if not isinstance(day_text, str) or not isinstance(home, str) or not isinstance(away, str):
+            continue
+        try:
+            day = date.fromisoformat(day_text[:10])
+        except ValueError:
+            continue
+        score = match.get("score")
+        if isinstance(score, Mapping):
+            score = score.get("ft")
+        hg = ag = None
+        if isinstance(score, list) and len(score) >= 2 and all(isinstance(v, (int, float)) for v in score[:2]):
+            hg, ag = int(score[0]), int(score[1])
+        rows.append(ResultRow(day=day, home=home.strip(), away=away.strip(), home_goals=hg, away_goals=ag))
+    return rows
+
+
+# Keep the OpenFootball path map local so crosswalk tests do not import the
+# full soccer candidate module (and its optional runtime deps) just for codes.
+OPENFOOTBALL_BASE_URL = "https://raw.githubusercontent.com/openfootball/football.json/master"
+OPENFOOTBALL_COMPETITIONS = {
+    "EPL": "en.1",
+    "BUNDESLIGA": "de.1",
+    "LALIGA": "es.1",
+    "SERIE_A": "it.1",
+    "LIGUE_1": "fr.1",
+}
+
+
+def load_openfootball_result_rows(
+    wow_league: str,
+    pitchapi_season: str,
+    *,
+    getter: Callable[[str], Any] | None = None,
+) -> tuple[list[ResultRow], dict[str, Any]]:
+    """Bounded single-file OpenFootball pull for canonical crosswalk evidence only."""
+    code = OPENFOOTBALL_COMPETITIONS.get(wow_league.upper())
+    if not code:
+        raise PitchAPIError("OPENFOOTBALL_LEAGUE_UNSUPPORTED", f"No OpenFootball mapping for {wow_league}.")
+    season_token = openfootball_season_token(pitchapi_season)
+    url = f"{OPENFOOTBALL_BASE_URL}/{season_token}/{code}.json"
+
+    def _default_getter(target: str) -> Any:
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(target, headers={"User-Agent": USER_AGENT}, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                status = int(getattr(response, "status", 200))
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+        except urllib.error.HTTPError as exc:
+            if int(exc.code) == 404:
+                raise PitchAPIError(
+                    "OPENFOOTBALL_SEASON_NOT_FOUND",
+                    f"OpenFootball file missing for {season_token}.",
+                ) from exc
+            raise PitchAPIError("OPENFOOTBALL_HTTP_ERROR", f"OpenFootball HTTP {exc.code}.") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise PitchAPIError("OPENFOOTBALL_REQUEST_FAILED", "OpenFootball request failed.") from exc
+        if status != 200:
+            raise PitchAPIError("OPENFOOTBALL_HTTP_ERROR", f"OpenFootball HTTP {status}.")
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise PitchAPIError("OPENFOOTBALL_RESPONSE_TOO_LARGE", "OpenFootball response exceeded bound.")
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PitchAPIError("OPENFOOTBALL_INVALID_JSON", "OpenFootball response was not valid JSON.") from exc
+
+    payload = (getter or _default_getter)(url)
+    rows = openfootball_result_rows_from_payload(payload)
+    meta = {
+        "source": "OPENFOOTBALL:football.json",
+        "url": url,
+        "season_token": season_token,
+        "competition_code": code,
+        "row_count": len(rows),
+        "scored_rows": sum(1 for row in rows if row.scored),
+        "persisted": False,
+    }
+    return rows, meta
+
+
+def canonical_event_crosswalk(
+    pitchapi_rows: Sequence[ResultRow],
+    reference_rows: Sequence[ResultRow],
+    *,
+    min_overlap: int = 10,
+) -> dict[str, Any]:
+    """Score-consistent event pairing against OpenFootball. Never persists or clears blockers."""
+    check = cross_check(pitchapi_rows, reference_rows, min_overlap=min_overlap)
+    status = str(check.get("status") or "UNKNOWN")
+    return {
+        "status": status,
+        "reference_source": "OPENFOOTBALL:football.json",
+        "overlap": check.get("overlap"),
+        "conflict_count": check.get("conflict_count"),
+        "conflicts": check.get("conflicts") or [],
+        "min_overlap_required": min_overlap,
+        "pitchapi_scored_rows": sum(1 for row in pitchapi_rows if row.scored),
+        "reference_scored_rows": sum(1 for row in reference_rows if row.scored),
+        "persisted": False,
+        "production_use_authorized": False,
+        "can_execute": CAN_EXECUTE,
+        "note": (
+            "Evidence-only pairing. A CONSISTENT result does not authorize storage, "
+            "training, or clearing SOCCER_SOURCE_RESULTS_STALE."
+        ),
+    }
 
 
 def _parse_leagues_envelope(payload: Any) -> list[LeagueSummary]:
@@ -515,6 +650,9 @@ def league_discovery_canary(
     wow_league: str = "EPL",
     now: datetime | None = None,
     probe_matches: bool = True,
+    reference_rows: Sequence[ResultRow] | None = None,
+    openfootball_getter: Callable[[str], Any] | None = None,
+    perform_crosswalk: bool = True,
 ) -> dict[str, Any]:
     """Authenticated league-discovery receipt. Never logs or returns the API key."""
     observed_at = _now_iso(now)
@@ -574,6 +712,42 @@ def league_discovery_canary(
         try:
             league_meta, rows, match_raw = client.list_league_matches(matched.id, season=season)
             fresh = results_freshness(rows, now or datetime.now(timezone.utc))
+            crosswalk: dict[str, Any] = {
+                "status": "NOT_PERFORMED",
+                "persisted": False,
+                "production_use_authorized": False,
+                "can_execute": CAN_EXECUTE,
+            }
+            if perform_crosswalk:
+                try:
+                    ref_rows = list(reference_rows) if reference_rows is not None else None
+                    ref_meta: dict[str, Any] | None = None
+                    if ref_rows is None:
+                        ref_rows, ref_meta = load_openfootball_result_rows(
+                            wow_league,
+                            season,
+                            getter=openfootball_getter,
+                        )
+                    crosswalk = canonical_event_crosswalk(rows, ref_rows)
+                    if ref_meta is not None:
+                        crosswalk["reference"] = ref_meta
+                except PitchAPIError as xref_exc:
+                    crosswalk = {
+                        "status": "FAILED",
+                        "code": xref_exc.code,
+                        "persisted": False,
+                        "production_use_authorized": False,
+                        "can_execute": CAN_EXECUTE,
+                        "error": xref_exc.to_dict(),
+                    }
+                except Exception:  # noqa: BLE001
+                    crosswalk = {
+                        "status": "FAILED",
+                        "code": "PITCHAPI_CROSSWALK_FAILED",
+                        "persisted": False,
+                        "production_use_authorized": False,
+                        "can_execute": CAN_EXECUTE,
+                    }
             receipt["match_probe"] = {
                 "status": "OK",
                 "endpoint": f"{PITCHAPI_ORIGIN}{LEAGUES_PATH}/{matched.id}/matches",
@@ -589,10 +763,10 @@ def league_discovery_canary(
                 "fresh_relative_to_soccer_source_results_stale": fresh.get("status") == "FRESH",
                 "league_meta_name": league_meta.get("name") if isinstance(league_meta, Mapping) else None,
                 "persisted": False,
-                "canonical_event_crosswalk": "NOT_PERFORMED",
+                "canonical_event_crosswalk": crosswalk,
                 "note": (
-                    "Freshness probe only. Canonical OpenFootball crosswalk and "
-                    "storage/training authorization remain outstanding."
+                    "Freshness and optional OpenFootball crosswalk are evidence only. "
+                    "They never authorize storage/training or clear SOCCER_SOURCE_RESULTS_STALE."
                 ),
             }
         except PitchAPIError as probe_exc:
@@ -639,6 +813,7 @@ def soccer_pitchapi_probe_after_forward(
     *,
     client: PitchAPIClient | None = None,
     now: datetime | None = None,
+    openfootball_getter: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     """Soccer maintenance hook: evidence-only PitchAPI canary for stale leagues.
 
@@ -652,7 +827,13 @@ def soccer_pitchapi_probe_after_forward(
         if isinstance(rec, Mapping) and (rec.get("blocked_by_code") or {}).get("SOCCER_SOURCE_RESULTS_STALE")
     ]
     wow_league = stale[0] if stale else "EPL"
-    receipt = league_discovery_canary(client=client, wow_league=wow_league, now=now)
+    receipt = league_discovery_canary(
+        client=client,
+        wow_league=wow_league,
+        now=now,
+        openfootball_getter=openfootball_getter,
+        perform_crosswalk=True,
+    )
     receipt["stale_leagues"] = stale
     receipt["selected_stale_league"] = wow_league if stale else None
     receipt["blocker_progress"] = {
