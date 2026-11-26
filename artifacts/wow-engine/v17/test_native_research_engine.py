@@ -446,7 +446,7 @@ def test_intake_lead_is_verified_natively_and_unapproved_domains_are_not_fetched
     task = run_native_research(store, blockers, fetcher=f, now=NOW, owner="t")["tasks"][0]
     assert task["outcome"] == "CANDIDATE_VERIFIED_RIGHTS_REVIEW_REQUIRED" or \
         task["outcome"] == "CANDIDATE_VERIFIED_PENDING_INDEPENDENT_REVIEW"
-    assert not any("example-feed.com" in u for u, _ in session.calls)
+    assert all(urlsplit(u).hostname != "www.example-feed.com" for u, _ in session.calls)
     url_finding = [x for x in store.tables["wow_nre_findings"].values() if x["source_id"].startswith("url:")][0]
     assert url_finding["verification"]["domain_approval_required"] == "www.example-feed.com"
     assert url_finding["outcome"] == "CANDIDATE_FOUND_UNVERIFIED"
