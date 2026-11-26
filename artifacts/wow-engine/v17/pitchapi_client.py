@@ -240,6 +240,17 @@ def _season_for_pitchapi(wow_season: str | None, now: datetime | None = None) ->
     return f"{year}/{year + 1}"
 
 
+def _select_probe_season(seasons: Sequence[str], now: datetime | None = None) -> str:
+    """Prefer the season that corresponds to ``now``; otherwise the latest catalogue season."""
+    preferred = _season_for_pitchapi(None, now)
+    normalized = [_season_for_pitchapi(s) for s in seasons if isinstance(s, str) and s.strip()]
+    if preferred in normalized:
+        return preferred
+    if normalized:
+        return max(normalized)
+    return preferred
+
+
 def _parse_leagues_envelope(payload: Any) -> list[LeagueSummary]:
     if not isinstance(payload, Mapping):
         raise PitchAPIError("PITCHAPI_ENVELOPE_INVALID", "PitchAPI leagues response must be a JSON object.")
@@ -446,7 +457,6 @@ def find_wow_league(leagues: Sequence[LeagueSummary], wow_league: str) -> League
     target = WOW_TO_PITCHAPI_LEAGUE_NAME.get(wow_league.upper())
     if not target:
         return None
-    # Prefer ENG for EPL-style names when country codes exist.
     preferred_country = {
         "EPL": "ENG",
         "LALIGA": "ESP",
@@ -456,9 +466,17 @@ def find_wow_league(leagues: Sequence[LeagueSummary], wow_league: str) -> League
     }.get(wow_league.upper())
     exact = [row for row in leagues if row.name.casefold() == target.casefold()]
     if preferred_country:
-        country_hits = [row for row in exact if (row.country_code or "").upper() == preferred_country]
+        country_hits = [
+            row for row in exact if (row.country_code or "").strip().upper() == preferred_country
+        ]
         if len(country_hits) == 1:
             return country_hits[0]
+        # Name-only fallback is limited to rows without an explicit country.
+        # An explicit mismatch (e.g. RSA Premier League for EPL) is rejected.
+        unknown_country = [row for row in exact if not (row.country_code or "").strip()]
+        if len(unknown_country) == 1:
+            return unknown_country[0]
+        return None
     if len(exact) == 1:
         return exact[0]
     return None
@@ -544,34 +562,53 @@ def league_discovery_canary(
         }
         if not probe_matches:
             return receipt
-        season = None
-        if matched.seasons:
-            season = matched.seasons[0]
-        else:
-            season = _season_for_pitchapi(None, now)
-        league_meta, rows, match_raw = client.list_league_matches(matched.id, season=season)
-        fresh = results_freshness(rows, now or datetime.now(timezone.utc))
-        # Compare against the OpenFootball stale blocker semantics without clearing it.
-        receipt["match_probe"] = {
-            "status": "OK",
-            "endpoint": f"{PITCHAPI_ORIGIN}{LEAGUES_PATH}/{matched.id}/matches",
-            "season": season,
-            "http_status": match_raw.status,
-            "byte_count": len(match_raw.body),
-            "body_sha256": hashlib.sha256(match_raw.body).hexdigest(),
-            "request_id": match_raw.headers.get("x-request-id") or match_raw.headers.get("x-pitchapi-request-id"),
-            "result_rows": len(rows),
-            "scored_rows": sum(1 for row in rows if row.scored),
-            "freshness": fresh,
-            "fresh_relative_to_soccer_source_results_stale": fresh.get("status") == "FRESH",
-            "league_meta_name": league_meta.get("name") if isinstance(league_meta, Mapping) else None,
-            "persisted": False,
-            "canonical_event_crosswalk": "NOT_PERFORMED",
-            "note": (
-                "Freshness probe only. Canonical OpenFootball crosswalk and "
-                "storage/training authorization remain outstanding."
-            ),
-        }
+        # Match probe is optional evidence. Failures must not overwrite a successful
+        # league-discovery receipt (HTTP/bytes/hash/request_id stay catalogue-scoped).
+        season = _select_probe_season(matched.seasons, now)
+        try:
+            league_meta, rows, match_raw = client.list_league_matches(matched.id, season=season)
+            fresh = results_freshness(rows, now or datetime.now(timezone.utc))
+            receipt["match_probe"] = {
+                "status": "OK",
+                "endpoint": f"{PITCHAPI_ORIGIN}{LEAGUES_PATH}/{matched.id}/matches",
+                "season": season,
+                "http_status": match_raw.status,
+                "byte_count": len(match_raw.body),
+                "body_sha256": hashlib.sha256(match_raw.body).hexdigest(),
+                "request_id": match_raw.headers.get("x-request-id")
+                or match_raw.headers.get("x-pitchapi-request-id"),
+                "result_rows": len(rows),
+                "scored_rows": sum(1 for row in rows if row.scored),
+                "freshness": fresh,
+                "fresh_relative_to_soccer_source_results_stale": fresh.get("status") == "FRESH",
+                "league_meta_name": league_meta.get("name") if isinstance(league_meta, Mapping) else None,
+                "persisted": False,
+                "canonical_event_crosswalk": "NOT_PERFORMED",
+                "note": (
+                    "Freshness probe only. Canonical OpenFootball crosswalk and "
+                    "storage/training authorization remain outstanding."
+                ),
+            }
+        except PitchAPIError as probe_exc:
+            receipt["match_probe"] = {
+                "status": "FAILED",
+                "endpoint": f"{PITCHAPI_ORIGIN}{LEAGUES_PATH}/{matched.id}/matches",
+                "season": season,
+                "code": probe_exc.code,
+                "http_status": probe_exc.http_status,
+                "request_id": probe_exc.request_id,
+                "retry_after_seconds": probe_exc.retry_after_seconds,
+                "persisted": False,
+                "error": probe_exc.to_dict(),
+            }
+        except Exception as probe_exc:  # noqa: BLE001
+            receipt["match_probe"] = {
+                "status": "FAILED",
+                "endpoint": f"{PITCHAPI_ORIGIN}{LEAGUES_PATH}/{matched.id}/matches",
+                "season": season,
+                "code": f"PITCHAPI_MATCH_PROBE_{type(probe_exc).__name__.upper()}",
+                "persisted": False,
+            }
         return receipt
     except PitchAPIError as exc:
         receipt.update(

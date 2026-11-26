@@ -11,10 +11,13 @@ from v17.pitchapi_client import (
     LEAGUES_PATH,
     PITCHAPI_ORIGIN,
     USER_AGENT,
+    LeagueSummary,
     PitchAPIClient,
     PitchAPIError,
     PitchAPIRawResponse,
+    _select_probe_season,
     credential_class,
+    find_wow_league,
     league_discovery_canary,
     soccer_pitchapi_probe_after_forward,
 )
@@ -170,13 +173,13 @@ def test_canary_receipt_shape_and_no_secret_leakage(monkeypatch):
             "id": "l_4Kd0Wq",
             "name": "Premier League",
             "country_code": "ENG",
-            "seasons": ["2025/2026", "2024/2025"],
+            "seasons": ["2024/2025", "2025/2026", "2026/2027"],
             "is_free": True,
         }
     )
     matches_body = {
         "data": {
-            "league": {"id": "l_4Kd0Wq", "name": "Premier League", "season": "2025/2026"},
+            "league": {"id": "l_4Kd0Wq", "name": "Premier League", "season": "2026/2027"},
             "matches": [
                 {
                     "id": "m_B8x2K9",
@@ -195,6 +198,7 @@ def test_canary_receipt_shape_and_no_secret_leakage(monkeypatch):
         if request.full_url.endswith("/v1/leagues"):
             return _raw(200, leagues_body, headers={"X-Request-Id": "req-1"})
         assert "/v1/leagues/l_4Kd0Wq/matches" in request.full_url
+        assert "season=2026%2F2027" in request.full_url or "season=2026/2027" in request.full_url
         assert "status=upcoming" not in request.full_url
         return _raw(200, matches_body, headers={"X-Request-Id": "req-2"}, url=request.full_url)
 
@@ -210,6 +214,7 @@ def test_canary_receipt_shape_and_no_secret_leakage(monkeypatch):
     assert receipt["observed_at"].endswith("Z")
     assert receipt["persisted"] is False
     assert receipt["can_execute"] is False
+    assert receipt["match_probe"]["season"] == "2026/2027"
     assert receipt["match_probe"]["freshness"]["status"] == "FRESH"
     assert receipt["match_probe"]["fresh_relative_to_soccer_source_results_stale"] is True
     assert receipt["match_probe"]["canonical_event_crosswalk"] == "NOT_PERFORMED"
@@ -217,6 +222,53 @@ def test_canary_receipt_shape_and_no_secret_leakage(monkeypatch):
     dumped = json.dumps(receipt)
     assert SECRET not in dumped
     assert "pk_test_secret" not in dumped
+
+
+def test_match_probe_failure_preserves_discovery_receipt(monkeypatch):
+    monkeypatch.setenv("PITCHAPI_API_KEY", SECRET)
+    leagues_body = _leagues_payload(
+        {
+            "id": "l_4Kd0Wq",
+            "name": "Premier League",
+            "country_code": "ENG",
+            "seasons": ["2026/2027"],
+            "is_free": True,
+        }
+    )
+
+    def transport(request, timeout_s):
+        if request.full_url.endswith("/v1/leagues"):
+            return _raw(200, leagues_body, headers={"X-Request-Id": "req-leagues"})
+        return _raw(429, {"error": {"code": "RATE_LIMIT"}}, headers={"Retry-After": "9", "X-Request-Id": "req-matches"})
+
+    client = PitchAPIClient.from_environment(transport=transport)
+    receipt = league_discovery_canary(client=client, wow_league="EPL", now=NOW)
+    assert receipt["status"] == "OK"
+    assert receipt["http_status"] == 200
+    assert receipt["request_id"] == "req-leagues"
+    assert receipt["league_count"] == 1
+    assert receipt["byte_count"] == len(json.dumps(leagues_body).encode("utf-8"))
+    assert receipt["match_probe"]["status"] == "FAILED"
+    assert receipt["match_probe"]["code"] == "PITCHAPI_RATE_LIMITED"
+    assert receipt["match_probe"]["http_status"] == 429
+    assert receipt["match_probe"]["request_id"] == "req-matches"
+    assert receipt["match_probe"]["retry_after_seconds"] == 9
+
+
+def test_select_probe_season_prefers_current_not_first_catalogue_entry():
+    assert _select_probe_season(["2024/2025", "2026/2027"], NOW) == "2026/2027"
+    assert _select_probe_season(["2024/2025", "2025/2026"], NOW) == "2025/2026"
+
+
+def test_find_wow_league_rejects_explicit_country_mismatch():
+    rsa_only = [
+        LeagueSummary("l_rsa001", "Premier League", "RSA", ("2026/2027",), True),
+    ]
+    assert find_wow_league(rsa_only, "EPL") is None
+    eng = LeagueSummary("l_4Kd0Wq", "Premier League", "ENG", ("2026/2027",), True)
+    assert find_wow_league([*rsa_only, eng], "EPL") is eng
+    unknown = LeagueSummary("l_unk001", "Premier League", None, ("2026/2027",), True)
+    assert find_wow_league([unknown], "EPL") is unknown
 
 
 def test_soccer_hook_selects_stale_league_and_never_clears_blocker(monkeypatch):
