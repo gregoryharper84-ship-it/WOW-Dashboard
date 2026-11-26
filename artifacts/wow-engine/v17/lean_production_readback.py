@@ -41,10 +41,6 @@ class ReadbackHold(ValueError):
     pass
 
 
-# Render deploys only CI-gated commits: native checksPass, or "off" with the
-# required-checks deployer as the single writer. "commit" (or missing) never.
-CI_GATED_TRIGGERS = frozenset({"checksPass", "off"})
-
 def validate_source_run(run: dict[str, Any], *, target_sha: str) -> None:
     """A workflow-run event must be bound to an authentic main CI result."""
     if (run.get("name") != SOURCE_WORKFLOW
@@ -106,7 +102,7 @@ def classify_readback(*, target_sha: str, main_sha: str,
         if (service.get("id") != service_id
                 or service.get("branch") != "main"
                 or service.get("repo") != "https://github.com/" + REPO
-                or service.get("autoDeployTrigger") not in CI_GATED_TRIGGERS):
+                or service.get("autoDeployTrigger") != "checksPass"):
             raise ReadbackHold("RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:" + role)
         actual_sha, deploy_id = _live_deploy(deploys.get(role), role)
         if actual_sha != target_sha or not deploy_id:
