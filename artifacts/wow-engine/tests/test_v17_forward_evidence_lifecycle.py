@@ -577,12 +577,9 @@ def test_soccer_stale_source_results_block_only_affected_teams():
     assert ("Gamma FC", "Beta FC") in pairs and ("Alpha FC", "Beta FC") not in pairs
 
 
-# --- NHL adapter (reuses the fitted-specialist test fixtures) -------------
+# --- NHL adapter (reuses standalone fitted-specialist test fixtures) ------
 
-import sys as _sys
-
-_sys.path.insert(0, str(Path(__file__).parent))
-import test_v17_nhl_fitted_specialist as nhlt  # noqa: E402
+import nhl_forward_test_fixtures as nhlt  # noqa: E402
 import v17.nhl_fitted_specialist as nhl_mod  # noqa: E402
 from v17.forward_evidence_adapters import NHLRegularSeasonAdapter  # noqa: E402
 
@@ -618,7 +615,7 @@ def test_nhl_capture_equals_specialist_probability(nhl_receipts):
     assert receipt["captured"] == 1 and receipt["events_considered"] == 1
     row = db.tables[fe.CAPTURE_TABLE][0]
     expected = nhl_mod.score_nhl_fitted_candidate(
-        nhl_mod._verify_candidate(nhlt._candidate_row()), nhlt._reconstruction(), event_key="NHL:2026029001",
+        nhl_mod._verify_candidate(nhlt._candidate_row()), nhlt._reconstruct(nhlt._events()), event_key="NHL:2026029001",
         evidence={})["calibrated_home_probability"]
     assert row["official_event_id"] == "2026029001"
     assert row["probabilities"]["HOME"] == expected
