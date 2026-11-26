@@ -217,6 +217,17 @@ def test_observer_audit_does_not_attribute_postfix_counts_to_base_sha() -> None:
     assert "not** a measurement" in text
     assert "Historical unisolated-optional-job candidate inventory" in text
 
+    # The writer pin and the audit's rationale for it must move together: a
+    # newly pinned writer with no documented reason, or a rationale whose pin
+    # was deleted, is drift. Iterate the pin table so both cannot diverge.
+    assert "NEVER_ISOLATED_WRITER_STEPS" in text, (
+        "the audit no longer names the never-isolate writer pin"
+    )
+    for workflow in NEVER_ISOLATED_WRITER_STEPS:
+        assert workflow in text, (
+            f"{workflow} is pinned never-isolate but the audit does not document it"
+        )
+
 
 def _run_isolated_bash(
     script: str,
