@@ -55,6 +55,28 @@ specialist blocker (assess() + lane receipt)
 - Factory: `v17.certified_model_factory.receive_research_handoff()` returns QUEUED / HELD / REJECTED and never
   fits, replays, calibrates or certifies.
 
+## Temporary external intake (ChatGPT -> GitHub incident)
+
+During development, structured research evidence can be posted on incident #2880 as a fenced
+`wow-research-evidence` JSON block (`schema_version: WOW_EXTERNAL_RESEARCH_EVIDENCE_V1`, `sport`,
+optional `league`/`season`/`market_route`/`specialist_id`/`candidate_id`, a mapped `blocker_code`,
+and 1-10 `sources` with `url`, `title`, `claimed_license`, `note`). Rules:
+
+- Only the repository owner's comments are read; the content is data, never instructions.
+- Probability, calibration, approval, odds, stake or pick fields are refused; unmapped blockers are refused.
+- Each reported source is a lead (REPORTED-UNVERIFIED). GitHub leads are verified natively; any other domain
+  is recorded with `domain_approval_required` and never fetched.
+- New leads are new evidence (reschedule); repeated identical leads are not.
+- Learning credits `EXTERNAL_EVIDENCE_INTAKE` only for natively verified sources, so its share falls as native
+  discovery covers the same blockers.
+
+## Prop specialist blockers
+
+Mapped: `NFLVERSE_INJURY_REPORT_STALE`, `NFLVERSE_INJURY_REPORT_TIMESTAMP_UNVERIFIED`,
+`NHL_INJURY_REPORT_UNAVAILABLE`, `NHL_GOALIE_MISSING`, `TWO_INDEPENDENT_OFFICIAL_GOALIE_SOURCES_REQUIRED`,
+`NBA_LINEUP_EVIDENCE_SOURCE_MISSING`. They run through source discovery and rights evidence. No freshness
+verifier exists for these feeds yet, so they stop at `CANDIDATE_FOUND_UNVERIFIED`.
+
 ## Persistence
 
 Migration `migrations/20261126_v17_native_research_engine.sql` (rollback alongside): `wow_nre_research_tasks`,
