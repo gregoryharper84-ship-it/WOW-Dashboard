@@ -9,6 +9,7 @@ exercise shape only; they are not independent production acceptance.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Any, Callable, Mapping
 
 CAN_EXECUTE = False
@@ -165,30 +166,58 @@ def validate_news_persistence_readback(
         if not _same_mapping(req_prop, store_prop):
             return None, "NEWS_RESCORE_PERSISTENCE_MISMATCH", ["PROP_TARGET_STORE_MISMATCH"]
 
+    req_sport = _text(request.get("sport_key"))
+    store_sport = _text(persistence.get("sport_key"))
+    if not req_sport or not store_sport or store_sport != req_sport:
+        return None, "NEWS_RESCORE_PERSISTENCE_MISMATCH", ["SPORT_KEY_STORE_MISMATCH"]
+
     terminal = persistence.get("terminal_readback")
     if not isinstance(terminal, Mapping):
         return None, "NEWS_RESCORE_TERMINAL_READBACK_MISSING", ["TERMINAL_READBACK_MISSING"]
     if str(terminal.get("authority") or "").strip() != TERMINAL_AUTHORITY:
         return None, "NEWS_RESCORE_TERMINAL_READBACK_INVALID", ["TERMINAL_AUTHORITY_INVALID"]
-    if not str(terminal.get("status") or "").strip():
+    native_status = str(terminal.get("status") or "").strip()
+    if not native_status:
         return None, "NEWS_RESCORE_TERMINAL_READBACK_MISSING", ["TERMINAL_STATUS_MISSING"]
     if terminal.get("can_execute") is not False:
         return None, "NEWS_RESCORE_TERMINAL_READBACK_INVALID", ["TERMINAL_CAN_EXECUTE_NOT_FALSE"]
 
-    # Optional stronger linkage when the store names the prediction/calibration.
+    # Terminal must carry an authentic join to the prediction/calibration row.
+    # Do not synthesize linkage from the store when terminal omits these fields.
     terminal_pred = _text(terminal.get("immutable_prediction_id"))
-    if terminal_pred is not None and terminal_pred != store_immutable:
-        return None, "NEWS_RESCORE_PERSISTENCE_MISMATCH", ["TERMINAL_PREDICTION_ID_MISMATCH"]
     terminal_cal = _text(terminal.get("calibration_receipt_id"))
-    if terminal_cal is not None and terminal_cal != store_calibration:
-        return None, "NEWS_RESCORE_PERSISTENCE_MISMATCH", ["TERMINAL_CALIBRATION_ID_MISMATCH"]
     terminal_feature = _text(terminal.get("feature_snapshot_hash"))
-    if terminal_feature is not None and terminal_feature != store_feature:
+    if terminal_pred is None and terminal_cal is None and terminal_feature is None:
+        return None, "NEWS_RESCORE_TERMINAL_LINKAGE_MISSING", ["TERMINAL_LINKAGE_MISSING_ALL"]
+    missing_linkage: list[str] = []
+    if terminal_pred is None:
+        missing_linkage.append("TERMINAL_PREDICTION_ID_MISSING")
+    if terminal_cal is None:
+        missing_linkage.append("TERMINAL_CALIBRATION_ID_MISSING")
+    if terminal_feature is None:
+        missing_linkage.append("TERMINAL_FEATURE_HASH_MISSING")
+    if missing_linkage:
+        return None, "NEWS_RESCORE_TERMINAL_LINKAGE_MISSING", missing_linkage
+    if terminal_pred != store_immutable:
+        return None, "NEWS_RESCORE_PERSISTENCE_MISMATCH", ["TERMINAL_PREDICTION_ID_MISMATCH"]
+    if terminal_cal != store_calibration:
+        return None, "NEWS_RESCORE_PERSISTENCE_MISMATCH", ["TERMINAL_CALIBRATION_ID_MISMATCH"]
+    if terminal_feature != store_feature:
         return None, "NEWS_RESCORE_PERSISTENCE_MISMATCH", ["TERMINAL_FEATURE_HASH_MISMATCH"]
 
     attestation = persistence.get("store_attestation")
     if not isinstance(attestation, Mapping) or not str(attestation.get("source") or "").strip():
         return None, "NEWS_RESCORE_PERSISTENCE_UNVERIFIED", ["STORE_ATTESTATION_MISSING"]
+    read_at = _text(attestation.get("read_at_utc"))
+    if read_at is None:
+        return None, "NEWS_RESCORE_PERSISTENCE_UNVERIFIED", ["STORE_READ_AT_MISSING"]
+    # Reject naive/unparseable timestamps without inventing a clock.
+    try:
+        parsed_read = datetime.fromisoformat(read_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None, "NEWS_RESCORE_PERSISTENCE_UNVERIFIED", ["STORE_READ_AT_INVALID"]
+    if parsed_read.tzinfo is None or parsed_read.utcoffset() is None:
+        return None, "NEWS_RESCORE_PERSISTENCE_UNVERIFIED", ["STORE_READ_AT_NAIVE"]
 
     normalized = {
         "ok": True,
@@ -200,15 +229,16 @@ def validate_news_persistence_readback(
         "calibration_receipt_id": store_calibration,
         "terminal_readback": {
             "authority": TERMINAL_AUTHORITY,
-            "status": str(terminal.get("status")).strip(),
+            # Preserve the native reducer status; do not rewrite linkage from store.
+            "status": native_status,
             "can_execute": False,
-            "immutable_prediction_id": store_immutable,
-            "calibration_receipt_id": store_calibration,
-            "feature_snapshot_hash": store_feature,
+            "immutable_prediction_id": terminal_pred,
+            "calibration_receipt_id": terminal_cal,
+            "feature_snapshot_hash": terminal_feature,
         },
         "store_attestation": {
             "source": str(attestation.get("source")).strip(),
-            "read_at_utc": attestation.get("read_at_utc"),
+            "read_at_utc": read_at,
         },
         "prediction_authority": False,
         "can_execute": False,

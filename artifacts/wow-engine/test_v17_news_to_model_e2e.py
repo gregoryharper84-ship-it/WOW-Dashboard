@@ -89,6 +89,7 @@ def _ok_persistence(request, response):
         "prior_immutable_prediction_preserved": True,
         "calibration_receipt_id": response.get("calibration_receipt_id"),
         "official_event_id": request.get("official_event_id"),
+        "sport_key": request.get("sport_key"),
         "controlling_specialist_route": request.get("controlling_specialist_route"),
         "feature_snapshot_hash": request.get("feature_snapshot_hash"),
         "model_version": response.get("model_version"),

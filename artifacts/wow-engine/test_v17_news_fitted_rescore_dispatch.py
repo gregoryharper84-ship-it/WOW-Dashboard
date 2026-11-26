@@ -85,6 +85,7 @@ def _ok_persistence(request, response):
         "prior_immutable_prediction_preserved": True,
         "calibration_receipt_id": response.get("calibration_receipt_id"),
         "official_event_id": request.get("official_event_id"),
+        "sport_key": request.get("sport_key"),
         "controlling_specialist_route": request.get("controlling_specialist_route"),
         "feature_snapshot_hash": request.get("feature_snapshot_hash"),
         "model_version": response.get("model_version"),
@@ -421,3 +422,20 @@ def test_prior_receipt_must_remain_in_authenticated_store():
     out = _dispatch_ok(persistence_readback_fn=drop_prior)
     assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_NOT_PRESERVED"
     assert out["model_rescore_verified"] is False
+
+
+def test_unlinked_store_terminal_never_verifies_and_is_not_synthesized():
+    def unlinked_terminal(request, response):
+        body = _ok_persistence(request, response)
+        body["terminal_readback"] = {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+        }
+        return body
+
+    out = _dispatch_ok(persistence_readback_fn=unlinked_terminal)
+    assert out["dispatch_status"] == "NEWS_RESCORE_TERMINAL_LINKAGE_MISSING"
+    assert out["model_rescore_verified"] is False
+    assert out.get("immutable_prediction_id") is None or out.get("model_rescore_verified") is False
+    assert "TERMINAL_LINKAGE_MISSING_ALL" in (out.get("blockers") or [])

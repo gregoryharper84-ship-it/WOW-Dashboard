@@ -35,6 +35,7 @@ def _store(**overrides):
         "prior_immutable_prediction_preserved": True,
         "calibration_receipt_id": "calib-1",
         "official_event_id": "2026112701",
+        "sport_key": "americanfootball_nfl",
         "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
         "feature_snapshot_hash": "a" * 64,
         "model_version": "nfl-fixture-v1",
@@ -43,7 +44,7 @@ def _store(**overrides):
         "prop_target": None,
         "terminal_readback": {
             "authority": "V17_TERMINAL_REDUCER",
-            "status": "HOLD_RESEARCH_RESCORE",
+            "status": "HELD",
             "can_execute": False,
             "immutable_prediction_id": "pred-new",
             "calibration_receipt_id": "calib-1",
@@ -104,6 +105,9 @@ def test_terminal_can_execute_must_be_explicit_false():
             "authority": "V17_TERMINAL_REDUCER",
             "status": "HOLD_RESEARCH_RESCORE",
             "can_execute": bad,
+            "immutable_prediction_id": "pred-new",
+            "calibration_receipt_id": "calib-1",
+            "feature_snapshot_hash": "a" * 64,
         }
         _, status, blockers = validate_news_persistence_readback(
             REQUEST, RESPONSE, _store(terminal_readback=terminal),
@@ -158,3 +162,69 @@ def test_prior_is_bound_from_store_not_scorer_assertion_alone():
     )
     assert status == "NEWS_RESCORE_PRIOR_RECEIPT_NOT_PRESERVED"
     assert "PRIOR_IMMUTABLE_ID_NOT_IN_STORE" in blockers
+
+
+def test_unlinked_terminal_without_join_fields_is_rejected_not_synthesized():
+    terminal = {
+        "authority": "V17_TERMINAL_REDUCER",
+        "status": "HELD",
+        "can_execute": False,
+    }
+    _, status, blockers = validate_news_persistence_readback(
+        REQUEST, RESPONSE, _store(terminal_readback=terminal),
+    )
+    assert status == "NEWS_RESCORE_TERMINAL_LINKAGE_MISSING"
+    assert "TERMINAL_LINKAGE_MISSING_ALL" in blockers
+
+
+def test_missing_one_terminal_linkage_field_fails_closed():
+    terminal = {
+        "authority": "V17_TERMINAL_REDUCER",
+        "status": "HELD",
+        "can_execute": False,
+        "immutable_prediction_id": "pred-new",
+        "calibration_receipt_id": "calib-1",
+        # feature hash omitted
+    }
+    _, status, blockers = validate_news_persistence_readback(
+        REQUEST, RESPONSE, _store(terminal_readback=terminal),
+    )
+    assert status == "NEWS_RESCORE_TERMINAL_LINKAGE_MISSING"
+    assert "TERMINAL_FEATURE_HASH_MISSING" in blockers
+
+
+def test_unrelated_terminal_prediction_id_fails_closed():
+    terminal = {
+        "authority": "V17_TERMINAL_REDUCER",
+        "status": "HELD",
+        "can_execute": False,
+        "immutable_prediction_id": "pred-unrelated",
+        "calibration_receipt_id": "calib-1",
+        "feature_snapshot_hash": "a" * 64,
+    }
+    _, status, blockers = validate_news_persistence_readback(
+        REQUEST, RESPONSE, _store(terminal_readback=terminal),
+    )
+    assert status == "NEWS_RESCORE_PERSISTENCE_MISMATCH"
+    assert "TERMINAL_PREDICTION_ID_MISMATCH" in blockers
+
+
+def test_authentic_held_terminal_linkage_is_preserved_not_rewritten():
+    normalized, status, blockers = validate_news_persistence_readback(
+        REQUEST, RESPONSE, _store(),
+    )
+    assert status is None
+    assert blockers == []
+    assert normalized["terminal_readback"]["status"] == "HELD"
+    assert normalized["terminal_readback"]["immutable_prediction_id"] == "pred-new"
+    assert normalized["store_attestation"]["read_at_utc"] == "2026-11-26T00:00:00+00:00"
+
+
+def test_missing_store_read_timestamp_fails_closed():
+    _, status, blockers = validate_news_persistence_readback(
+        REQUEST,
+        RESPONSE,
+        _store(store_attestation={"source": "TEST_DOUBLE_NOT_PRODUCTION"}),
+    )
+    assert status == "NEWS_RESCORE_PERSISTENCE_UNVERIFIED"
+    assert "STORE_READ_AT_MISSING" in blockers
