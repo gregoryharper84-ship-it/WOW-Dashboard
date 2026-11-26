@@ -48,7 +48,8 @@ class ResearchSpec:
     negative_refresh_after: timedelta = timedelta(days=7)
 
 
-_DATASET_METHODS = ("REGISTERED_SOURCE", "LOCAL_INDEX", "GITHUB_DATASET_DISCOVERY")
+_DATASET_METHODS = ("REGISTERED_SOURCE", "EXTERNAL_EVIDENCE_INTAKE", "LOCAL_INDEX", "GITHUB_DATASET_DISCOVERY")
+_FEED_METHODS = ("EXTERNAL_EVIDENCE_INTAKE", "LOCAL_INDEX", "GITHUB_DATASET_DISCOVERY")
 _SCIENCE_METHODS = ("LOCAL_INDEX", "CROSSREF")
 
 # Blocker code -> what research must find. Unmapped codes are recorded as
@@ -63,6 +64,32 @@ RESEARCH_SPECS: dict[str, ResearchSpec] = {
         "fixture_kickoff_time",
         "Find a free fixture source for {league} {season} that lists exact kickoff times.",
         "FIXTURE_FEED", _DATASET_METHODS, 2, timedelta(hours=72)),
+    # Prop specialists nearest certification (NFL, NHL, NBA player props).
+    "NFLVERSE_INJURY_REPORT_STALE": ResearchSpec(
+        "official_injury_report_current",
+        "Find a current, free, automatable NFL injury-report source with publication timestamps and usable "
+        "rights for {season}.",
+        "INJURY_REPORT_FEED", _FEED_METHODS, 1, timedelta(hours=72)),
+    "NFLVERSE_INJURY_REPORT_TIMESTAMP_UNVERIFIED": ResearchSpec(
+        "injury_report_publication_timestamp",
+        "Find an NFL injury-report source that records when each report was published.",
+        "INJURY_REPORT_FEED", _FEED_METHODS, 1, timedelta(hours=72)),
+    "NHL_INJURY_REPORT_UNAVAILABLE": ResearchSpec(
+        "official_injury_report_current",
+        "Find a current, free, automatable NHL injury-report source with usable rights.",
+        "INJURY_REPORT_FEED", _FEED_METHODS, 1, timedelta(hours=72)),
+    "NHL_GOALIE_MISSING": ResearchSpec(
+        "starting_goalie_confirmation",
+        "Find free, automatable NHL starting-goalie confirmation sources with timestamps and usable rights.",
+        "GOALIE_CONFIRMATION_FEED", _FEED_METHODS, 1, timedelta(hours=72)),
+    "TWO_INDEPENDENT_OFFICIAL_GOALIE_SOURCES_REQUIRED": ResearchSpec(
+        "independent_goalie_confirmation_sources",
+        "Find two independent official NHL starting-goalie confirmation sources.",
+        "GOALIE_CONFIRMATION_FEED", _FEED_METHODS, 1, timedelta(hours=72)),
+    "NBA_LINEUP_EVIDENCE_SOURCE_MISSING": ResearchSpec(
+        "starting_lineup_evidence",
+        "Find a free, automatable NBA starting-lineup and availability source with timestamps and usable rights.",
+        "LINEUP_FEED", _FEED_METHODS, 1, timedelta(hours=72)),
     "CURRENT_DATA_NOT_CERTIFIED": ResearchSpec(
         "current_season_data",
         "Find a current, free, automatable {sport} data source for {season} with usable rights.",
@@ -105,6 +132,9 @@ class BlockerInput:
     candidate_ready: bool = False
     # Stable facts about the blocker; a change is "new evidence".
     context: Mapping[str, Any] = field(default_factory=dict)
+    # Externally reported source leads (e.g. ChatGPT via a GitHub incident).
+    # Leads are verified natively; a new lead is new evidence.
+    leads: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -198,7 +228,9 @@ def build_task(blocker: BlockerInput) -> ResearchTask:
         required_source_type=spec.required_source_type if spec else "UNMAPPED",
         permitted_methods=spec.permitted_methods if spec else (),
         priority=spec.priority if spec else 5,
-        blocker_fingerprint=sha256_json({"blocker_code": blocker.blocker_code, "context": dict(blocker.context)}),
+        blocker_fingerprint=sha256_json({"blocker_code": blocker.blocker_code, "context": dict(blocker.context),
+                                         **({"leads": sorted(getattr(x, "source_id", str(x)) for x in blocker.leads)}
+                                            if blocker.leads else {})}),
         researchable=spec is not None,
     )
 

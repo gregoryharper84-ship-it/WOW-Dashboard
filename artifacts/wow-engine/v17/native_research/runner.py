@@ -245,8 +245,23 @@ def _probe_github_results(task: ResearchTask, cand: SourceCandidate, reference: 
     return outcome
 
 
+def _url_lead_findings(task: ResearchTask, attempt_id: str, leads: Sequence[SourceCandidate], work: Work) -> None:
+    """Reported non-GitHub sources are recorded, never fetched, until their domain is approved."""
+    for lead in leads:
+        if lead.kind != "URL":
+            continue
+        host = urlsplit(lead.locator).hostname or ""
+        work.findings.append(_finding(task, attempt_id, source_id=lead.source_id, finding_type="CANDIDATE_SOURCE",
+                                      outcome="CANDIDATE_FOUND_UNVERIFIED", freshness="UNVERIFIED",
+                                      conflict_status="NOT_CHECKED",
+                                      verification={"discovered_via": lead.discovered_via, "url": lead.locator,
+                                                    "domain_approval_required": host,
+                                                    "claim_status": "REPORTED_UNVERIFIED"}))
+
+
 def _research_soccer_results(task: ResearchTask, fetcher: NativeFetcher, store: Any, attempt_id: str,
-                             now: datetime, history: Sequence[Mapping[str, Any]]) -> Work:
+                             now: datetime, history: Sequence[Mapping[str, Any]],
+                             leads: Sequence[SourceCandidate] = ()) -> Work:
     work = Work()
     reference = _openfootball_reference(task, fetcher, attempt_id, now, work)
     prior = store.findings(sport=task.sport, source_type=task.required_source_type)
@@ -254,7 +269,13 @@ def _research_soccer_results(task: ResearchTask, fetcher: NativeFetcher, store: 
     candidates: dict[str, SourceCandidate] = {}
     queries: list[str] = []
     for strategy in order_strategies(task.required_source_type, task.permitted_methods, history):
-        if strategy == "LOCAL_INDEX":
+        if strategy == "EXTERNAL_EVIDENCE_INTAKE":
+            github_leads = [lead for lead in leads if lead.kind == "GITHUB_REPOSITORY"]
+            for lead in github_leads:
+                candidates.setdefault(lead.source_id, lead)
+            _url_lead_findings(task, attempt_id, leads, work)
+            work.strategies.append({"strategy": strategy, "candidates": len(leads), "verified": 0})
+        elif strategy == "LOCAL_INDEX":
             known: dict[str, str | None] = {}
             for f in prior:
                 if f.get("finding_type") == "CANDIDATE_SOURCE" and f["source_id"].startswith("github:"):
@@ -292,10 +313,7 @@ def _research_soccer_results(task: ResearchTask, fetcher: NativeFetcher, store: 
         probed.append({"source_id": cand.source_id, "fit": outcome is not None, "outcome": outcome})
         if outcome:
             outcomes.append(outcome)
-    for entry in work.strategies:
-        if entry["strategy"] in ("GITHUB_DATASET_DISCOVERY", "LOCAL_INDEX"):
-            entry["verified"] = sum(1 for f in work.findings if f["finding_type"] == "CANDIDATE_SOURCE"
-                                    and f["outcome"].startswith("CANDIDATE_VERIFIED"))
+    _credit_strategies(work)
     if outcomes:
         work.outcome = _best(outcomes)
     elif any(e in ("NRE_RETRIEVAL_BUDGET_EXHAUSTED", "NRE_RETRIEVAL_DEADLINE_EXCEEDED") for e in work.errors):
@@ -312,8 +330,112 @@ def _research_soccer_results(task: ResearchTask, fetcher: NativeFetcher, store: 
     return work
 
 
+def _credit_strategies(work: Work) -> None:
+    """Credit each verified source to the strategy that first surfaced it (learning input)."""
+    for entry in work.strategies:
+        if entry["strategy"] in ("GITHUB_DATASET_DISCOVERY", "LOCAL_INDEX", "EXTERNAL_EVIDENCE_INTAKE"):
+            entry["verified"] = sum(1 for f in work.findings if f["finding_type"] == "CANDIDATE_SOURCE"
+                                    and f["outcome"].startswith("CANDIDATE_VERIFIED")
+                                    and f["verification"].get("discovered_via") == entry["strategy"])
+
+
+FEED_QUERIES = {
+    "INJURY_REPORT_FEED": ("{sport} injury report data", "{sport} injuries dataset csv"),
+    "GOALIE_CONFIRMATION_FEED": ("nhl starting goalies data", "nhl goalie confirmations"),
+    "LINEUP_FEED": ("{sport} starting lineups data", "{sport} lineups dataset"),
+}
+
+
+def _research_feed_sources(task: ResearchTask, fetcher: NativeFetcher, store: Any, attempt_id: str,
+                           now: datetime, history: Sequence[Mapping[str, Any]],
+                           leads: Sequence[SourceCandidate] = ()) -> Work:
+    """Source discovery + rights evidence for live-context feeds (injuries, goalies, lineups).
+
+    No freshness verifier exists for these feeds yet, so a candidate can reach
+    CANDIDATE_FOUND_UNVERIFIED at most. Nothing here feeds a specialist."""
+    from datetime import timedelta as _td
+
+    work = Work()
+    candidates: dict[str, SourceCandidate] = {}
+    prior = store.findings(sport=task.sport, source_type=task.required_source_type)
+    for strategy in order_strategies(task.required_source_type, task.permitted_methods, history):
+        if strategy == "EXTERNAL_EVIDENCE_INTAKE":
+            for lead in leads:
+                if lead.kind == "GITHUB_REPOSITORY":
+                    candidates.setdefault(lead.source_id, lead)
+            _url_lead_findings(task, attempt_id, leads, work)
+            work.strategies.append({"strategy": strategy, "candidates": len(leads), "verified": 0})
+        elif strategy == "LOCAL_INDEX":
+            known = sorted({f["source_id"] for f in prior if f["source_id"].startswith("github:")})
+            for sid in known:
+                candidates.setdefault(sid, SourceCandidate(sid, "GITHUB_REPOSITORY", sid[7:], "LOCAL_INDEX"))
+            work.strategies.append({"strategy": strategy, "candidates": len(known), "verified": 0})
+        elif strategy == "GITHUB_DATASET_DISCOVERY":
+            since = (now - _td(days=30)).date().isoformat()
+            queries = [q.format(sport=task.sport.lower()) + f" pushed:>{since}"
+                       for q in FEED_QUERIES.get(task.required_source_type, ())]
+            found, error = safe_search(github_dataset_search, fetcher, queries)
+            entry = {"strategy": strategy, "candidates": len(found), "verified": 0, "queries": queries}
+            if error:
+                entry["error"] = error
+                work.errors.append(error)
+            for cand in found:
+                candidates.setdefault(cand.source_id, cand)
+            work.strategies.append(entry)
+    outcomes = ["CANDIDATE_FOUND_UNVERIFIED" for f in work.findings]
+    for cand in rank_candidates(list(candidates.values()), source_reliability(prior))[:MAX_CANDIDATES]:
+        try:
+            branch = cand.default_branch
+            spdx = cand.software_spdx
+            pushed = cand.pushed_at
+            if not branch:
+                try:
+                    meta = github_repo(fetcher, cand.locator)
+                    branch, spdx, pushed = meta.get("default_branch"), (meta.get("license") or {}).get("spdx_id"), \
+                        meta.get("pushed_at")
+                except FetchBlocked as exc:
+                    if exc.code not in ("NRE_ACCESS_RESTRICTED", "NRE_SOURCE_RATE_LIMITED"):
+                        raise
+                    branch = "main"
+            readme = github_raw(fetcher, cand.locator, branch or "main", "README.md", max_bytes=300_000)
+        except FetchBlocked as exc:
+            work.errors.append(exc.code)
+            continue
+        rights = assess_source_rights(cand.source_id, software_spdx=None if spdx in (None, "NOASSERTION") else spdx,
+                                      terms_text=readme.text(), terms_url=f"https://github.com/{cand.locator}",
+                                      robots_permitted=True, assessed_at=now)
+        work.rights.append(rights)
+        section = markdown_section(readme.text(), r"licen[cs]e|terms|attribution", 1000) or readme.text()[:600]
+        doc = _document(task, attempt_id, readme, source_id=cand.source_id, title=f"{cand.locator} README terms",
+                        excerpt=section, evidence_type="SOURCE_TERMS", source_quality="DISCOVERED_UNREVIEWED",
+                        freshness="CURRENT", rights_status=storage_status(rights), body=readme.text()[:100_000])
+        work.documents.append(doc)
+        work.findings.append(_finding(task, attempt_id, source_id=cand.source_id, finding_type="CANDIDATE_SOURCE",
+                                      outcome="CANDIDATE_FOUND_UNVERIFIED", freshness="UNVERIFIED",
+                                      conflict_status="NOT_CHECKED",
+                                      verification={"discovered_via": cand.discovered_via, "pushed_at": pushed,
+                                                    "branch": branch, "verifier": "NOT_IMPLEMENTED_FOR_SOURCE_TYPE",
+                                                    "claim_status": "REPORTED_UNVERIFIED"
+                                                    if cand.discovered_via == "EXTERNAL_EVIDENCE_INTAKE"
+                                                    else "DISCOVERED"},
+                                      rights_id=rights["rights_id"], document_ids=[doc["document_id"]]))
+        outcomes.append("CANDIDATE_FOUND_UNVERIFIED")
+    _credit_strategies(work)
+    if outcomes:
+        work.outcome = _best(outcomes)
+    elif work.errors:
+        work.outcome = "ACQUISITION_FAILED"
+    else:
+        work.outcome = "NO_SOURCE_FOUND"
+        work.findings.append(_finding(task, attempt_id, source_id="search:github", finding_type="NEGATIVE_RESULT",
+                                      outcome="NO_SOURCE_FOUND", freshness=None, conflict_status=None,
+                                      verification={"candidates": 0}))
+    return work
+
+
 def _research_literature(task: ResearchTask, fetcher: NativeFetcher, store: Any, attempt_id: str,
-                         now: datetime, history: Sequence[Mapping[str, Any]]) -> Work:
+                         now: datetime, history: Sequence[Mapping[str, Any]],
+                         leads: Sequence[SourceCandidate] = ()) -> Work:
     work = Work()
     query = f"{task.sport.lower()} {task.market_route.split(':')[-1].lower().replace('_', ' ')} " \
             "probability calibration forecasting"
@@ -346,6 +468,9 @@ def _research_literature(task: ResearchTask, fetcher: NativeFetcher, store: Any,
 HANDLERS = {
     ("SOCCER", "RESULTS_FEED"): _research_soccer_results,
     ("*", "SCIENTIFIC_LITERATURE"): _research_literature,
+    ("*", "INJURY_REPORT_FEED"): _research_feed_sources,
+    ("*", "GOALIE_CONFIRMATION_FEED"): _research_feed_sources,
+    ("*", "LINEUP_FEED"): _research_feed_sources,
 }
 
 
@@ -429,7 +554,7 @@ def _run_task(store: Any, blocker: BlockerInput, fetcher: NativeFetcher, now: da
     started, t0 = now, time.monotonic()
     attempt_id = sha256_json({"task_id": task.task_id, "started_at": started.isoformat(), "owner": owner})
     try:
-        work = handler(task, fetcher, store, attempt_id, now, store.strategy_history())
+        work = handler(task, fetcher, store, attempt_id, now, store.strategy_history(), tuple(blocker.leads))
     except FetchBlocked as exc:
         work = Work(outcome="BUDGET_EXHAUSTED" if "BUDGET" in exc.code or "DEADLINE" in exc.code
                     else "ACQUISITION_FAILED", errors=[exc.code])
@@ -496,9 +621,14 @@ def run_native_research(store: Any, blockers: Sequence[BlockerInput], *, fetcher
 
 
 def soccer_results_research_after_forward(db: Any, forward: Mapping[str, Any], *,
-                                          now: datetime | None = None, fetcher: NativeFetcher | None = None
-                                          ) -> dict[str, Any]:
-    """Soccer maintenance hook: research every league blocked by stale results."""
+                                          now: datetime | None = None, fetcher: NativeFetcher | None = None,
+                                          intake_issues: Sequence[int] | None = None) -> dict[str, Any]:
+    """Maintenance hook: research soccer leagues blocked by stale results, plus any
+    structured evidence posted on the intake incidents (default #2880)."""
+    from .intake import DEFAULT_INTAKE_ISSUES
+
+    if intake_issues is None:
+        intake_issues = DEFAULT_INTAKE_ISSUES
     from .store import SupabaseResearchStore
 
     now = _now(now)
@@ -516,6 +646,20 @@ def soccer_results_research_after_forward(db: Any, forward: Mapping[str, Any], *
             candidate_ready=bool(rec.get("registration_id")),
             context={"source": "OPENFOOTBALL:football.json", "registration_id": rec.get("registration_id"),
                      "frozen_artifact_checksum": rec.get("frozen_artifact_checksum")}))
+    # Temporary external intake: structured evidence posted on WOW incidents.
+    fetcher = fetcher or NativeFetcher(deadline_s=60)
+    intake: dict[str, Any] = {"accepted": 0, "rejected": []}
+    if intake_issues:
+        from .intake import blockers_from_submissions, fetch_submissions
+
+        try:
+            subs = fetch_submissions(fetcher, intake_issues)
+            intake = {"accepted": len(subs["accepted"]), "rejected": subs["rejected"][:50]}
+            blockers.extend(blockers_from_submissions(subs["accepted"]))
+        except FetchBlocked as exc:
+            intake = {"accepted": 0, "rejected": [], "code": exc.code}
     if not blockers:
-        return {"status": "NO_RESEARCHABLE_BLOCKERS", "tasks": [], "spend_usd": 0, **INERT}
-    return run_native_research(SupabaseResearchStore(db), blockers, now=now, fetcher=fetcher)
+        return {"status": "NO_RESEARCHABLE_BLOCKERS", "tasks": [], "intake": intake, "spend_usd": 0, **INERT}
+    receipt = run_native_research(SupabaseResearchStore(db), blockers, now=now, fetcher=fetcher)
+    receipt["intake"] = intake
+    return receipt
