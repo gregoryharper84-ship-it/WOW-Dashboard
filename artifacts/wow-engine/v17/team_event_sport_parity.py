@@ -114,6 +114,31 @@ def build_discovery_evidence(event: Any, registration: Any | None = None) -> dic
         if _present(value):
             out[key] = value
 
+    # NHL: forward server-resolved canonical identity receipt fields so the
+    # Action assembler can bind GameCenter capture without inventing identity.
+    # Incomplete receipts (missing schedule URL) are refreshed server-side.
+    if sport == "NHL":
+        for key in (
+            "canonical_identity_status",
+            "canonical_identity_source",
+            "canonical_identity_match_sha256",
+            "canonical_identity_verified_at",
+            "canonical_identity_event_start_utc",
+            "canonical_identity_receipt",
+            "canonical_event_id",
+            "identity_provider",
+            "identity_source",
+            "identity_match_sha256",
+            "identity_verified_at",
+            "neutral_site",
+            "season",
+        ):
+            value = nested.get(key)
+            if not _present(value):
+                value = raw.get(key)
+            if _present(value) and key not in out:
+                out[key] = value
+
     # Provenance only; these fields never satisfy a fitted sporting input by
     # themselves and never become an "official" league event id.
     out["discovery_provider"] = getattr(event, "provider", None) or getattr(event, "source", None)

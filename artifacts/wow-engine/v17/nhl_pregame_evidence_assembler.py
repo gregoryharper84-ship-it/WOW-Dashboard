@@ -287,13 +287,56 @@ def reset_nhl_pregame_action_seams() -> None:
         _ACTION_SEAMS[key] = None
 
 
+def _schedule_url_ok(value: Any) -> bool:
+    token = str(value or "").strip()
+    return bool(token) and "api-web.nhle.com" in token and "club-schedule-season" in token
+
+
+def _identity_receipt_complete(identity: Mapping[str, Any]) -> bool:
+    """True when GameCenter capture can accept this as a canonical receipt."""
+    match_sha = str(identity.get("identity_match_sha256") or "").strip().lower()
+    return (
+        str(identity.get("identity_provider") or "") == "NHL_PUBLIC_WEB_API"
+        and _schedule_url_ok(identity.get("identity_source"))
+        and len(match_sha) == 64
+        and all(ch in "0123456789abcdef" for ch in match_sha)
+        and bool(str(identity.get("event_id") or "").strip())
+        and identity.get("can_execute") is False
+        and identity.get("prediction_authority") is False
+        and identity.get("market_features_used") is False
+    )
+
+
 def _resolved_identity_from_request(req: Any) -> dict[str, Any]:
-    """Project TeamEventRequest fields into assembler identity shape."""
+    """Build assembler identity from request + server-owned NHL resolution.
+
+    Discovery evidence often carries ``canonical_identity_*`` fields without the
+    schedule URL GameCenter capture requires. Prefer an explicit receipt when
+    complete; otherwise resolve through ``resolve_nhl_current_event_identity``
+    rather than trusting incomplete caller/discovery keys.
+    """
     evidence = getattr(req, "sport_specific_evidence", None)
     evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
+    receipt = evidence_map.get("canonical_identity_receipt")
+    if isinstance(receipt, Mapping):
+        # Nested Multiscout/discovery receipt already in assembler shape.
+        nested = {
+            **dict(receipt),
+            "market_features_used": False,
+            "prediction_authority": False,
+            "can_execute": CAN_EXECUTE,
+        }
+        if evidence_map.get("neutral_site") is not None and "neutral_site" not in nested:
+            nested["neutral_site"] = evidence_map.get("neutral_site")
+        if evidence_map.get("season") is not None and "season" not in nested:
+            nested["season"] = evidence_map.get("season")
+        if _identity_receipt_complete(nested):
+            return nested
+
     event_id = str(
         evidence_map.get("event_id")
         or evidence_map.get("official_event_id")
+        or evidence_map.get("canonical_event_id")
         or getattr(req, "official_event_id", "")
         or ""
     ).strip()
@@ -301,15 +344,21 @@ def _resolved_identity_from_request(req: Any) -> dict[str, Any]:
         getattr(req, "event_start_time_utc", None)
         or evidence_map.get("event_start_time_utc")
         or evidence_map.get("event_start_time")
+        or evidence_map.get("canonical_identity_event_start_utc")
     )
     verified_at = (
         evidence_map.get("identity_verified_at")
+        or evidence_map.get("canonical_identity_verified_at")
         or getattr(req, "latest_material_update_timestamp", None)
     )
     identity = {
         "event_id": event_id,
-        "home_team": str(getattr(req, "home_team", "") or evidence_map.get("home_team") or "").strip().upper(),
-        "away_team": str(getattr(req, "away_team", "") or evidence_map.get("away_team") or "").strip().upper(),
+        "home_team": str(
+            getattr(req, "home_team", "") or evidence_map.get("home_team") or ""
+        ).strip().upper(),
+        "away_team": str(
+            getattr(req, "away_team", "") or evidence_map.get("away_team") or ""
+        ).strip().upper(),
         "event_start_time": start,
         "identity_verified_at": verified_at,
         "neutral_site": evidence_map.get("neutral_site"),
@@ -318,15 +367,84 @@ def _resolved_identity_from_request(req: Any) -> dict[str, Any]:
         "prediction_authority": False,
         "can_execute": CAN_EXECUTE,
     }
-    # Pass through server-resolved identity receipt fields when present.
-    for key in (
-        "identity_provider",
-        "identity_source",
-        "identity_match_sha256",
-    ):
-        if key in evidence_map:
-            identity[key] = evidence_map[key]
-    return identity
+    # Map discovery canonical_* aliases into the assembler receipt shape.
+    if "identity_provider" in evidence_map:
+        identity["identity_provider"] = evidence_map["identity_provider"]
+    elif evidence_map.get("canonical_identity_source") == "NHL_PUBLIC_WEB_API":
+        # Discovery stores the provider name under canonical_identity_source.
+        identity["identity_provider"] = "NHL_PUBLIC_WEB_API"
+    if "identity_source" in evidence_map:
+        identity["identity_source"] = evidence_map["identity_source"]
+    if "identity_match_sha256" in evidence_map:
+        identity["identity_match_sha256"] = evidence_map["identity_match_sha256"]
+    elif "canonical_identity_match_sha256" in evidence_map:
+        identity["identity_match_sha256"] = evidence_map["canonical_identity_match_sha256"]
+
+    if _identity_receipt_complete(identity):
+        return identity
+
+    # Server-owned resolve: discovery often drops the schedule URL, so refresh.
+    from v17.nhl_event_identity import (
+        NHLEventIdentityError,
+        resolve_nhl_current_event_identity,
+    )
+
+    session = _ACTION_SEAMS.get("get")
+    try:
+        kwargs: dict[str, Any] = {
+            "event_start_time": str(start or ""),
+            "home_team": identity["home_team"],
+            "away_team": identity["away_team"],
+        }
+        if callable(session):
+            # resolve_nhl_current_event_identity accepts session.get-compatible objects.
+            class _SessionAdapter:
+                def get(self, *args: Any, **kwargs: Any) -> Any:
+                    return session(*args, **kwargs)
+
+            kwargs["session"] = _SessionAdapter()
+        resolution = resolve_nhl_current_event_identity(**kwargs)
+    except NHLEventIdentityError as exc:
+        from v17.nhl_fitted_specialist import NHLFittedSpecialistError
+
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            [str(getattr(exc, "code", None) or "NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH")],
+            {"reason": "NHL_SERVER_IDENTITY_RESOLVE_FAILED"},
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - typed hold, never invent identity
+        from v17.nhl_fitted_specialist import NHLFittedSpecialistError
+
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH"],
+            {"reason": type(exc).__name__},
+        ) from exc
+
+    resolved = {
+        "event_id": str(resolution.get("event_id") or "").strip(),
+        "home_team": str(resolution.get("home_team") or identity["home_team"]).strip().upper(),
+        "away_team": str(resolution.get("away_team") or identity["away_team"]).strip().upper(),
+        "event_start_time": resolution.get("event_start_time") or start,
+        "identity_provider": resolution.get("identity_provider"),
+        "identity_source": resolution.get("identity_source"),
+        "identity_match_sha256": resolution.get("identity_match_sha256"),
+        "identity_verified_at": resolution.get("identity_verified_at"),
+        "neutral_site": identity.get("neutral_site"),
+        "season": identity.get("season"),
+        "market_features_used": False,
+        "prediction_authority": False,
+        "can_execute": CAN_EXECUTE,
+    }
+    if not _identity_receipt_complete(resolved):
+        from v17.nhl_fitted_specialist import NHLFittedSpecialistError
+
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH"],
+            {"reason": "NHL_SERVER_IDENTITY_RECEIPT_INCOMPLETE"},
+        )
+    return resolved
 
 
 def hydrate_nhl_team_event_request_evidence(
