@@ -134,6 +134,44 @@ def test_required_merge_gates_are_not_blanket_suppressed() -> None:
             )
 
 
+# Governed writers attach their check run to protected main exactly like the
+# optional observers above, but a green check here is a claim that a governed
+# write occurred. Isolation would turn a genuine typed failure green while the
+# ledger or deploy stayed unwritten, so these steps are pinned as never isolable.
+NEVER_ISOLATED_WRITER_STEPS: dict[str, tuple[tuple[str, str], ...]] = {
+    # Service-role Supabase writer for the prospective shadow ledger. ``run_ok``
+    # is false only for CAPTURE_ACCOUNTING_INCONSISTENT and EVIDENCE_ALL_HELD;
+    # empty and already-frozen windows are already green.
+    "wow-v17-nfl-prospective-shadow.yml": (
+        ("capture-and-grade", "Capture genuine prekickoff challenger receipts"),
+        ("capture-and-grade", "Grade only independently reconciled completed NFL games"),
+        ("capture-and-grade", "Verify capture receipt is not all-held"),
+    ),
+    # Single production deploy path since render.yaml turned native auto-deploy
+    # off (2026-11-25): POSTs Render deploys only after the three
+    # ruleset-required checks are green on the exact current main SHA.
+    "wow-v17-required-checks-deploy.yml": (
+        ("deploy", "Deploy exact current main SHA once required checks are green"),
+    ),
+}
+
+
+def test_governed_writers_are_never_step_isolated() -> None:
+    """Isolating a writer would report a green write that never happened."""
+    for name, pairs in NEVER_ISOLATED_WRITER_STEPS.items():
+        assert name not in OPTIONAL_MAIN_SCOPED_JOBS, (
+            f"{name} is a governed writer, not an optional observer"
+        )
+        document = _workflow(name)
+        for job, step_name in pairs:
+            steps = document["jobs"][job]["steps"]
+            step = next((item for item in steps if item.get("name") == step_name), None)
+            assert step is not None, f"{name}:{job} lost the pinned writer step {step_name!r}"
+            assert step.get("continue-on-error") is not True, (
+                f"{name}:{job}:{step_name} is isolated; a failed governed write must stay red"
+            )
+
+
 def test_keepalive_requires_successful_curl_exit_and_http_status() -> None:
     """An HTTP 200 with truncated transfer must not emit a false-green receipt."""
     steps = _workflow("wow-v17-action-origin-keepalive.yml")["jobs"]["keepalive"]["steps"]
@@ -178,6 +216,17 @@ def test_observer_audit_does_not_attribute_postfix_counts_to_base_sha() -> None:
     assert "Post-fix worktree count" in text
     assert "not** a measurement" in text
     assert "Historical unisolated-optional-job candidate inventory" in text
+
+    # The writer pin and the audit's rationale for it must move together: a
+    # newly pinned writer with no documented reason, or a rationale whose pin
+    # was deleted, is drift. Iterate the pin table so both cannot diverge.
+    assert "NEVER_ISOLATED_WRITER_STEPS" in text, (
+        "the audit no longer names the never-isolate writer pin"
+    )
+    for workflow in NEVER_ISOLATED_WRITER_STEPS:
+        assert workflow in text, (
+            f"{workflow} is pinned never-isolate but the audit does not document it"
+        )
 
 
 def _run_isolated_bash(
