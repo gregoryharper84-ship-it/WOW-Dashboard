@@ -1,0 +1,22 @@
+{
+  "athlete": {
+    "id": "4241457",
+    "displayName": "Test Runner",
+    "team": {"$ref": "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/teams/12"},
+    "injuries": [
+      {
+        "id": "9001",
+        "status": "Out",
+        "date": "2026-09-10T18:00:00Z",
+        "type": {"id": "1", "name": "Ankle"},
+        "detail": "Ankle sprain"
+      },
+      {
+        "id": "9000",
+        "status": "Questionable",
+        "date": "2026-09-03T18:00:00Z",
+        "type": {"id": "2", "name": "Knee"}
+      }
+    ]
+  }
+}

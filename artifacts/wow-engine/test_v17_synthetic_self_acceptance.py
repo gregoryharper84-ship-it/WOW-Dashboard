@@ -93,9 +93,17 @@ async def test_both_scenarios_failing_closed_reports_pass(monkeypatch):
     logger = logging.getLogger("test-v17-synthetic-self-acceptance")
     result = await mod.run_v17_synthetic_self_acceptance(logger)
     assert result["status"] == "PASS"
+    assert result["status_scope"] == "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY"
     assert result["prop_ok"] is True
     assert result["team_event_ok"] is True
     assert result["can_execute"] is False
+    # Synthetic negatives may PASS without proving real scoring acceptance.
+    assert result["scoring_acceptance_proven"] is False
+    assert result["synthetic_negative_probes"]["status"] == "PASS"
+    assert result["source_backed_pregame_scoring"]["status"] == "BLOCKED"
+    assert result["source_backed_pregame_scoring"]["blocker"] == (
+        "NO_ELIGIBLE_SOURCE_BACKED_PREGAME_CANDIDATE"
+    )
 
 
 @pytest.mark.anyio
@@ -168,4 +176,178 @@ async def test_projected_422_preserves_typed_backend_diagnostics(monkeypatch):
     assert result["projected_lineup_missing_fields"] == ["away_lineup_status", "home_lineup_status"]
     assert result["projected_lineup_failed_checks"] == ["http_status"]
     assert result["projected_lineup_code"] != "MODEL_UNAVAILABLE"
+    assert result["can_execute"] is False
+    assert result["scoring_acceptance_proven"] is False
+    assert result["source_backed_pregame_scoring"]["status"] == "BLOCKED"
+    assert result["source_backed_pregame_scoring"]["blocker"] == (
+        "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_UNAVAILABLE"
+    )
+    assert result["source_backed_pregame_scoring"]["official_event_id"] == "824226"
+    assert result["source_backed_pregame_scoring"]["source_snapshot_id"] == "snapshot-824226"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prediction_id", [None, "claimed-id-is-not-persistence-proof"])
+async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_claim(monkeypatch, prediction_id):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
+    monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
+    _patch_client(
+        monkeypatch,
+        [
+            _FakeResponse(200, {
+                "rows": [{
+                    "row_key": "TEST-PROP-001", "terminal_status": "HELD",
+                    "terminal_label": "MODEL_UNAVAILABLE", "probability_publishable": False,
+                    "can_execute": False,
+                }],
+            }),
+            _FakeResponse(200, {
+                "rows": [{
+                    "research_run_id": "TEST-EVENT-001-RUN", "terminal_status": "HELD",
+                    "code": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False,
+                }],
+            }),
+            _FakeResponse(200, {
+                "code": "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+                "lineup_state": "PROJECTED_HIGH_CONFIDENCE",
+                "calibrated_home_probability": 0.55,
+                "calibrated_away_probability": 0.45,
+                "calibrated_home_lower_bound": 0.51,
+                "calibrated_away_lower_bound": 0.41,
+                "sporting_probability_publishable": True,
+                "probability_publishable": True,
+                "rank_eligible": False,
+                "terminal_label": "MODEL_QUALIFIED_HOLD",
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "final_refresh_required": True,
+                "blockers": ["LINEUP_CONFIRMATION_PENDING"],
+                "can_execute": False,
+                "request_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+                "candidate_envelope": {
+                    "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+                    "official_event_id": "824226",
+                    "source_snapshot_id": "snapshot-824226",
+                },
+                "prediction_id": prediction_id,
+            }),
+        ],
+    )
+    result = await mod.run_v17_synthetic_self_acceptance(
+        logging.getLogger("test-v17-synthetic-self-acceptance")
+    )
+    assert result["status"] == "PASS"
+    assert result["synthetic_negative_probes"]["status"] == "PASS"
+    assert result["scoring_acceptance_proven"] is False
+    assert result["status_scope"] == "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY"
+    scoring = result["source_backed_pregame_scoring"]
+    assert scoring["status"] == "HELD"
+    assert scoring["lane"] == "SOURCE_BACKED_PROJECTED_TEAM_EVENT"
+    assert scoring["request_id"] == "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE"
+    assert scoring["official_event_id"] == "824226"
+    assert scoring["source_snapshot_id"] == "snapshot-824226"
+    assert scoring["fitted_route"] == "score-team-event"
+    assert scoring["calibrated_lower_bound"] == 0.41
+    assert scoring["calibrated_lower_bound_scope"] == "CONSERVATIVE_TWO_SIDE_MIN"
+    assert scoring["reducer_authority"] == "V17_TERMINAL_REDUCER"
+    assert scoring["immutable_prediction_id"] == prediction_id
+    assert scoring["blocker"] == "LINEUP_CONFIRMATION_PENDING"
+    assert result["can_execute"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("corruption", [
+    "research_run_id", "official_event_id", "source_snapshot_id",
+    "missing_envelope", "rejected_terminal",
+])
+async def test_projected_diagnostics_reject_wrong_identity_or_terminal(monkeypatch, corruption):
+    """A 200 projected response cannot attest a different event or a rejection."""
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
+    monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
+    projected = {
+        "code": "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+        "lineup_state": "PROJECTED_HIGH_CONFIDENCE",
+        "calibrated_home_probability": 0.55,
+        "calibrated_away_probability": 0.45,
+        "calibrated_home_lower_bound": 0.51,
+        "calibrated_away_lower_bound": 0.41,
+        "sporting_probability_publishable": True,
+        "probability_publishable": True,
+        "rank_eligible": False,
+        "terminal_label": "MODEL_QUALIFIED_HOLD",
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "final_refresh_required": True,
+        "blockers": ["LINEUP_CONFIRMATION_PENDING"],
+        "can_execute": False,
+        "candidate_envelope": {
+            "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+            "official_event_id": "824226",
+            "source_snapshot_id": "snapshot-824226",
+        },
+    }
+    if corruption == "missing_envelope":
+        del projected["candidate_envelope"]
+    elif corruption == "rejected_terminal":
+        projected["terminal_label"] = "REJECTED"
+    else:
+        projected["candidate_envelope"][corruption] = "OTHER-REQUEST"
+    _patch_client(monkeypatch, [
+        _FakeResponse(200, {"rows": [{"row_key": "TEST-PROP-001", "terminal_status": "HELD",
+            "terminal_label": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, {"rows": [{"research_run_id": "TEST-EVENT-001-RUN", "terminal_status": "HELD",
+            "code": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, projected),
+    ])
+    result = await mod.run_v17_synthetic_self_acceptance(
+        logging.getLogger("test-v17-synthetic-self-acceptance")
+    )
+    assert result["status"] == "FAIL"
+    assert result["projected_lineup_ok"] is False
+    assert result["source_backed_pregame_scoring"]["status"] == "BLOCKED"
+    assert result["source_backed_pregame_scoring"]["blocker"] == "SOURCE_BACKED_PREGAME_SCORING_FAILED"
+    assert result["source_backed_pregame_scoring"]["request_id"] is None
+    assert result["scoring_acceptance_proven"] is False
+    assert result["can_execute"] is False
+
+
+@pytest.mark.anyio
+async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monkeypatch):
+    """A reducer purge may prove model diagnostics without granting a HELD row."""
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
+    monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
+    projected = {
+        "code": "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+        "lineup_state": "PROJECTED_HIGH_CONFIDENCE",
+        "calibrated_home_probability": 0.55,
+        "calibrated_away_probability": 0.45,
+        "calibrated_home_lower_bound": 0.51,
+        "calibrated_away_lower_bound": 0.41,
+        "sporting_probability_publishable": True,
+        "probability_publishable": True,
+        "rank_eligible": False,
+        "terminal_label": "SLATE_PURGE",
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "final_refresh_required": True,
+        "blockers": ["LINEUP_CONFIRMATION_PENDING"],
+        "can_execute": False,
+        "candidate_envelope": {
+            "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+            "official_event_id": "824226",
+            "source_snapshot_id": "snapshot-824226",
+        },
+    }
+    _patch_client(monkeypatch, [
+        _FakeResponse(200, {"rows": [{"row_key": "TEST-PROP-001", "terminal_status": "HELD",
+            "terminal_label": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, {"rows": [{"research_run_id": "TEST-EVENT-001-RUN", "terminal_status": "HELD",
+            "code": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, projected),
+    ])
+    result = await mod.run_v17_synthetic_self_acceptance(
+        logging.getLogger("test-v17-synthetic-self-acceptance")
+    )
+    assert result["projected_lineup_ok"] is True
+    assert result["status_scope"] == "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY"
+    assert result["source_backed_pregame_scoring"]["status"] == "BLOCKED"
+    assert result["source_backed_pregame_scoring"]["blocker"] == "SLATE_PURGE"
+    assert result["scoring_acceptance_proven"] is False
     assert result["can_execute"] is False

@@ -23,6 +23,28 @@ def _receipt(status="AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS", reconciled=True):
         "team_event_receipts":[],
     }
 
+def test_news_source_failure_is_visible_on_each_pick_without_false_rescore():
+    handoff = _handoff()
+    handoff["public_news_discovery_bridge"] = {
+        "status": "NEWS_SOURCE_BLOCKED",
+        "source_status": "BLOCKED",
+        "source_code": "SOURCE_RATE_LIMITED",
+        "sport_key": "basketball_nba",
+        "article_count": 0,
+        "candidates_touched": 0,
+        "source_observed_at": "2026-11-18T18:58:00Z",
+        "source_sha256": "a" * 64,
+    }
+    report = build_report(handoff, _receipt())
+    assert report["news_feed_audit"]["source_code"] == "SOURCE_RATE_LIMITED"
+    assert report["news_feed_audit"]["news_layer_certified"] is False
+    assert len(report["governed_picks"]) == 1
+    news = report["governed_picks"][0]["news_feed_audit"]
+    assert news["latest_independently_verified_news_at_utc"] is None
+    assert news["model_rescore_verified"] is False
+    assert news["can_execute"] is False
+
+
 def test_only_terminal_completed_rows_publish_when_receipt_reconciles():
     report=build_report(_handoff(), _receipt())
     assert [r["row_key"] for r in report["governed_picks"]] == ["c"]

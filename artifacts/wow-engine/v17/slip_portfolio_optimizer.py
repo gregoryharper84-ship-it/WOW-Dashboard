@@ -40,6 +40,11 @@ def _norm(value: Any) -> str:
     return str(value or "").strip().casefold()
 
 
+def _is_prizepicks_card(card: dict[str, Any]) -> bool:
+    """Explicit platform intent only: generic cards can have PP-sourced legs."""
+    return _norm(card.get("platform")) == "prizepicks"
+
+
 def _event(leg: dict[str, Any]) -> str:
     return _norm(leg.get("event_id") or leg.get("event_key") or leg.get("game_id") or leg.get("game"))
 
@@ -299,6 +304,8 @@ class PortfolioOptimizationResult:
     cards_held: int
     critical_leg_actions: tuple[dict[str, Any], ...] = ()
     probability_fields_mutated: bool = False
+    research_preflight: dict[str, Any] | None = None
+    research_proposal_preflight: dict[str, Any] | None = None
     can_execute: bool = CAN_EXECUTE
 
 
@@ -356,6 +363,8 @@ def optimize_portfolio(
     duplicate_penalty: float = DUPLICATE_THESIS_PENALTY,
     min_card_legs: int = MIN_CARD_LEGS,
     max_power_critical_failure_share: float = DEFAULT_MAX_POWER_CRITICAL_FAILURE_SHARE,
+    research_preflight_enabled: bool = False,
+    research_as_of_utc: str | None = None,
 ) -> PortfolioOptimizationResult:
     """Enforce session exposure, weakest-leg replacement, Power fragility and shrink.
 
@@ -368,7 +377,26 @@ def optimize_portfolio(
     A replacement must be strictly stronger and independent. Otherwise the card
     shrinks. None of these structure decisions may mutate sporting probability.
     """
+    # A PrizePicks card must not bypass the existing evidence-shape audit
+    # merely because the caller omitted the optional research flag.
+    # This is still a research-only HOLD, never model/cash authorization.
+    prizepicks_requested = any(_is_prizepicks_card(card) for card in cards)
+    auto_prizepicks_research = prizepicks_requested and not research_preflight_enabled
+    if prizepicks_requested:
+        research_preflight_enabled = True
+        if research_as_of_utc is None:
+            from datetime import datetime, timezone
+            research_as_of_utc = datetime.now(timezone.utc).isoformat()
     out = deepcopy(cards)
+    preflight = None
+    if research_preflight_enabled:
+        # Runs against the *unshrunk* proposal so discarded weak/duplicate
+        # legs are not silently erased from the review evidence.
+        try:
+            from .slip_research_preflight import audit_research_slips
+        except ImportError:  # pragma: no cover - direct source imports in legacy tests
+            from slip_research_preflight import audit_research_slips
+        preflight = audit_research_slips(cards, as_of_utc=research_as_of_utc or "")
     alternatives = deepcopy(alternatives or [])
     prior = deepcopy(prior_session_legs or [])
     incoming = _all_legs(out)
@@ -400,7 +428,7 @@ def optimize_portfolio(
     removals: list[dict[str, Any]] = []
     critical_actions: list[dict[str, Any]] = []
 
-    for card in out:
+    for card_index, card in enumerate(out):
         card_id = str(card.get("card_id") or "")
         legs = list(card.get("legs") or [])
         kept: list[dict[str, Any]] = []
@@ -687,11 +715,47 @@ def optimize_portfolio(
             }
         )
 
+        if preflight is not None and (
+            not auto_prizepicks_research or _is_prizepicks_card(card)
+        ):
+            review = preflight["cards"][card_index]
+            # A local evidence-shape pass never grants market/model authority.
+            # Separate structural quality from publication admission.
+            card_governance["research_preflight"] = review
+            card_governance["research_only"] = True
+            card_governance["research_blockers"] = list(review["blockers"])
+            card_governance["portfolio_qualified"] = False
+            card_governance["portfolio_status"] = "HELD_RESEARCH_ONLY"
+            card_governance["research_joint_probability"] = None
+            card_governance["can_execute"] = False
+
         # Only final surviving legs become session exposure for later cards.
         for leg in kept:
             seen_exact[canonical_thesis_identity(leg)] += 1
             seen_family[thesis_identity(leg)] += 1
         retained_portfolio.extend(kept)
+
+    # A stronger replacement is not automatically better evidenced.
+    # Keep the original proposal audit and independently re-audit the *final*
+    # returned portfolio after all structural replacements and shrinks.
+    proposal_preflight = preflight
+    if preflight is not None:
+        final_preflight = audit_research_slips(out, as_of_utc=research_as_of_utc or "")
+        for card_index, card in enumerate(out):
+            if auto_prizepicks_research and not _is_prizepicks_card(card):
+                continue
+            gov = card.setdefault("portfolio_governance", {})
+            proposal_review = proposal_preflight["cards"][card_index]
+            final_review = final_preflight["cards"][card_index]
+            gov["research_proposal_preflight"] = proposal_review
+            gov["research_preflight"] = final_review
+            gov["research_blockers"] = list(final_review["blockers"])
+            gov["original_research_blockers"] = list(proposal_review["blockers"])
+            gov["research_only"] = True
+            gov["portfolio_qualified"] = False
+            gov["portfolio_status"] = "HELD_RESEARCH_ONLY"
+            gov["can_execute"] = False
+        preflight = final_preflight
 
     probability_mutated = False
     for card in out:
@@ -721,6 +785,8 @@ def optimize_portfolio(
         cards_held=len(out) - cards_qualified,
         critical_leg_actions=tuple(critical_actions),
         probability_fields_mutated=probability_mutated,
+        research_preflight=preflight,
+        research_proposal_preflight=proposal_preflight,
         can_execute=False,
     )
 

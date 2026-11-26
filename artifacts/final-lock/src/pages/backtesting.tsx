@@ -1,3 +1,4 @@
+import { apiFetch, API_ROOT } from "@/lib/api";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -8,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { FlaskConical, AlertCircle, TrendingUp, BarChart2, CheckCircle, Target } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+const API_BASE = API_ROOT;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -284,7 +285,7 @@ export default function BacktestingPage() {
         days: parseInt(days, 10),
         sport: sport === "all" ? null : sport,
       };
-      const res = await fetch(`${API_BASE}/wow/backtest/run`, {
+      const res = await apiFetch(`${API_BASE}/wow/backtest/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

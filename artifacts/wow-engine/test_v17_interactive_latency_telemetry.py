@@ -193,3 +193,54 @@ def test_team_event_request_runtime_wires_current_latency_stage_contract():
     assert "row_count=len(batch.rows)" in runtime
     assert "batch_size=len(batch.rows)" in runtime
     assert '"MIXED" if batch_sports else "UNKNOWN"' in runtime
+
+
+def test_denied_action_requests_are_not_logged_as_ok(caplog):
+    """Real 401/403/422 route responses must not be labeled successful Actions."""
+    from fastapi import HTTPException
+
+    app = FastAPI()
+    install_interactive_latency_middleware(app)
+
+    @app.post("/score-pick-request")
+    def unauthorized():
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    @app.post("/score-team-event-request")
+    def forbidden():
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    @app.post("/score-prop")
+    def invalid_request():
+        raise HTTPException(status_code=422, detail="Invalid schema")
+
+    @app.post("/score-team-event")
+    def allowed():
+        return {"can_execute": False}
+
+    client = TestClient(app)
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
+        assert client.post("/score-pick-request").status_code == 401
+        assert client.post("/score-team-event-request").status_code == 403
+        assert client.post("/score-prop").status_code == 422
+        assert client.post("/score-team-event").status_code == 200
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 4
+    for code, path in (
+        (401, "/score-pick-request"),
+        (403, "/score-team-event-request"),
+        (422, "/score-prop"),
+    ):
+        matching = [message for message in messages if f"route={path} " in message]
+        assert len(matching) == 1
+        assert f"status_code={code}" in matching[0]
+        assert "outcome=error" in matching[0]
+        assert "outcome=ok" not in matching[0]
+        assert "can_execute=false" in matching[0]
+
+    allowed = [message for message in messages if "route=/score-team-event " in message]
+    assert len(allowed) == 1
+    assert "status_code=200" in allowed[0]
+    assert "outcome=ok" in allowed[0]
+    assert all("MODEL_UNAVAILABLE" not in message for message in messages)

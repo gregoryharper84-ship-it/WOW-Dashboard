@@ -1273,5 +1273,57 @@ class TestV11StrictProbBoundsEndToEnd(unittest.TestCase):
         self.assertIn("exclusive", rule)
 
 
+
+class TestContextChangeInvalidationAllMarkets(unittest.TestCase):
+    """Explicit context change may only downgrade, never upgrade or fit."""
+
+    def test_scout_context_invalidation_cannot_reach_final_approved(self):
+        row = _base_row(context_change_impact={
+            "impact_status": "CONTEXT_STALE_RECALC_REQUIRED",
+            "research_invalidation_requested": True,
+        })
+        gk = _apply(row)
+        self.assertEqual(gk["full_model_status"], STATUS_INVALIDATED)
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+        self.assertTrue(any("CONTEXT_STALE" in b for b in gk["blockers"]))
+        self.assertIs(gk["can_execute"], False)
+
+    def test_material_context_newer_than_model_invalidates_without_other_flags(self):
+        row = _base_row(
+            latest_material_update_timestamp="2026-11-22T17:00:00Z",
+            immutable_model_timestamp="2026-11-22T16:00:00Z",
+        )
+        gk = _apply(row)
+        self.assertEqual(gk["full_model_status"], STATUS_INVALIDATED)
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+
+    def test_missing_model_time_with_known_material_update_invalidates(self):
+        row = _base_row(latest_material_update_timestamp="2026-11-22T17:00:00Z")
+        gk = _apply(row)
+        self.assertEqual(gk["full_model_status"], STATUS_INVALIDATED)
+
+    def test_malformed_material_update_invalidates(self):
+        row = _base_row(
+            latest_material_update_timestamp="not-utc",
+            immutable_model_timestamp="2026-11-22T19:00:00Z",
+        )
+        gk = _apply(row)
+        self.assertEqual(gk["full_model_status"], STATUS_INVALIDATED)
+
+    def test_clean_context_chronology_never_self_certifies(self):
+        row = _base_row(
+            latest_material_update_timestamp="2026-11-22T17:00:00Z",
+            immutable_model_timestamp="2026-11-22T18:00:00Z",
+        )
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["invalidation"]["status"], GATE_PASS)
+        self.assertEqual(gk["qualification_result"], QUAL_PASS)
+
+    def test_explicit_research_status_holds_legacy_prop_row(self):
+        row = _base_row(research_recommendation_status="CONTEXT_STALE_RECALC_REQUIRED")
+        gk = _apply(row)
+        self.assertEqual(gk["full_model_status"], STATUS_INVALIDATED)
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+
 if __name__ == "__main__":
     unittest.main()

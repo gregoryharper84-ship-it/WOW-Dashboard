@@ -6,9 +6,11 @@ from typing import Any
 
 try:  # module import when artifacts/wow-engine is on sys.path
     from v17.scout_source_policy import policy_payload
+    from v17.matchup_discovery import feature_requirements
     from v17.sport_scout_registry import scout_team_for
 except ModuleNotFoundError:  # direct `python v17/...py` execution
     from scout_source_policy import policy_payload
+    from matchup_discovery import feature_requirements
     from sport_scout_registry import scout_team_for
 
 WORKER_ROLE = {
@@ -97,6 +99,15 @@ def build_research_brief(candidate: dict[str, Any], worker_id: str, *, now: date
         "research_role": role,
         "cycle_stage": resolve_cycle_stage(candidate, now=now),
         "agent_requirements": _agent_requirements(team, role),
+        "matchup_discovery": ({
+            "mandatory_default_review": True,
+            "feature_requirements": {key: list(values) for key, values in feature_requirements(sport).items()},
+            "must_separate_requested_from_sourced_and_screened": True,
+            "must_check_both_opponents": True,
+            "must_report_missing_or_conflicting_evidence": True,
+            "must_record_pregame_source_timestamp": True,
+            "no_unfitted_manual_probability_adjustments": True,
+        } if role == "MATCHUP_CONTEXT" else None),
         "edge_classes_to_test": list(team.edge_classes),
         "required_red_team_checks": list(team.red_team_checks),
         "source_policy": policy_payload(sport),

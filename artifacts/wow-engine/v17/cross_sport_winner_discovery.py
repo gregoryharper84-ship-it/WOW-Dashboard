@@ -533,6 +533,9 @@ _LIVE_TOKENS = ("LIVE", "IN_PROGRESS", "INPROGRESS", "STARTED", "PLAYING", "HALF
 _PREGAME_TOKENS = ("PREGAME", "SCHEDULED", "NOT_STARTED", "NOTSTARTED", "UPCOMING", "STATUS_SCHEDULED")
 
 
+_NCAAB_SCHEDULE_PROOF = object()
+
+
 @dataclass(frozen=True)
 class DiscoveredEvent:
     """One discovered winner candidate, before any model question is asked."""
@@ -554,12 +557,22 @@ class DiscoveredEvent:
     provider_sport_id: int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
+    # In-process capability: provider payloads cannot supply this object.
+    _ncaab_schedule_proof: object | None = field(default=None, repr=False, compare=False)
+
     @property
     def event_key(self) -> str:
         return f"{self.sport}:{self.official_event_id or 'UNRESOLVED'}"
 
     def identity(self) -> dict[str, Any]:
-        return {
+        """Return serialized discovery identity with verified NCAAB schedule proof.
+
+        The NCAAB identity handoff owns canonicalization. Retain only its
+        explicit, immutable schedule-match fields on the routed row, including
+        on MODEL_UNAVAILABLE holds; do not forward arbitrary provider raw data.
+        Other sports keep their existing identity contract unchanged.
+        """
+        result = {
             "sport": self.sport,
             "league": self.league,
             "sport_key": self.sport_key,
@@ -574,6 +587,38 @@ class DiscoveredEvent:
             "event_status": self.event_status,
             "discovery_source": self.source,
         }
+        if self.sport == "NCAAB" and isinstance(self.raw, Mapping):
+            raw = self.raw
+            if (
+                self._ncaab_schedule_proof is _NCAAB_SCHEDULE_PROOF
+                and raw.get("canonical_identity_status") == "CANONICAL_RESOLVED"
+                and self.official_event_id
+                and str(self.official_event_id) == (
+                    f"espn-{raw.get('canonical_identity_schedule_game_id')}"
+                )
+                and raw.get("canonical_identity_source") == "SPORTSDATAVERSE_ESPN"
+            ):
+                # Only the canonicalizer's explicit proof keys; no raw prices,
+                # implied probability, provider payload or execution flags.
+                for key in (
+                    "canonical_identity_status",
+                    "canonical_identity_source",
+                    "canonical_identity_resolution",
+                    "canonical_identity_schedule_game_id",
+                    "canonical_identity_schedule_tip_utc",
+                    "canonical_identity_tip_drift_seconds",
+                    "canonical_identity_home_team_id",
+                    "canonical_identity_away_team_id",
+                    "canonical_identity_source_asset",
+                    "canonical_identity_market_features_used",
+                ):
+                    if key in raw:
+                        result[key] = raw[key]
+            elif raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED":
+                result["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+                if isinstance(raw.get("canonical_identity_blocker"), str):
+                    result["canonical_identity_blocker"] = raw["canonical_identity_blocker"]
+        return result
 
 
 def _text(value: Any) -> str:
@@ -743,7 +788,13 @@ def normalize_discovered_event(
         regime=target.regime if target is not None else registry.REGULAR_SEASON,
         provider=target.provider if target is not None else None,
         provider_sport_id=target.sport_id if target is not None else None,
-        raw=dict(raw),
+        raw={
+            key: value for key, value in raw.items()
+            if not (
+                normalize_team_event_identity(sport, league) == "NCAAB"
+                and str(key).startswith("canonical_identity_")
+            )
+        },
     )
 
 

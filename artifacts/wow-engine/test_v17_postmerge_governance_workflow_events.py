@@ -79,19 +79,45 @@ def test_repository_identity_and_expected_head_still_bound():
         observer.validate_source_run(authentic(), target_sha="b" * 40)
 
 
-def test_v4_release_has_five_pinned_checks_and_no_retired_consumer():
+def test_postmerge_release_requires_exactly_three_native_protected_checks():
     source = RELEASE.read_text(encoding="utf-8")
+    mandatory = source.split("          expected=(\n", 1)[1].split("          )", 1)[0]
+    optional = source.split("          optional_reviews=(\n", 1)[1].split("          )", 1)[0]
     for expected in (
         "WOW required-three regression|15368",
         "WOW governed probability backend|15368",
         "WOW additional required regression|15368",
+    ):
+        assert expected in mandatory
+    for context in (
         "WOW Independent QA exact-head|5245832",
         "WOW Release Authority exact-head|5245853",
     ):
-        assert expected in source
+        assert context not in mandatory
+        assert context in optional
+    # Fail closed on a wrong producer/app, stale SHA, or non-success mandatory run.
+    assert 'select(.name == $name and .head_sha == $sha)' in source
+    assert '$check.app.id == $app' in source
+    assert '$check.status == "completed"' in source
+    assert '$check.conclusion == "success"' in source
+    assert "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED" in source
+    # Optional workflow availability and SIRT cannot silently be recorded
+    # as a passing scientific model certificate.
+    assert "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN" not in source
+    assert "optional_reviews=" in source
+    assert "independent_scientific_model_certification: NOT_ESTABLISHED_BY_THIS_RECEIPT" in source
+    assert "v4_exact_head_qa_release_checks: VERIFIED" not in source
+    # Bash backticks in a double-quoted echo cause command substitution,
+    # silently dropping the very head SHA the receipt purports to bind.
+    assert 'echo "- governed_pr_head_sha:' not in source
+    assert 'echo "- protected_main_merge_sha:' not in source
+    assert 'echo "`can_execute=false`"' not in source
+    assert "printf -- '- governed_pr_head_sha:" in source
+    assert "printf -- '- protected_main_merge_sha:" in source
+    assert "printf '%s" in source
+
     assert "verify_existing_pr_governance_receipt.py" not in source
     assert "Verify governance-producing workflow provenance" not in source
-    assert "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED" in source
 
 
 def test_main_readback_is_nonblocking_and_not_a_replacement_sirt_certificate():

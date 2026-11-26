@@ -1,9 +1,10 @@
+import { apiFetch, API_ROOT } from "@/lib/api";
 import { useState, useRef, useCallback } from "react";
 import { Sparkles, Upload, X, Loader2, AlertTriangle, ChevronRight } from "lucide-react";
 import { WowResultCard } from "@/components/wow-result-card";
 import { useLocation } from "wouter";
 
-const BASE     = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
+const BASE = API_ROOT;
 
 const SLIP_FORMATS: Record<string, { breakeven: number; legs: number }> = {
   "2-pick Power": { breakeven: 0.578, legs: 2 },
@@ -80,7 +81,7 @@ export default function PromptPage() {
     setSharpAnchor(null);
 
     try {
-      const resp = await fetch(`${BASE}/api/wow/analyze`, {
+      const resp = await apiFetch(`${BASE}/wow/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -109,7 +110,7 @@ export default function PromptPage() {
       const sfl = parseFloat(sharpFairLine);
       if (!isNaN(nvp)) {
         try {
-          const sar = await fetch(`${BASE}/api/gate-engine/sharp-anchor`, {
+          const sar = await apiFetch(`${BASE}/gate-engine/sharp-anchor`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -163,7 +164,7 @@ export default function PromptPage() {
       pp_line:   String(result.line),
       ...(result.league ? { league: result.league } : {}),
     });
-    navigate(`/?${params.toString()}`);
+    navigate(`/legacy?${params.toString()}`);
   };
 
   return (

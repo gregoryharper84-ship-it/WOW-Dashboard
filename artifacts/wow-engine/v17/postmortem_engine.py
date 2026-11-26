@@ -25,6 +25,8 @@ from typing import Any, Callable, Optional
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from v17.slip_construction_postmortem import build_slip_construction_postmortem
+
 CAN_EXECUTE = False
 _POSTMORTEM_NAMESPACE = uuid.UUID("3559d026-2843-4774-86cc-97dc0cba497b")
 _ALLOWED_RESULTS = {"WIN", "LOSS", "PUSH", "VOID"}
@@ -491,6 +493,53 @@ def build_postmortem_payload(
         lane_acc[key][bucket] += 1
     lane_summary = dict(lane_acc)
 
+    # Post-event exposure is descriptive. Match only exact observed selection
+    # fields across positions; never infer a certified event identity, pregame
+    # sporting probability, actual entry, or independent joint probability.
+    selection_positions: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    selection_results: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    for leg in normalized_legs:
+        identity = (
+            _norm(leg["sport"]), _norm(leg["league"]), _norm(leg["event_id"]),
+            _norm(leg["participant"]), _norm(leg["market"]), _norm(leg["side"]),
+            leg["exact_line"], _norm(leg["selection"]),
+        )
+        selection_positions[identity].add(leg["position_reference"])
+        selection_results[identity].add(leg["settled_result"])
+
+    # A repeated exact observed selection cannot be WIN in one proposed card
+    # and LOSS in another. Reject conflicting retrospective inputs rather than
+    # laundering an ambiguous settlement into either calibration or slip stats.
+    if any(len(results) != 1 for results in selection_results.values()):
+        raise ValueError("CONFLICTING_EXACT_SELECTION_SETTLEMENT")
+
+    distinct_result_counts = {result: 0 for result in sorted(_ALLOWED_RESULTS)}
+    for results in selection_results.values():
+        distinct_result_counts[next(iter(results))] += 1
+
+    reused_position_counts = [
+        len(positions) for positions in selection_positions.values() if len(positions) > 1
+    ]
+    all_or_nothing_references = {
+        pos.position_reference for pos in batch.positions if pos.all_or_nothing
+    }
+    shared_losing_hinges: list[dict[str, Any]] = []
+    impacted_all_or_nothing_positions: set[str] = set()
+    for identity, positions in selection_positions.items():
+        if len(positions) <= 1 or selection_results[identity] != {"LOSS"}:
+            continue
+        impacted = sorted(positions.intersection(all_or_nothing_references))
+        impacted_all_or_nothing_positions.update(impacted)
+        shared_losing_hinges.append({
+            "exact_observed_identity_hash": _canonical_hash(identity),
+            "positions_repeating_loss": sorted(positions),
+            "all_or_nothing_positions_impacted": impacted,
+            "position_count": len(positions),
+        })
+    shared_losing_hinges.sort(key=lambda entry: entry["exact_observed_identity_hash"])
+
+    distinct_decided = distinct_result_counts["WIN"] + distinct_result_counts["LOSS"]
+
     summary = {
         "legs": len(normalized_legs),
         "wins": wins,
@@ -499,8 +548,35 @@ def build_postmortem_payload(
         "voids": voids,
         "leg_hit_rate": wins / (wins + losses) if (wins + losses) else None,
         "positions": len(normalized_positions),
-        "profitable_positions": sum(1 for pos in normalized_positions if pos["net_profit"] > 0),
-        "non_losing_positions": sum(1 for pos in normalized_positions if pos["net_profit"] >= 0),
+        "all_leg_clear_positions": sum(1 for pos in normalized_positions if pos["all_legs_hit"]),
+        "distinct_selections": len(selection_positions),
+        "distinct_selection_results": distinct_result_counts,
+        "distinct_selection_hit_rate": (
+            distinct_result_counts["WIN"] / distinct_decided if distinct_decided else None
+        ),
+        "shared_losing_hinge_count": len(shared_losing_hinges),
+        "shared_losing_hinges": shared_losing_hinges,
+        "all_or_nothing_positions_impacted_by_shared_losses": len(
+            impacted_all_or_nothing_positions
+        ),
+        "shared_losing_hinge_attribution": "OBSERVED_RETRO_ONLY_NOT_PREGAME_CAUSAL_PROOF",
+        "reused_selection_groups": len(reused_position_counts),
+        "reused_selection_extra_positions": sum(n - 1 for n in reused_position_counts),
+        "max_selection_position_exposure": max((len(p) for p in selection_positions.values()), default=0),
+        "cross_position_exposure_basis": "EXACT_OBSERVED_FIELDS_ONLY_NOT_CERTIFIED_IDENTITY",
+        # Zero-dollar hypothetical slips are not verified economic outcomes.
+        # Never count those as non-losing positions merely because 0 >= 0.
+        "profitable_positions": sum(
+            1 for pos in normalized_positions
+            if pos["entry_cost"] > 0 and pos["net_profit"] > 0
+        ),
+        "non_losing_positions": sum(
+            1 for pos in normalized_positions
+            if pos["entry_cost"] > 0 and pos["net_profit"] >= 0
+        ),
+        "reported_positive_entry_positions": sum(
+            1 for pos in normalized_positions if pos["entry_cost"] > 0
+        ),
         "total_entry": total_entry,
         "total_return": total_return,
         "net_profit": net_profit,
@@ -581,6 +657,10 @@ def build_postmortem_payload(
         "positions": normalized_positions,
         "patches": normalized_patches,
         "summary": summary,
+        # Separate process report; never a second sporting probability scorer.
+        "slip_construction_postmortem": build_slip_construction_postmortem(
+            normalized_legs, normalized_positions
+        ),
         "can_execute": False,
     }
 
@@ -659,6 +739,7 @@ def install_postmortem_routes(
             "code": "POSTMORTEM_LEDGER_WRITE_PASS",
             **persisted,
             "summary": payload["summary"],
+            "slip_construction_postmortem": payload["slip_construction_postmortem"],
             "principle": "PRESERVE_REFINE_REGRESSION_CHECK",
             "global_tightening_applied": False,
             "probability_backfill_allowed": False,
@@ -716,6 +797,22 @@ def install_postmortem_routes(
             "legs": legs,
             "positions": positions,
             "patch_candidates": patches,
+            "can_execute": False,
+        }
+
+    @app.get("/v17/postmortem-runs/{research_run_id}/slip-construction", dependencies=[auth_dependency])
+    def get_slip_construction_postmortem(research_run_id: str):
+        """Independent read-only construction retro from existing settlement rows.
+
+        This intentionally reuses the authenticated canonical ledger read,
+        does not create recommendations, and never writes a new outcome/model.
+        """
+        settled = get_postmortem(research_run_id)
+        return {
+            "research_run_id": research_run_id,
+            "slip_construction_postmortem": build_slip_construction_postmortem(
+                settled["legs"], settled["positions"]
+            ),
             "can_execute": False,
         }
 

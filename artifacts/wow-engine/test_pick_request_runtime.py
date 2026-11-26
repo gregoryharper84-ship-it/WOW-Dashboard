@@ -45,7 +45,24 @@ def _evidence(*, l10=True, opponent_context=None):
         "captured_at": now.isoformat(),
         "game_log": list(range(1, n + 1)),
         "box_score_log": [{"minutes": 30 + i, "stat": i, "outs": 15 + i} for i in range(n)],
-        "role_status": {"status": "ACTIVE", "role": "STARTER"},
+        "role_status": {
+            "status": "ACTIVE",
+            "role": "STARTER",
+            # Verified pregame participation. These rows represent a player the
+            # official report does not rule out; without this evidence the
+            # availability gate holds the row out of the Verified Pool.
+            "availability": {
+                "status": "AVAILABLE",
+                "designation": None,
+                "source": "TEST_OFFICIAL_INJURY_REPORT",
+                "captured_at": now.isoformat(),
+                "evidence_status": "RETRIEVED",
+                "fresh": True,
+                "athlete_id": "test-athlete",
+                "event_id": "test-event",
+                "team": "TEST",
+            },
+        },
         "role_timestamp": now.isoformat(),
         "opportunity_ledger": {"status": "PASS", "minutes_projection": 34},
         "source_timestamps": {
@@ -339,9 +356,12 @@ def test_unavailable_aggregate_capability_blocks_before_route_and_auto_hydration
 
 def test_bad_row_cannot_erase_good_sibling_and_reconciliation_is_exact(monkeypatch):
     client, persisted, routed, scored = _build(monkeypatch)
+    bad_row = _row("bad", l10=False)
+    bad_row["evidence"]["game_log"] = bad_row["evidence"]["game_log"][:2]
+    bad_row["evidence"]["box_score_log"] = bad_row["evidence"]["box_score_log"][:2]
     response = client.post(
         "/score-pick-request",
-        json={"rows": [_row("bad", l10=False), _row("good")]},
+        json={"rows": [bad_row, _row("good")]},
     )
     assert response.status_code == 200
     body = response.json()
@@ -354,7 +374,7 @@ def test_bad_row_cannot_erase_good_sibling_and_reconciliation_is_exact(monkeypat
     by_key = {row["row_key"]: row for row in body["rows"]}
     assert by_key["bad"]["terminal_status"] == "HELD"
     assert by_key["bad"]["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
-    assert by_key["bad"]["detail"]["blocker"] == "L10_GAME_LOG_INCOMPLETE"
+    assert by_key["bad"]["detail"]["blocker"] == "MLB_RECENT_STARTS_INSUFFICIENT"
     assert by_key["good"]["terminal_status"] == "COMPLETED"
     assert by_key["good"]["code"] == "MODEL_QUALIFIED_HOLD"
     assert len(persisted) == 1

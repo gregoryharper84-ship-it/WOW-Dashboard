@@ -154,3 +154,13 @@ def test_candidate_registry_rejects_activation_or_publication():
     with pytest.raises(D1RegistryError) as caught:
         persist_candidate_package(db, bad)
     assert caught.value.code == "D1_CANDIDATE_GOVERNANCE_FLAGS_INVALID"
+
+
+def test_candidate_ingestion_cannot_self_approve_source_review():
+    db = FakeDB()
+    bad = package()
+    bad["candidate"]["source_review_status"] = " pass "
+    with pytest.raises(D1RegistryError) as caught:
+        persist_candidate_package(db, bad)
+    assert caught.value.code == "D1_CANDIDATE_SOURCE_REVIEW_SELF_APPROVAL_FORBIDDEN"
+    assert not db.rows.get("wow_d1_candidate_artifacts")

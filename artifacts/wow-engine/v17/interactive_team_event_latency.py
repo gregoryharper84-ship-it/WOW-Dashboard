@@ -177,7 +177,11 @@ def install_interactive_team_event_latency() -> bool:
             raise team_runtime._scout_research_barrier_blocked(
                 req, team_runtime.RESEARCH_RECONCILER, reconciler_out.blockers
             )
-        return {"status": "SUCCEEDED", "stages": stages}
+        return {
+            "status": "SUCCEEDED",
+            "stages": stages,
+            "matchup_discovery": team_runtime._matchup_discovery_for_request(req),
+        }
 
     team_runtime._run_mandatory_scout_research = _parallel_barrier
     setattr(team_runtime, _STATE_KEY, True)

@@ -15,6 +15,7 @@ from v17.d1_candidate_registry import (
     SOURCE_TABLE,
     TRAINING_TABLE,
     persist_candidate,
+    source_outcome_json,
 )
 
 CAN_EXECUTE = False
@@ -42,11 +43,7 @@ def _source_row(raw: Mapping[str, Any]) -> dict[str, Any]:
         "event_start_time": raw.get("event_start_time"),
         "home_participant": raw.get("home_team") or raw.get("home_participant"),
         "away_participant": raw.get("away_team") or raw.get("away_participant"),
-        "outcome_json": {
-            "home_score": raw.get("home_score"),
-            "away_score": raw.get("away_score"),
-            "positive_outcome": raw.get("positive_outcome"),
-        },
+        "outcome_json": source_outcome_json(raw),
         "source_provider": str(raw.get("source_provider") or "").strip(),
         "source_uri": raw.get("source_uri"),
         "source_retrieved_at": raw.get("source_retrieved_at"),
@@ -102,6 +99,75 @@ def _upsert_batches(db: Any, table: str, rows: list[dict[str, Any]], *, on_confl
     return written
 
 
+def persist_source_events_bulk(db: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Append-only source-event persistence shared by re-ingest and maintenance."""
+    sources = [_source_row(row) for row in rows]
+    written = _upsert_batches(
+        db,
+        SOURCE_TABLE,
+        sources,
+        on_conflict="sport,official_event_id,source_payload_sha256",
+    )
+    return {
+        "status": "D1_SOURCE_EVENTS_PERSISTED",
+        "source_events": {"attempted": len(sources), "written_or_existing": written},
+        "can_execute": False,
+    }
+
+
+
+def persist_source_events_bulk_fenced(
+    db: Any, rows: list[dict[str, Any]], *, season: int | str, lease_token: str
+) -> dict[str, Any]:
+    """Append NHL V2 source rows only through a token-fenced PG transaction.
+
+    Each batch takes the season-lease row lock in PostgreSQL before inserting.
+    Expired or superseded writers cannot append the next batch. Partial batches
+    may remain on transport failure and must be verified on retry; no update
+    or delete path exists for immutable source events.
+    """
+    rpc = getattr(db, "rpc", None)
+    if not callable(rpc):
+        raise D1RegistryError(
+            "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE", "fenced RPC unavailable"
+        )
+    sources = [_source_row(row) for row in rows]
+    written = 0
+    for batch in _chunks(sources):
+        try:
+            response = rpc("wow_nhl_append_reingest_source_batch", {
+                "p_season": str(season), "p_token": str(lease_token),
+                "p_rows": batch,
+            }).execute()
+        except Exception as exc:  # noqa: BLE001 - external RPC boundary
+            raise D1RegistryError(
+                "NHL_SOURCE_PERSISTENCE_FAILED",
+                f"fenced DB error {type(exc).__name__}",
+            ) from exc
+        data = getattr(response, "data", None)
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if not isinstance(data, Mapping) or data.get("can_execute") is not False:
+            raise D1RegistryError(
+                "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID", "invalid fenced RPC result"
+            )
+        if data.get("status") != "NHL_SOURCE_REINGEST_BATCH_PERSISTED":
+            raise D1RegistryError(
+                str(data.get("code") or "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID"),
+                "fenced source batch blocked",
+            )
+        n = data.get("written")
+        if type(n) is not int or not (0 <= n <= len(batch)):
+            raise D1RegistryError(
+                "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID", "invalid write count"
+            )
+        written += n
+    return {
+        "status": "D1_SOURCE_EVENTS_PERSISTED",
+        "source_events": {"attempted": len(sources), "written_or_existing": written},
+        "can_execute": False,
+    }
+
 def persist_candidate_package_bulk(db: Any, package: Mapping[str, Any]) -> dict[str, Any]:
     if package.get("can_execute") is not False or package.get("probability_publishable") is not False:
         raise D1RegistryError("D1_PACKAGE_GOVERNANCE_INVALID", "package must be inert")
@@ -141,4 +207,6 @@ __all__ = [
     "CAN_EXECUTE",
     "DEFAULT_BATCH_SIZE",
     "persist_candidate_package_bulk",
+    "persist_source_events_bulk",
+    "persist_source_events_bulk_fenced",
 ]

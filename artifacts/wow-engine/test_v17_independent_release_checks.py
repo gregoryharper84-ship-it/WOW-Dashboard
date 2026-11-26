@@ -581,6 +581,122 @@ def test_missing_aggregate_does_not_defer_after_native_run_exceeds_pending_bound
     assert m.pending_required_regressions(ev) == []
 
 
+def _native_engine_verify_run(**overrides):
+    """An authentic active ``wow-engine-verify`` run whose governed job is not
+    created yet: GitHub only materializes the needs-gated aggregate afterwards."""
+    run = {
+        "id": 8001,
+        "run_attempt": 1,
+        "workflow_id": m.NATIVE_ENGINE_VERIFY_WORKFLOW_ID,
+        "path": m.NATIVE_ENGINE_VERIFY_WORKFLOW_PATH,
+        "event": "pull_request",
+        "head_sha": HEAD,
+        "head_branch": "fix/issue-1830",
+        "status": "in_progress",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "repository": {"full_name": REPO},
+        "head_repository": {"full_name": REPO},
+        "pull_requests": [{
+            "number": 7,
+            "head": {"sha": HEAD, "ref": "fix/issue-1830"},
+        }],
+        "jobs": [
+            {"name": "WOW governed backend shard / 0", "status": "in_progress"},
+            {"name": "WOW Render and Action release contracts", "status": "queued"},
+        ],
+    }
+    run.update(overrides)
+    return run
+
+
+def _evidence_without_governed_backend():
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] != m.GOVERNED_PROBABILITY_CHECK
+    ]
+    return ev
+
+
+def test_fresh_head_defers_while_governed_backend_job_does_not_exist_yet():
+    ev = _evidence_without_governed_backend()
+    ev["native_workflow_runs"] = [_native_engine_verify_run()]
+
+    # The absent check would otherwise be published as a visible HOLD finding...
+    assert f"QA_EVIDENCE_MISSING:{m.GOVERNED_PROBABILITY_CHECK}" in m.qa_findings(ev)
+    # ...but the active authentic workflow run proves that evidence is still coming,
+    # so QA and Release defer silently at this head instead.
+    assert m.pending_required_regressions(ev) == [m.GOVERNED_PROBABILITY_CHECK]
+
+
+def test_governed_backend_deferral_ends_once_its_own_check_is_published():
+    ev = evidence()   # includes a completed governed-backend check run
+    ev["native_workflow_runs"] = [_native_engine_verify_run()]
+
+    assert m.pending_required_regressions(ev) == []
+
+
+def test_failed_governed_backend_is_never_deferred_as_pending():
+    ev = _evidence_without_governed_backend()
+    ev["check_runs"].append(run_(m.GOVERNED_PROBABILITY_CHECK, "failure", rid=950))
+    ev["native_workflow_runs"] = [_native_engine_verify_run()]
+
+    assert m.pending_required_regressions(ev) == []
+    assert f"QA_EVIDENCE_FAILED:{m.GOVERNED_PROBABILITY_CHECK}" in m.qa_findings(ev)
+
+
+@pytest.mark.parametrize("run_changes", [
+    {"workflow_id": m.NATIVE_REGRESSION_WORKFLOW_ID},
+    {"path": ".github/workflows/wow-verify.yml"},
+    {"event": "workflow_dispatch"},
+    {"head_sha": OLD},
+    {"head_branch": "stale-branch"},
+    {"repository": {"full_name": "fork/WOW-Dashboard"}},
+    {"head_repository": {"full_name": "fork/WOW-Dashboard"}},
+    {"pull_requests": [{"number": 8, "head": {"sha": HEAD, "ref": "fix/issue-1830"}}]},
+    {"status": "completed"},
+    {"created_at": "invalid"},
+    {"created_at": (datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat()},
+])
+def test_governed_backend_deferral_requires_an_authentic_recent_engine_verify_run(run_changes):
+    ev = _evidence_without_governed_backend()
+    ev["native_workflow_runs"] = [_native_engine_verify_run(**run_changes)]
+
+    assert m.pending_required_regressions(ev) == []
+
+
+def test_governed_backend_job_identity_is_pinned_to_the_engine_verify_workflow():
+    assert m.GOVERNED_PROBABILITY_CHECK in m.REQUIRED_REGRESSION_CHECKS
+    text = (ROOT / ".github/workflows/wow-engine-verify.yml").read_text()
+    assert m.NATIVE_ENGINE_VERIFY_WORKFLOW_PATH == ".github/workflows/wow-engine-verify.yml"
+    assert "governed-probability-backend:" in text
+    assert f"name: {m.GOVERNED_PROBABILITY_CHECK}" in text
+
+
+def test_native_evidence_collects_active_engine_verify_run_from_one_inventory_read():
+    calls = []
+
+    def fetch(path):
+        calls.append(path)
+        if "/jobs" in path:
+            return 200, {"total_count": 1, "jobs": [
+                {"name": "WOW governed backend shard / 0", "status": "in_progress"},
+            ]}
+        return 200, {"total_count": 2, "workflow_runs": [
+            _native_verify_run(id=7001, status="completed"),
+            _native_engine_verify_run(),
+        ]}
+
+    errors = []
+    evidence_runs = m._native_workflow_evidence(
+        REPO, {"number": 7, "head_ref": "fix/issue-1830"}, HEAD, fetch=fetch, errors=errors,
+    )
+
+    assert errors == []
+    assert [run["id"] for run in evidence_runs] == [8001]
+    assert sum("/actions/runs?" in path for path in calls) == 1
+
+
 def test_qa_check_published_by_another_app_is_a_foreign_source():
     findings = m.release_findings(with_qa(evidence(), app=REL_APP), qa_app_id=QA_APP, release_app_id=REL_APP)
     assert "RELEASE_QA_FOREIGN_SOURCE" in findings and "RELEASE_QA_MISSING" in findings
@@ -661,6 +777,135 @@ def test_workflow_run_target_holds_when_live_pr_is_stale_or_foreign():
     )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
 
 
+@pytest.mark.parametrize(("state", "current_head"), [
+    ("open", OLD),   # Real #2426 callback: SHA advanced between event and QA.
+    ("closed", HEAD),
+])
+def test_qa_source_superseded_is_neutral_only_for_verified_workflow_run(state, current_head):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": state, "draft": False, "merged_at": None,
+            "head": {"sha": current_head, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    strict = m.targets(REPO, workflow_run_prs=event_pr, fetch=routes)
+    if current_head != HEAD:
+        assert strict["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    neutral = m.targets(
+        REPO, workflow_run_prs=event_pr, neutral_superseded=True, fetch=routes,
+    )
+    assert neutral == {
+        "targets": [], "errors": [], "disposition": "neutral",
+        "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
+    }
+
+
+def test_qa_draft_at_exact_event_head_is_neutral_only_for_verified_workflow_run():
+    """Mirrors Release --neutral-if-draft-target (2026-11-20: draft #2738 caused
+    21 of 27 failing qa jobs on main e9d7b057, blocking Render checksPass)."""
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": True, "merged_at": None,
+            "head": {"sha": HEAD, "ref": "draft/x", "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    assert m.targets(REPO, workflow_run_prs=event_pr, neutral_superseded=True, fetch=routes) == {
+        "targets": [], "errors": [], "disposition": "neutral", "reason": "QA_SOURCE_PR_DRAFT",
+    }
+    # Without the automatic-callback flag the draft is still evaluated (QA_PR_DRAFT HOLD).
+    strict = m.targets(REPO, workflow_run_prs=event_pr, fetch=routes)
+    assert strict["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
+    # Manual dispatch never neutralizes a draft.
+    assert m.targets(REPO, pr="7", fetch=routes)["targets"] == [
+        {"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
+    # Multi-PR events stay strict.
+    two = event_pr + [{"number": 8, "head": {"sha": OLD}, "base": {"ref": "main"}}]
+    multi = m.targets(REPO, workflow_run_prs=two, neutral_superseded=True,
+                      fetch=Fake({f"repos/{REPO}/pulls/7": (200, live),
+                                  f"repos/{REPO}/pulls/8": (404, {})}))
+    assert multi.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize("change", [
+    {"head": {"sha": HEAD, "repo": {"full_name": "foreign/WOW-Dashboard"}}},
+    {"base": {"ref": "development", "repo": {"full_name": REPO}}},
+    {"merged_at": "2026-11-20T00:00:00Z"},
+])
+def test_qa_draft_rule_never_masks_foreign_or_invalid_identity(change):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": True, "merged_at": None,
+            "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}, **change}
+    out = m.targets(REPO, workflow_run_prs=event_pr, neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out.get("reason") != "QA_SOURCE_PR_DRAFT"
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("head.repo", {"full_name": "foreign/WOW-Dashboard"}),
+    ("base.ref", "development"),
+    ("head.sha", "malformed"),
+    ("draft", True),
+])
+def test_qa_superseded_classifier_never_masks_invalid_current_identity(field, value):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": False, "merged_at": None,
+            "head": {"sha": OLD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    if field == "draft":
+        live["draft"] = value
+    elif field.startswith("head."):
+        live["head"][field.split(".")[1]] = value
+    else:
+        live["base"]["ref"] = value
+    out = m.targets(REPO, workflow_run_prs=event_pr,
+                    neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert out.get("disposition") != "neutral"
+
+
+def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_step():
+    workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
+    assert "--neutral-superseded" in steps["Resolve one exact-head QA target"]["run"]
+    assert "QA_SOURCE_PR_HEAD_SUPERSEDED" in steps["Resolve one exact-head QA target"]["run"]
+    for name in (
+        "Select exact-head review policy",
+        "Build immutable QA review-policy receipt",
+        "Upload immutable QA review-policy receipt",
+        "Decide at exact head (read-only)",
+    ):
+        # The empty-pr_number skip is unchanged; the added conjunct only makes
+        # the step run less often (fail-fast under step-level isolation).
+        assert steps[name]["if"] == (
+            "steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')")
+    # The original Release classifier already neutralizes a successful QA
+    # job whose terminal outcome upload is deliberately skipped.
+    assert steps["Upload terminal QA outcome"]["if"].startswith(
+        "always() && steps.target.outputs.pr_number != ''"
+    )
+
+
+
+@pytest.mark.parametrize(("status", "body", "suffix"), [
+    (403, {"message": "You have exceeded a secondary rate limit"}, "403:SECONDARY_RATE_LIMIT"),
+    (403, {"message": "API rate limit exceeded"}, "403:RATE_LIMIT"),
+    (403, {"message": "Resource not accessible by integration"}, "403:APP_PERMISSION_DENIED"),
+    (403, {"message": "Bad credentials"}, "403:CREDENTIAL_REJECTED"),
+    (403, {"message": "unclassified 403 secret=private-value"}, "403"),
+    (429, {"message": "Rate limit reached"}, "429:RATE_LIMIT"),
+    (404, {"message": "Not Found"}, "404"),
+])
+def test_qa_pr_unreadable_fails_closed_with_safe_http_classification(status, body, suffix):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    routes = Fake({f"repos/{REPO}/pulls/7": (status, body)})
+    out = m.targets(REPO, workflow_run_prs=event_pr,
+                    neutral_superseded=True, fetch=routes)
+    assert out == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:7:{suffix}"]}
+    assert "private-value" not in str(out)
+    dispatch = m.targets(REPO, pr="7", fetch=routes)
+    assert dispatch == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:{suffix}"]}
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
@@ -701,6 +946,37 @@ def _source_review_resolver(**kwargs):
         author="bot",
         pr_number=kwargs["pr_number"],
     )
+
+
+@pytest.mark.parametrize(("operation", "previous", "must_hold"), [
+    ("added", None, False),
+    ("modified", None, False),
+    ("changed", None, False),
+    ("removed", None, True),
+    ("renamed", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+    ("copied", None, True),
+    ("unchanged", None, True),
+    ("modified", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+])
+def test_zero_credit_gather_rejects_disallowed_file_operations(operation, previous, must_hold):
+    item = {"filename": "artifacts/wow-engine/learning/README.md", "status": operation}
+    if previous is not None:
+        item["previous_filename"] = previous
+    qa_policy = {"mode": "zero_credit", "target": {
+        "pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830",
+    }}
+    ev = m.gather(
+        REPO, 7, HEAD, fetch=Fake(_gather_routes(files=[item])),
+        qa_review_policy=qa_policy, independent_review_active=False,
+        zero_credit_enabled=True,
+    )
+    findings = m.qa_findings(ev)
+    if must_hold:
+        assert ev["zero_credit_disallowed_file_operations"]
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
+    else:
+        assert ev["zero_credit_disallowed_file_operations"] == []
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" not in findings
 
 
 def test_gather_collects_exact_head_evidence():
@@ -846,7 +1122,12 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     script = read_only["Resolve authenticated exact-PR release lane"]["run"]
     assert "classify-upstream-qa" in script
     assert "resolve-qa-policy" in script
+    assert "--neutral-if-superseded" in script
     assert script.index("classify-upstream-qa") < script.index("resolve-qa-policy")
+    assert script.index("--neutral-if-superseded") < script.index('bundle=$(python "$tool"')
+    assert "RELEASE_QA_SOURCE_PR_SUPERSEDED" in (
+        ROOT / ".github/scripts/independent_source_review_receipt.py"
+    ).read_text(encoding="utf-8")
     assert "RELEASE_NEUTRAL_BEFORE_PR_LOCK" in script
     assert "RELEASE_POLICY_TARGET_STALE" in script
     assert "applicable=true" in script
@@ -862,6 +1143,11 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     assert "resolve-qa-policy" not in script
     assert "check-runs" not in script
     assert "classify-upstream-qa" in script
+    decide_script = _step_script(REL_WF, "Decide at exact head (read-only)")
+    assert "policy_args+=(--neutral-if-superseded --neutral-if-draft-target)" in decide_script
+    assert "RELEASE_NEUTRAL_AT_DECIDE" in decide_script
+    assert decide_script.index("RELEASE_NEUTRAL_AT_DECIDE") < decide_script.index("gather_args=(gather")
+    assert 'echo "count=0" >> "$GITHUB_OUTPUT"' in decide_script
 
 
 def test_source_qa_release_certifier_dag_has_no_cycle():
@@ -872,8 +1158,10 @@ def test_source_qa_release_certifier_dag_has_no_cycle():
     assert release == ["wow-v17-independent-qa-check"]
     assert "wow-v17-release-authority-check" not in qa
     assert "wow-v17-existing-pr-governance-review" not in qa
-    assert certifier["workflow_run"]["workflows"] == ["wow-v17-independent-qa-check"]
-    assert gate["workflow_run"]["workflows"] == ["wow-v17-existing-pr-governance-review"]
+    assert "workflow_run" not in certifier
+    assert "workflow_run" not in gate
+    assert "workflow_dispatch" in certifier
+    assert "workflow_dispatch" in gate
     qa_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
     assert "wow-v17-trusted-governance-gate" in qa_if
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in qa_if
@@ -1326,7 +1614,8 @@ def _qa_target_output_enables_publish(pr_number):
     """
     workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
     steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
-    assert steps["Mint checks-only App token"]["if"] == "steps.target.outputs.pr_number != ''"
+    assert steps["Mint checks-only App token"]["if"] == (
+        "steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')")
     assert steps["Publish exact-head check"]["if"] == "always() && steps.target.outputs.pr_number != ''"
     return pr_number != ""
 
@@ -2058,8 +2347,16 @@ def test_publish_failure_is_typed(fake_gh):
 
 
 def test_every_phase_c_code_is_registered():
+    # CI retrigger: Phase-C registry scrape stays RELEASE_QA_* only for policy_resolver.
     emitted = set(re.findall(r'"((?:QA|RELEASE|TARGET)_[A-Z_]+)', MODULE.read_text()))
     emitted |= set(re.findall(r'f"((?:QA|RELEASE|TARGET)_[A-Z_]+)[:"]', MODULE.read_text()))
+    # Release's authenticated QA-policy resolver is a separate protected
+    # source module. Its typed RELEASE_QA_* dispositions must appear in the
+    # canonical registry, just like codes emitted by the Release workflow.
+    policy_resolver = (
+        ROOT / ".github/scripts/independent_source_review_receipt.py"
+    ).read_text(encoding="utf-8")
+    emitted |= set(re.findall(r'"(RELEASE_QA_[A-Z_]+)"', policy_resolver))
     for wf in (QA_WF, REL_WF):
         text = wf.read_text()
         emitted |= set(re.findall(r"::error::((?:QA|RELEASE)_[A-Z_]+)", text))

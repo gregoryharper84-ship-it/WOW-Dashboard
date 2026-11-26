@@ -362,6 +362,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             "GITHUB_RUN_ATTEMPT": "1",
             "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "fake-claude-token",
             "WOW_QA_REVIEW_GEMINI_API_KEY": "fake-gemini-token",
+            "WOW_QA_GEMINI_FREE_TIER_CONFIRMED": "true",
             "QA_APP_TOKEN": "fake-check-token",
         }
         original_semantic_review = m.semantic_review
@@ -392,6 +393,45 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(receipt["next_action"], "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD")
         self.assertEqual(called, ["anthropic-claude-api", "anthropic-claude-api"])
         publish.assert_called_once_with(target["head_sha"], receipt, "fake-check-token")
+
+    def test_free_tier_guard_prevents_unverified_provider_calls(self):
+        target = {"pr": 2301, "head_sha": "a" * 40, "base_sha": "c" * 40,
+                  "diff_sha256": "b" * 64, "diff": "safe"}
+        event = {"pull_request": {"number": target["pr"], "head": {"sha": target["head_sha"]}}}
+        env = {
+            "GITHUB_REPOSITORY": m.REPO,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_PATH": "/mock/event.json",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GH_READ_TOKEN": "fake-read-token",
+            "GITHUB_RUN_ID": "33",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "fake-gemini-token",
+            "QA_APP_TOKEN": "fake-check-token",
+        }
+        for confirmation in (None, "false", "", "TRUE"):
+            with self.subTest(free_tier_confirmation=confirmation):
+                case_env = dict(env)
+                if confirmation is not None:
+                    case_env["WOW_QA_GEMINI_FREE_TIER_CONFIRMED"] = confirmation
+                with patch.dict(m.os.environ, case_env, clear=True), \
+                     patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+                     patch.object(m.Path, "write_text", autospec=True) as save, \
+                     patch.object(m, "capture", return_value=target), \
+                     patch.object(m, "prior_semantic_reject", return_value=False), \
+                     patch.object(m, "semantic_review") as generate, \
+                     patch.object(m, "publish_check") as publish:
+                    with self.assertRaises(SystemExit) as outcome:
+                        m.main()
+                self.assertEqual(outcome.exception.code, 1)
+                generate.assert_not_called()
+                save.assert_called_once()
+                receipt = m.json.loads(save.call_args.args[1])
+                self.assertEqual(receipt["decision"], "HOLD")
+                self.assertEqual(receipt["reason"], "GEMINI_FREE_TIER_VERIFICATION_REQUIRED")
+                self.assertNotEqual(receipt["decision"], "PASS")
+                publish.assert_called_once()
+                self.assertEqual(publish.call_args.args[1], receipt)
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},

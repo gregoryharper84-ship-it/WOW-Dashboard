@@ -14,6 +14,7 @@ import httpx
 
 from prop_auto_hydration_plate_appearances import hydrate_mlb_plate_appearance_evidence
 from prop_hydration_resilience import fetch_cross_season_pitching_splits
+from v17.player_availability_gate import participation_evidence
 
 WORKLOAD_STATS = {"PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN", "PLATE_APPEARANCES"}
 
@@ -188,6 +189,16 @@ def hydrate_mlb_workload_evidence(
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
             "source": "MLB StatsAPI official schedule/probablePitcher",
+            "availability": participation_evidence(
+                basis="PROBABLE_STARTER",
+                confirmation="PROBABLE",
+                source="MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER",
+                captured_at=timestamp,
+                fresh=True,
+                athlete_id=player_id,
+                event_id=schedule["official_game_pk"],
+                team=schedule["team"],
+            ),
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {

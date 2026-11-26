@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 import zipfile
 from datetime import datetime, timezone
 
@@ -450,13 +451,33 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
         return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
     def run_step(self, name, env):
-        return subprocess.run(
-            ["bash", "-e", "-c", self.step_script(name)],
-            env=dict(os.environ, **env),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        with tempfile.TemporaryDirectory(prefix="provider-control-step-") as runner_temp:
+            return subprocess.run(
+                ["bash", "-e", "-c", self.step_script(name)],
+                env={**os.environ, "RUNNER_TEMP": runner_temp, **env},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+    def test_step_runner_temp_is_fresh_cleaned_and_preserves_explicit_override(self):
+        script = 'test -d "$RUNNER_TEMP"\nprintf "%s\\n" "$RUNNER_TEMP"\n'
+        with tempfile.TemporaryDirectory() as ambient_directory:
+            with patch.dict(os.environ, {"RUNNER_TEMP": ambient_directory}), patch.object(
+                self, "step_script", return_value=script
+            ):
+                generated = [self.run_step("fixture", {}) for _ in range(2)]
+                for result in generated:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                paths = [Path(result.stdout.strip()) for result in generated]
+                self.assertNotEqual(paths[0], paths[1])
+                for path in paths:
+                    self.assertNotEqual(path, Path(ambient_directory))
+                    self.assertFalse(path.exists(), "Default runner temp must be cleaned after the step")
+                explicit = self.run_step("fixture", {"RUNNER_TEMP": ambient_directory})
+                self.assertEqual(explicit.returncode, 0, explicit.stderr)
+                self.assertEqual(explicit.stdout.strip(), ambient_directory)
+                self.assertTrue(Path(ambient_directory).is_dir())
 
     def route_receipt(self):
         return {

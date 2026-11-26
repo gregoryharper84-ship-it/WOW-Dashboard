@@ -146,6 +146,7 @@ def test_availability_passes_only_when_team_submitted_and_player_not_listed():
         submitted_report(),
         player_name="Test Player",
         team_name="Alpha Aces",
+        opponent_name="Beta Belles",
         matchup="AAA@BBB",
         game_date="08/30/2026",
     )
@@ -158,6 +159,7 @@ def test_explicit_questionable_designation_blocks_unconditional_model_path():
             submitted_report("Test Player Questionable Injury Illness Right Ankle"),
             player_name="Test Player",
             team_name="Alpha Aces",
+            opponent_name="Beta Belles",
             matchup="AAA@BBB",
             game_date="08/30/2026",
         )
@@ -170,6 +172,7 @@ def test_available_target_is_not_overread_as_later_player_out():
         submitted_report("Test Player Available Returned To Competition"),
         player_name="Test Player",
         team_name="Alpha Aces",
+        opponent_name="Beta Belles",
         matchup="AAA@BBB",
         game_date="08/30/2026",
     )
@@ -183,6 +186,7 @@ def test_not_yet_submitted_blocks_omission_logic():
             "08/30/2026 AAA@BBB Alpha Aces NOT YET SUBMITTED Beta Belles Other Player Out",
             player_name="Test Player",
             team_name="Alpha Aces",
+            opponent_name="Beta Belles",
             matchup="AAA@BBB",
             game_date="08/30/2026",
         )
