@@ -83,6 +83,12 @@ def _collect_rundown(sport_key: str, *, opener: Any = None) -> tuple[list[dict[s
             slate_date,
             capability="events",
             opener=opener,
+            # ML board = moneyline discovery only: never pay for every market
+            # and every book (data-point cost control).
+            market_ids=sources.rundown_winner_market_ids() or None,
+            affiliate_ids=sources.rundown_evidence_affiliate_ids(),
+            main_line=True,
+            hide_closed=True,
         )
         if result.ok:
             rows.extend(result.data or [])
