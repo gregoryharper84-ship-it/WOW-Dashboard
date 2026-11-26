@@ -90,7 +90,8 @@ jobs:
         id: target
         # Automatic callbacks are checks on protected main, not the PR head.
         # An unreadable/invalid source publishes no QA check and must not
-        # fail main (Render checksPass). Manual dispatch still fails hard.
+        # fail main (Render checksPass). Manual dispatch still fails hard on
+        # an unreadable or invalid source.
         continue-on-error: ${{ github.event_name == 'workflow_run' }}
         shell: bash
         env:
@@ -103,24 +104,28 @@ jobs:
           set -euo pipefail
           tool=artifacts/wow-engine/v17/independent_release_checks.py
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
             if [ -n "${INPUT_HEAD_SHA:-}" ]; then
               [[ "$INPUT_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::QA_INPUT_HEAD_SHA_INVALID"; exit 1; }
-              jq -e --arg sha "$INPUT_HEAD_SHA" '.targets | length == 1 and .[0].head == $sha' <<<"$resolved" >/dev/null || { echo "::error::QA_INPUT_HEAD_SHA_STALE"; exit 1; }
             fi
+            selector=(--pr "$INPUT_PR")
           elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS" --neutral-superseded)
+            selector=(--workflow-run-prs "$WR_PRS")
           else
-            # The job if above skips a workflow_run whose pull_requests array is
-            # empty. Reaching this branch means the guard was bypassed; still
-            # refuse to guess a PR or publish a check.
+            # Protected pre-admission skips a workflow_run without a PR; if that
+            # is ever bypassed, guess nothing and publish nothing.
             echo "::error::QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing"
             exit 1
           fi
-          if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<<"$resolved")" = "neutral" ]; then
-            reason=$(jq -r '.reason // "QA_SOURCE_PR_HEAD_SUPERSEDED"' <<<"$resolved")
-            echo "::notice::${reason}: no QA check published (QA_SOURCE_PR_HEAD_SUPERSEDED or QA_SOURCE_PR_DRAFT)."
+          # State-gated for every event: a proved closed, moved or draft exact head
+          # resolves neutral (QA_SOURCE_PR_HEAD_SUPERSEDED / QA_SOURCE_PR_CLOSED /
+          # QA_SOURCE_PR_DRAFT), so no check is published and absence still blocks.
+          resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" "${selector[@]}" --neutral-superseded)
+          if [ "$(jq -r '.disposition // empty' <<<"$resolved")" = "neutral" ]; then
+            echo "::notice::$(jq -r .reason <<<"$resolved"): no QA check published."
             exit 0
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ] && [ -n "${INPUT_HEAD_SHA:-}" ]; then
+            jq -e --arg sha "$INPUT_HEAD_SHA" '.targets | length == 1 and .[0].head == $sha' <<<"$resolved" >/dev/null || { echo "::error::QA_INPUT_HEAD_SHA_STALE"; exit 1; }
           fi
           if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
             echo "::error::QA_TARGETS_UNRESOLVED: $(jq -c .errors <<<"$resolved")"
