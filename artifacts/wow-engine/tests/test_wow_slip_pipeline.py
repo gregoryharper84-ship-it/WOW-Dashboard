@@ -306,6 +306,98 @@ class TestArchetypeStructures:
                 ArchetypeId.NBA_HALF_PACE_FADE, legs, captured_at=captured
             )
 
+    def test_nba_half_pace_fade_backtracks_demon_budget(self):
+        """Do not greedily burn the only DEMON slot on game A's top pair."""
+        captured = datetime(2026, 11, 26, 15, 0, tzinfo=UTC)
+        start = captured + timedelta(hours=6)
+        legs = [
+            # Game A: top-ranked DEMON + two normals (must prefer the normals).
+            _leg(
+                leg_id="a-demon",
+                game_id="gameA",
+                market="pra_1h",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.90,
+                modifier=Modifier.DEMON,
+            ),
+            _leg(
+                leg_id="a-n1",
+                game_id="gameA",
+                market="pra_2h",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.80,
+            ),
+            _leg(
+                leg_id="a-n2",
+                game_id="gameA",
+                market="fantasy_score_1h",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.79,
+            ),
+            # Game B: needs the DEMON to complete a 2-leg stack.
+            _leg(
+                leg_id="b-demon",
+                game_id="gameB",
+                market="pra_1h",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.70,
+                modifier=Modifier.DEMON,
+            ),
+            _leg(
+                leg_id="b-n1",
+                game_id="gameB",
+                market="pra_2h",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.69,
+            ),
+            # Game C: two normals.
+            _leg(
+                leg_id="c-n1",
+                game_id="gameC",
+                market="fantasy_score_1h",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.68,
+            ),
+            _leg(
+                leg_id="c-n2",
+                game_id="gameC",
+                market="fantasy_score_2h",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.67,
+            ),
+        ]
+        snap = build_paper_slip(
+            ArchetypeId.NBA_HALF_PACE_FADE, legs, captured_at=captured
+        )
+        assert len(snap.legs) == 6
+        assert sum(1 for leg in snap.legs if leg.modifier == Modifier.DEMON) == 1
+        assert "a-demon" not in {leg.leg_id for leg in snap.legs}
+        assert "b-demon" in {leg.leg_id for leg in snap.legs}
+
+    def test_duplicate_leg_ids_do_not_inflate_slip(self):
+        captured = datetime(2026, 11, 26, 16, 0, tzinfo=UTC)
+        start = captured + timedelta(hours=4)
+        base = _leg(
+            leg_id="dup",
+            game_id="g0",
+            market="completion_percentage",
+            direction=Direction.LESS,
+            event_start=start,
+            lower=0.70,
+        )
+        legs = [dict(base) for _ in range(6)]
+        with pytest.raises(ValidationError):
+            build_paper_slip(
+                ArchetypeId.NFL_NICHE_FADE, legs, captured_at=captured
+            )
+
     def test_nba_4_pack_fade_four_distinct_games_10x(self):
         captured = _ts(2026, 11, 26, 18, 0, CT)
         start = captured + timedelta(hours=3)
@@ -503,17 +595,33 @@ class TestSlipLedgerStore:
         assert grades[0]["net_units"] == 36.5
 
     def test_optional_supabase_mirror_insert(self, tmp_path: Path):
+        class _Builder:
+            def __init__(self, table, row):
+                self._table = table
+                self._row = row
+                self.executed = False
+
+            def execute(self):
+                self.executed = True
+                self._table.rows.append(self._row)
+                return self
+
         class _Table:
             def __init__(self):
                 self.rows = []
+                self.builders = []
 
             def insert(self, row):
-                self.rows.append(row)
-                return self
+                builder = _Builder(self, row)
+                self.builders.append(builder)
+                return builder
 
         class _Client:
             def __init__(self):
-                self.tables = {"wow_slip_snapshots": _Table(), "wow_slip_grades": _Table()}
+                self.tables = {
+                    "wow_slip_snapshots": _Table(),
+                    "wow_slip_grades": _Table(),
+                }
 
             def table(self, name):
                 return self.tables[name]
@@ -539,10 +647,21 @@ class TestSlipLedgerStore:
         store = SlipLedgerStore(data_dir=tmp_path, supabase_client=client)
         store.write_snapshot(snap)
         store.write_grade(grade)
+        assert all(b.executed for t in client.tables.values() for b in t.builders)
         assert len(client.tables["wow_slip_snapshots"].rows) == 1
         assert client.tables["wow_slip_snapshots"].rows[0]["can_execute"] is False
         assert len(client.tables["wow_slip_grades"].rows) == 1
         assert "graded_legs_json" in client.tables["wow_slip_grades"].rows[0]
+
+    def test_sql_roi_normalizes_by_stake_units(self):
+        root = Path(__file__).resolve().parents[1]
+        for path in (
+            root / "migrations" / "20261125_wow_slip_ledger.sql",
+            root.parents[1] / "supabase" / "migrations" / "20261125_wow_slip_ledger.sql",
+        ):
+            text = path.read_text(encoding="utf-8")
+            assert "sum(case when g.slip_id is not null then s.stake_units else 0 end)" in text
+            assert "sum(g.net_units)::numeric / count(g.slip_id)" not in text
 
 
 class TestMigrationContract:

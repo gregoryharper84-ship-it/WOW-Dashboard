@@ -83,9 +83,11 @@ select
   end as fragile_win_share_pct,
   coalesce(sum(g.net_units), 0.0)::double precision as total_net_units,
   case
-    when count(g.slip_id) = 0 then null
+    when coalesce(sum(case when g.slip_id is not null then s.stake_units else 0 end), 0) = 0
+      then null
     else round(
-      100.0 * sum(g.net_units)::numeric / count(g.slip_id)::numeric,
+      100.0 * sum(g.net_units)::numeric
+        / sum(case when g.slip_id is not null then s.stake_units else 0 end)::numeric,
       4
     )
   end as slip_roi_pct,

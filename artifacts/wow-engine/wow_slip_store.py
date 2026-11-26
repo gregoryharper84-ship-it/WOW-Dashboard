@@ -17,8 +17,12 @@ SNAPSHOTS_FILENAME = "snapshots.jsonl"
 GRADES_FILENAME = "graded.jsonl"
 
 
+class InsertBuilder(Protocol):
+    def execute(self) -> Any: ...
+
+
 class SupabaseTable(Protocol):
-    def insert(self, row: dict[str, Any]) -> Any: ...
+    def insert(self, row: dict[str, Any]) -> InsertBuilder: ...
 
 
 class SupabaseClient(Protocol):
@@ -51,26 +55,31 @@ class SlipLedgerStore:
             handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
             handle.write("\n")
 
+    def _mirror_insert(self, table: str, row: dict[str, Any]) -> None:
+        if self._supabase is None:
+            return
+        # supabase-py builds a request on insert(); execute() performs the write.
+        self._supabase.table(table).insert(row).execute()
+
     def write_snapshot(self, snapshot: SlipSnapshot) -> dict[str, Any]:
         if snapshot.can_execute is not False:
             raise ValueError("refusing to persist snapshot with can_execute!=False")
         row = _jsonable(snapshot)
         self._append_jsonl(self.snapshots_path, row)
-        if self._supabase is not None:
-            mirror = {
-                "slip_id": row["slip_id"],
-                "archetype": row["archetype"],
-                "product": row["product"],
-                "multiplier": row["multiplier"],
-                "primary_direction": row["primary_direction"],
-                "captured_at": row["captured_at"],
-                "built_at": row["built_at"],
-                "stake_units": row["stake_units"],
-                "lane": row.get("lane", "WOW_PROP_LANE"),
-                "can_execute": False,
-                "legs_json": row["legs"],
-            }
-            self._supabase.table("wow_slip_snapshots").insert(mirror)
+        mirror = {
+            "slip_id": row["slip_id"],
+            "archetype": row["archetype"],
+            "product": row["product"],
+            "multiplier": row["multiplier"],
+            "primary_direction": row["primary_direction"],
+            "captured_at": row["captured_at"],
+            "built_at": row["built_at"],
+            "stake_units": row["stake_units"],
+            "lane": row.get("lane", "WOW_PROP_LANE"),
+            "can_execute": False,
+            "legs_json": row["legs"],
+        }
+        self._mirror_insert("wow_slip_snapshots", mirror)
         return row
 
     def write_grade(self, grade: SlipGrade) -> dict[str, Any]:
@@ -78,25 +87,24 @@ class SlipLedgerStore:
             raise ValueError("refusing to persist grade with can_execute!=False")
         row = _jsonable(grade)
         self._append_jsonl(self.grades_path, row)
-        if self._supabase is not None:
-            mirror = {
-                "slip_id": row["slip_id"],
-                "archetype": row["archetype"],
-                "product": row["product"],
-                "total_legs": row["total_legs"],
-                "wins": row["wins"],
-                "losses": row["losses"],
-                "pushes": row["pushes"],
-                "active_legs": row["active_legs"],
-                "original_multiplier": row["original_multiplier"],
-                "effective_multiplier": row["effective_multiplier"],
-                "net_units": row["net_units"],
-                "fragile_win_count": row["fragile_win_count"],
-                "graded_at": row["graded_at"],
-                "can_execute": False,
-                "graded_legs_json": row["graded_legs"],
-            }
-            self._supabase.table("wow_slip_grades").insert(mirror)
+        mirror = {
+            "slip_id": row["slip_id"],
+            "archetype": row["archetype"],
+            "product": row["product"],
+            "total_legs": row["total_legs"],
+            "wins": row["wins"],
+            "losses": row["losses"],
+            "pushes": row["pushes"],
+            "active_legs": row["active_legs"],
+            "original_multiplier": row["original_multiplier"],
+            "effective_multiplier": row["effective_multiplier"],
+            "net_units": row["net_units"],
+            "fragile_win_count": row["fragile_win_count"],
+            "graded_at": row["graded_at"],
+            "can_execute": False,
+            "graded_legs_json": row["graded_legs"],
+        }
+        self._mirror_insert("wow_slip_grades", mirror)
         return row
 
     def read_snapshots(self) -> list[dict[str, Any]]:

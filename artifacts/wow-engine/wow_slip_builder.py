@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timezone
 from enum import Enum
+from itertools import combinations
 from typing import Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -323,7 +324,149 @@ def _filter_eligible(
         eligible.append(leg)
 
     eligible.sort(key=_rank_key, reverse=True)
-    return eligible
+    # After ranking, keep the strongest row per leg_id so duplicates cannot
+    # inflate pick counts or paper-trade payouts.
+    deduped: list[LegCandidate] = []
+    seen_leg_ids: set[str] = set()
+    for leg in eligible:
+        if leg.leg_id in seen_leg_ids:
+            continue
+        seen_leg_ids.add(leg.leg_id)
+        deduped.append(leg)
+    return deduped
+
+
+def _to_slip_leg(leg: LegCandidate, *, primary: Direction) -> SlipLeg:
+    is_exception = leg.direction != primary
+    return SlipLeg(
+        leg_id=leg.leg_id,
+        player_id=leg.player_id,
+        player_name=leg.player_name,
+        game_id=leg.game_id,
+        market=leg.market,
+        direction=leg.direction,
+        line=leg.line,
+        modifier=leg.modifier,
+        calibrated_probability=leg.calibrated_probability,
+        calibrated_lower_bound=leg.calibrated_lower_bound,
+        event_start_time=_ensure_aware(leg.event_start_time),
+        is_confirmed_active=True,
+        is_promo_square=leg.is_promo_square,
+        is_direction_exception=is_exception,
+    )
+
+
+def _pair_budgets(pair: tuple[LegCandidate, ...], *, primary: Direction) -> tuple[int, int]:
+    demons = sum(1 for leg in pair if leg.modifier == Modifier.DEMON)
+    promos = sum(1 for leg in pair if leg.direction != primary)
+    return demons, promos
+
+
+def _pair_rank(pair: tuple[LegCandidate, ...]) -> tuple[float, float]:
+    # Prefer pairs whose members rank higher (sum of ranking keys).
+    lowers = sum(leg.calibrated_lower_bound for leg in pair)
+    probs = sum(leg.calibrated_probability for leg in pair)
+    return (lowers, probs)
+
+
+def _select_exact_game_stack(
+    *,
+    spec: ArchetypeSpec,
+    ranked: list[LegCandidate],
+) -> list[SlipLeg]:
+    """Search feasible N×K stacks without greedily burning DEMON/promo budgets."""
+    assert spec.exact_game_stack is not None
+    games_needed, legs_per = spec.exact_game_stack
+    by_game: dict[str, list[LegCandidate]] = {}
+    for leg in ranked:
+        by_game.setdefault(leg.game_id, []).append(leg)
+
+    # Per-game candidate pairs that are locally feasible under global max budgets.
+    game_options: dict[str, list[tuple[LegCandidate, ...]]] = {}
+    for gid, pool in by_game.items():
+        if len(pool) < legs_per:
+            continue
+        options: list[tuple[LegCandidate, ...]] = []
+        for combo in combinations(pool, legs_per):
+            demons, promos = _pair_budgets(combo, primary=spec.direction)
+            if demons > MAX_DEMON_LEGS or promos > MAX_PROMO_SQUARE_EXCEPTIONS:
+                continue
+            options.append(combo)
+        if options:
+            options.sort(key=_pair_rank, reverse=True)
+            game_options[gid] = options
+
+    if len(game_options) < games_needed:
+        raise ValidationError.from_exception_data(
+            "SlipSnapshot",
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("legs",),
+                    "input": [],
+                    "ctx": {
+                        "error": (
+                            f"{spec.archetype_id.value} requires exact "
+                            f"{games_needed}x{legs_per} game stack"
+                        )
+                    },
+                }
+            ],
+        )
+
+    best: list[LegCandidate] | None = None
+    best_score: tuple[float, float] | None = None
+    game_ids = sorted(
+        game_options.keys(),
+        key=lambda gid: _pair_rank(game_options[gid][0]),
+        reverse=True,
+    )
+
+    for chosen_games in combinations(game_ids, games_needed):
+        # Nested search over pair choices for these games.
+        def search(
+            idx: int,
+            acc: list[LegCandidate],
+            demons: int,
+            promos: int,
+        ) -> None:
+            nonlocal best, best_score
+            if idx == len(chosen_games):
+                score = _pair_rank(tuple(acc))
+                if best is None or (best_score is not None and score > best_score):
+                    best = list(acc)
+                    best_score = score
+                return
+            gid = chosen_games[idx]
+            for pair in game_options[gid]:
+                d, p = _pair_budgets(pair, primary=spec.direction)
+                if demons + d > MAX_DEMON_LEGS:
+                    continue
+                if promos + p > MAX_PROMO_SQUARE_EXCEPTIONS:
+                    continue
+                search(idx + 1, acc + list(pair), demons + d, promos + p)
+
+        search(0, [], 0, 0)
+
+    if best is None:
+        raise ValidationError.from_exception_data(
+            "SlipSnapshot",
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("legs",),
+                    "input": [],
+                    "ctx": {
+                        "error": (
+                            f"{spec.archetype_id.value} requires exact "
+                            f"{games_needed}x{legs_per} game stack"
+                        )
+                    },
+                }
+            ],
+        )
+
+    return [_to_slip_leg(leg, primary=spec.direction) for leg in best]
 
 
 def _select_legs(
@@ -336,10 +479,13 @@ def _select_legs(
     per_game: dict[str, int] = {}
     demon_count = 0
     promo_exceptions = 0
+    used_leg_ids: set[str] = set()
 
     def try_add(leg: LegCandidate) -> bool:
         nonlocal demon_count, promo_exceptions
         if len(selected) >= need:
+            return False
+        if leg.leg_id in used_leg_ids:
             return False
         if leg.modifier == Modifier.DEMON and demon_count >= MAX_DEMON_LEGS:
             return False
@@ -352,31 +498,9 @@ def _select_legs(
         game_count = per_game.get(leg.game_id, 0)
         if spec.max_legs_per_game is not None and game_count >= spec.max_legs_per_game:
             return False
-        # Half-pace: never open a 4th game; prefer filling existing games to 2.
-        if spec.exact_game_stack is not None:
-            games_needed, legs_per = spec.exact_game_stack
-            if leg.game_id not in per_game and len(per_game) >= games_needed:
-                return False
-            if game_count >= legs_per:
-                return False
 
-        slip_leg = SlipLeg(
-            leg_id=leg.leg_id,
-            player_id=leg.player_id,
-            player_name=leg.player_name,
-            game_id=leg.game_id,
-            market=leg.market,
-            direction=leg.direction,
-            line=leg.line,
-            modifier=leg.modifier,
-            calibrated_probability=leg.calibrated_probability,
-            calibrated_lower_bound=leg.calibrated_lower_bound,
-            event_start_time=_ensure_aware(leg.event_start_time),
-            is_confirmed_active=True,
-            is_promo_square=leg.is_promo_square,
-            is_direction_exception=is_exception,
-        )
-        selected.append(slip_leg)
+        selected.append(_to_slip_leg(leg, primary=spec.direction))
+        used_leg_ids.add(leg.leg_id)
         per_game[leg.game_id] = game_count + 1
         if leg.modifier == Modifier.DEMON:
             demon_count += 1
@@ -385,72 +509,7 @@ def _select_legs(
         return True
 
     if spec.exact_game_stack is not None:
-        games_needed, legs_per = spec.exact_game_stack
-        # First pass: prefer completing stacks game-by-game from top-ranked legs.
-        by_game: dict[str, list[LegCandidate]] = {}
-        for leg in ranked:
-            by_game.setdefault(leg.game_id, []).append(leg)
-        # Rank games by best leg score.
-        game_order = sorted(
-            by_game.keys(),
-            key=lambda gid: _rank_key(by_game[gid][0]),
-            reverse=True,
-        )
-        chosen_games: list[str] = []
-        for gid in game_order:
-            if len(chosen_games) >= games_needed:
-                break
-            pool = by_game[gid]
-            if len(pool) < legs_per:
-                continue
-            # Tentatively take top legs_per from this game if demon/promo allow.
-            tentative: list[LegCandidate] = []
-            local_demons = demon_count
-            local_promo = promo_exceptions
-            ok = True
-            for leg in pool:
-                if len(tentative) >= legs_per:
-                    break
-                if leg.modifier == Modifier.DEMON and local_demons >= MAX_DEMON_LEGS:
-                    continue
-                is_exception = leg.direction != spec.direction
-                if is_exception:
-                    if not leg.is_promo_square or local_promo >= MAX_PROMO_SQUARE_EXCEPTIONS:
-                        continue
-                tentative.append(leg)
-                if leg.modifier == Modifier.DEMON:
-                    local_demons += 1
-                if is_exception:
-                    local_promo += 1
-            if len(tentative) < legs_per:
-                ok = False
-            if not ok:
-                continue
-            for leg in tentative:
-                try_add(leg)
-            chosen_games.append(gid)
-        if (
-            len(selected) != need
-            or len(per_game) != games_needed
-            or any(c != legs_per for c in per_game.values())
-        ):
-            raise ValidationError.from_exception_data(
-                "SlipSnapshot",
-                [
-                    {
-                        "type": "value_error",
-                        "loc": ("legs",),
-                        "input": selected,
-                        "ctx": {
-                            "error": (
-                                f"{spec.archetype_id.value} requires exact "
-                                f"{games_needed}x{legs_per} game stack"
-                            )
-                        },
-                    }
-                ],
-            )
-        return selected
+        return _select_exact_game_stack(spec=spec, ranked=ranked)
 
     for leg in ranked:
         try_add(leg)
