@@ -23,6 +23,7 @@ try:
         SOURCE_CLASS,
         normalize_articles,
     )
+    from v17.news_material_lead import is_material_lead_title, material_lead_count, prefer_material_leads
     from v17.research_source_adapters import ResearchFetchResult
     from v17.web_intelligence_sport_profiles import WEIGHT_PROFILES, normalize_sport
 except ModuleNotFoundError:
@@ -33,6 +34,7 @@ except ModuleNotFoundError:
         SOURCE_CLASS,
         normalize_articles,
     )
+    from news_material_lead import is_material_lead_title, material_lead_count, prefer_material_leads
     from research_source_adapters import ResearchFetchResult
     from web_intelligence_sport_profiles import WEIGHT_PROFILES, normalize_sport
 
@@ -134,9 +136,11 @@ def _ok(sport_key: str, articles: list[dict], *, observed: datetime,
         files_tried: list[dict], downloaded: int,
         later_slice_errors: list[str] | None = None) -> ResearchFetchResult:
     stamp = observed.isoformat().replace("+00:00", "Z")
+    ranked = prefer_material_leads(articles, limit=MAX_NEWS_ITEMS)
     data = {
         "source_observed_at": stamp,
-        "articles": articles[:MAX_NEWS_ITEMS],
+        "articles": ranked,
+        "material_lead_count": material_lead_count(ranked),
         "attribution": "The GDELT Project (https://www.gdeltproject.org/)",
         "verified_event_count": 0,
         "evidence_only": True,
@@ -198,12 +202,15 @@ def parse_gkg_articles(raw_csv: bytes, *, sport_key: str,
         return []
     if sport_key not in SPORT_TITLE_RE:
         return []
+    # Collect beyond the publish cap so material leads can displace fashion/
+    # schedule noise when prefer_material_leads ranks the final slice.
+    collect_cap = MAX_NEWS_ITEMS * 4
     output: list[dict] = []
     seen_urls: set[str] = set()
     scanned = 0
     text = raw_csv.decode("utf-8", "replace")
     for line in text.splitlines():
-        if len(output) >= MAX_NEWS_ITEMS or scanned >= MAX_RAW_CANDIDATE_SCAN:
+        if len(output) >= collect_cap or scanned >= MAX_RAW_CANDIDATE_SCAN:
             break
         if not line or "\t" not in line:
             continue
@@ -234,8 +241,9 @@ def parse_gkg_articles(raw_csv: bytes, *, sport_key: str,
         if item["source_url"] in seen_urls:
             continue
         seen_urls.add(item["source_url"])
+        item["material_lead"] = is_material_lead_title(item.get("title"))
         output.append(item)
-    return output
+    return prefer_material_leads(output, limit=MAX_NEWS_ITEMS)
 
 
 def _read_bounded(response: httpx.Response, *, limit: int) -> bytes | None:

@@ -294,8 +294,6 @@ def produce_reviewed_facts(
 def attach_reviewed_facts_bundle(payload: dict[str, Any], source: Path) -> dict[str, Any]:
     """Attach a same-run reviewed-facts sibling onto matching Multiscout rows."""
     facts_path = source.parent / "news-reviewed-facts.json"
-    if not facts_path.exists():
-        return payload
 
     def status(code: str, *, attached: int = 0) -> dict[str, Any]:
         out = dict(payload)
@@ -308,6 +306,11 @@ def attach_reviewed_facts_bundle(payload: dict[str, Any], source: Path) -> dict[
             "can_execute": False,
         }
         return out
+
+    # Explicit absence is auditable; silent omission previously looked identical
+    # to an un-run bridge and hid the independent-fact producer gap.
+    if not facts_path.exists():
+        return status("NEWS_REVIEWED_FACTS_NOT_PRESENT")
 
     try:
         if facts_path.stat().st_size > 512_000:
@@ -395,9 +398,64 @@ def attach_reviewed_facts_bundle(payload: dict[str, Any], source: Path) -> dict[
     return out
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """Write a same-run ``news-reviewed-facts.json`` from authorized claims.
+
+    Claims remain external attestations. This CLI only validates shape/provenance
+    and never authenticates reviewer cryptography or invents facts from headlines.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--discovery", required=True, help="path to public-gdelt-receipt.json")
+    parser.add_argument("--claims", required=True, help="path to JSON list of reviewed claims")
+    parser.add_argument("--output", required=True, help="path for news-reviewed-facts.json")
+    parser.add_argument(
+        "--source-receipt-sha256",
+        default=None,
+        help="exact SHA-256 of the raw discovery receipt bytes",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    discovery_path = Path(args.discovery)
+    claims_path = Path(args.claims)
+    output_path = Path(args.output)
+    raw = discovery_path.read_bytes()
+    discovery = json.loads(raw.decode("utf-8"))
+    claims_payload = json.loads(claims_path.read_text(encoding="utf-8"))
+    if isinstance(claims_payload, dict) and isinstance(claims_payload.get("claims"), list):
+        claims = claims_payload["claims"]
+    elif isinstance(claims_payload, list):
+        claims = claims_payload
+    else:
+        raise SystemExit("NEWS_REVIEW_CLAIMS_MUST_BE_LIST")
+    digest = args.source_receipt_sha256 or hashlib.sha256(raw).hexdigest()
+    bundle = produce_reviewed_facts(
+        discovery,
+        claims,
+        source_receipt_sha256=digest,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps({
+        "status": bundle.get("producer_status"),
+        "accepted_facts": len(bundle.get("accepted_facts") or []),
+        "rejected_claims": len(bundle.get("rejected_claims") or []),
+        "source_receipt_sha256": digest,
+        "output": str(output_path),
+        "can_execute": False,
+    }))
+    return 0 if bundle.get("producer_status") == "NEWS_REVIEW_FACTS_ACCEPTED" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
 __all__ = [
     "CAN_EXECUTE",
     "SCHEMA",
     "attach_reviewed_facts_bundle",
+    "main",
     "produce_reviewed_facts",
 ]

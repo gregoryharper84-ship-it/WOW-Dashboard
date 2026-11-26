@@ -17,6 +17,11 @@ on:
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/news_reviewed_fact_producer.py"
       - "artifacts/wow-engine/v17/news_fitted_rescore_dispatch.py"
+      - "artifacts/wow-engine/v17/news_fitted_scorer_binding.py"
+      - "artifacts/wow-engine/v17/news_fitted_persistence_readback.py"
+      - "artifacts/wow-engine/v17/news_material_lead.py"
+      - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
+      - "artifacts/wow-engine/v17/gdelt_gkg_fallback.py"
       - "artifacts/wow-engine/v17/nhl_multiscout_identity.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
@@ -24,6 +29,9 @@ on:
       - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/test_v17_news_reviewed_fact_producer.py"
       - "artifacts/wow-engine/test_v17_news_fitted_rescore_dispatch.py"
+      - "artifacts/wow-engine/test_v17_news_fitted_scorer_binding.py"
+      - "artifacts/wow-engine/test_v17_news_material_lead.py"
+      - "artifacts/wow-engine/test_v17_gdelt_gkg_fallback.py"
       - "artifacts/wow-engine/test_v17_nhl_multiscout_identity.py"
       - "artifacts/wow-engine/test_v17_news_to_model_e2e.py"
       - "artifacts/wow-engine/v17/sql/20260911_add_scout_source_snapshots_identity.sql"
@@ -47,6 +55,11 @@ on:
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/news_reviewed_fact_producer.py"
       - "artifacts/wow-engine/v17/news_fitted_rescore_dispatch.py"
+      - "artifacts/wow-engine/v17/news_fitted_scorer_binding.py"
+      - "artifacts/wow-engine/v17/news_fitted_persistence_readback.py"
+      - "artifacts/wow-engine/v17/news_material_lead.py"
+      - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
+      - "artifacts/wow-engine/v17/gdelt_gkg_fallback.py"
       - "artifacts/wow-engine/v17/nhl_multiscout_identity.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
@@ -54,6 +67,9 @@ on:
       - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/test_v17_news_reviewed_fact_producer.py"
       - "artifacts/wow-engine/test_v17_news_fitted_rescore_dispatch.py"
+      - "artifacts/wow-engine/test_v17_news_fitted_scorer_binding.py"
+      - "artifacts/wow-engine/test_v17_news_material_lead.py"
+      - "artifacts/wow-engine/test_v17_gdelt_gkg_fallback.py"
       - "artifacts/wow-engine/test_v17_nhl_multiscout_identity.py"
       - "artifacts/wow-engine/test_v17_news_to_model_e2e.py"
       - "artifacts/wow-engine/v17/sql/20260911_add_scout_source_snapshots_identity.sql"
@@ -94,8 +110,12 @@ jobs:
           test_v17_news_scout_receipt_bridge.py
           test_v17_news_reviewed_fact_producer.py
           test_v17_news_fitted_rescore_dispatch.py
+          test_v17_news_fitted_scorer_binding.py
+          test_v17_news_fitted_persistence_readback.py
+          test_v17_news_material_lead.py
           test_v17_nhl_multiscout_identity.py
           test_v17_news_to_model_e2e.py
+          test_v17_gdelt_gkg_fallback.py
           tests/test_v17_sport_scout_teams.py
           test_v17_firecrawl_research_adapter.py
           test_v17_source_snapshot_identity.py
