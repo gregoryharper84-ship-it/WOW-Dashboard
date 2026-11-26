@@ -43,3 +43,30 @@ def test_doc_queries_rotate_material_topics_by_slot():
                      "mma", "boxing", "tennis", "golf", "cricket"}
     assert query == query_for(sport, at)
     assert "(" in query and ")" in query
+
+
+def test_topics_rotate_independently_when_active_count_divisible_by_three():
+    """February has 9 active sports (divisible by 3). Same sport must visit all topics."""
+    from datetime import timedelta
+
+    from v17.news_material_lead import MATERIAL_TOPIC_CLAUSES
+    from v17.public_gdelt_discovery import active_sport_keys
+
+    start = datetime(2026, 2, 1, 0, tzinfo=timezone.utc)
+    active = active_sport_keys(start)
+    assert len(active) % len(MATERIAL_TOPIC_CLAUSES) == 0
+    # Pick NHL if present; otherwise the first active sport.
+    target = "icehockey_nhl" if "icehockey_nhl" in active else active[0]
+    topics: set[str] = set()
+    # Walk enough 6h slots to cover multiple full sport cycles.
+    for i in range(len(active) * len(MATERIAL_TOPIC_CLAUSES) * 2):
+        at = start + timedelta(hours=6 * i)
+        sport, query = selection(at)
+        if sport != target:
+            continue
+        topics.add(query)
+    assert len(topics) == len(MATERIAL_TOPIC_CLAUSES)
+    joined = " | ".join(sorted(topics)).lower()
+    assert "injury" in joined
+    assert "lineup" in joined
+    assert "ruled out" in joined

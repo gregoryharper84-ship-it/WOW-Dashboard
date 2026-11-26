@@ -102,11 +102,23 @@ def _slot_index(at: datetime) -> int:
     return int(at.timestamp() // (6 * 3600))
 
 
+def _topic_slot_index(at: datetime, *, active_count: int) -> int:
+    """Advance topics by completed sport-rotation cycles, not the raw slot.
+
+    When ``len(active)`` is divisible by the topic count, using the same absolute
+    slot for sport and topic permanently pins each sport to one topic. Dividing
+    by the active-sport count rotates topics independently of sport selection.
+    """
+    cycle = max(int(active_count), 1)
+    return _slot_index(at) // cycle
+
+
 def query_for(sport_key: str, at: datetime) -> str:
     label = SPORT_QUERY_MAP.get(sport_key)
     if not label:
         raise ValueError("GDELT_SPORT_QUERY_UNKNOWN")
-    return material_query_for(label, slot_index=_slot_index(at))
+    active = active_sport_keys(at)
+    return material_query_for(label, slot_index=_topic_slot_index(at, active_count=len(active)))
 
 
 def selection(at: datetime) -> tuple[str, str]:
