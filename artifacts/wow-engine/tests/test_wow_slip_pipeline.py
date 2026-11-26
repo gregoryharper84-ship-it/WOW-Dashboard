@@ -664,6 +664,116 @@ class TestSlipLedgerStore:
             assert "sum(g.net_units)::numeric / count(g.slip_id)" not in text
 
 
+class TestPlayerDiversificationAndPropLane:
+    def test_rejects_second_leg_same_player(self):
+        captured = _ts(2026, 11, 26, 5, 0, CT)
+        start = captured + timedelta(hours=12)
+        legs = [
+            _leg(
+                leg_id=f"l{i}",
+                game_id=f"g{i}",
+                market="personal_fouls",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.60,
+                player_id="same-player" if i < 2 else f"p{i}",
+            )
+            for i in range(6)
+        ]
+        # Only 5 unique players → cannot fill 6-pick after diversification.
+        with pytest.raises(ValidationError):
+            build_paper_slip(
+                ArchetypeId.NBA_NICHE_UNDER_EARLY, legs, captured_at=captured
+            )
+
+    def test_prop_lane_drops_uncertified_rows(self):
+        from wow_slip_prop_lane import (
+            build_paper_slip_from_prop_lane,
+            eligible_candidates_from_prop_rows,
+        )
+
+        captured = _ts(2026, 11, 26, 5, 0, CT)
+        start = captured + timedelta(hours=12)
+        rows = []
+        for i in range(6):
+            rows.append(
+                {
+                    "leg_id": f"l{i}",
+                    "player_id": f"p{i}",
+                    "player_name": f"P{i}",
+                    "game_id": f"g{i}",
+                    "market": "personal_fouls",
+                    "direction": "LESS",
+                    "line": 3.5,
+                    "calibrated_probability": 0.65,
+                    "calibrated_lower_bound": 0.60,
+                    "event_start_time": start,
+                    "is_confirmed_active": True,
+                    "certification_label": "CERTIFIED_FITTED",
+                    "can_execute": False,
+                }
+            )
+        rows.append(
+            {
+                "leg_id": "research",
+                "player_id": "px",
+                "player_name": "Research Only",
+                "game_id": "gx",
+                "market": "personal_fouls",
+                "direction": "LESS",
+                "line": 3.5,
+                "calibrated_probability": 0.99,
+                "calibrated_lower_bound": 0.98,
+                "event_start_time": start,
+                "is_confirmed_active": True,
+                "certification_label": "RESEARCH_ONLY",
+                "can_execute": False,
+            }
+        )
+        cands = eligible_candidates_from_prop_rows(rows)
+        assert all(c.leg_id != "research" for c in cands)
+        snap = build_paper_slip_from_prop_lane(
+            ArchetypeId.NBA_NICHE_UNDER_EARLY, rows, captured_at=captured
+        )
+        assert snap.can_execute is False
+        assert "research" not in {leg.leg_id for leg in snap.legs}
+
+    def test_slip_intelligence_stream_separated(self):
+        from wow_slip_intelligence import (
+            assess_slip_exposure,
+            record_slip_learning,
+            streams_are_separated,
+        )
+
+        captured = _ts(2026, 11, 26, 5, 0, CT)
+        start = captured + timedelta(hours=12)
+        legs = [
+            _leg(
+                leg_id=f"l{i}",
+                game_id=f"g{i // 2}",
+                market="turnovers",
+                direction=Direction.LESS,
+                event_start=start,
+                lower=0.60,
+            )
+            for i in range(6)
+        ]
+        snap = build_paper_slip(
+            ArchetypeId.NBA_NICHE_UNDER_EARLY, legs, captured_at=captured
+        )
+        exposure = assess_slip_exposure(snap)
+        assert exposure.stream == "SLIP_INTELLIGENCE"
+        assert exposure.can_execute is False
+        assert exposure.independence_combined_probability is not None
+        grade = grade_slip(snap, {f"l{i}": 1.0 for i in range(6)})
+        learning = record_slip_learning(grade)
+        assert learning.stream == "SLIP_INTELLIGENCE"
+        assert learning.clears_promotion_gate is False  # only 6 decided legs
+        sep = streams_are_separated()
+        assert sep["auto_promote_archetypes"] is False
+        assert sep["prediction_stream"] == "PREDICTION_INTELLIGENCE"
+
+
 class TestMigrationContract:
     def test_sql_enforces_can_execute_false(self):
         root = Path(__file__).resolve().parents[1]

@@ -444,6 +444,12 @@ def _select_exact_game_stack(
                     continue
                 if promos + p > MAX_PROMO_SQUARE_EXCEPTIONS:
                     continue
+                # PrizePicks: at most one leg per player across the whole slip.
+                pair_players = {leg.player_id for leg in pair}
+                if len(pair_players) < len(pair):
+                    continue
+                if pair_players & {leg.player_id for leg in acc}:
+                    continue
                 search(idx + 1, acc + list(pair), demons + d, promos + p)
 
         search(0, [], 0, 0)
@@ -480,12 +486,15 @@ def _select_legs(
     demon_count = 0
     promo_exceptions = 0
     used_leg_ids: set[str] = set()
+    used_player_ids: set[str] = set()
 
     def try_add(leg: LegCandidate) -> bool:
         nonlocal demon_count, promo_exceptions
         if len(selected) >= need:
             return False
         if leg.leg_id in used_leg_ids:
+            return False
+        if leg.player_id in used_player_ids:
             return False
         if leg.modifier == Modifier.DEMON and demon_count >= MAX_DEMON_LEGS:
             return False
@@ -501,6 +510,7 @@ def _select_legs(
 
         selected.append(_to_slip_leg(leg, primary=spec.direction))
         used_leg_ids.add(leg.leg_id)
+        used_player_ids.add(leg.player_id)
         per_game[leg.game_id] = game_count + 1
         if leg.modifier == Modifier.DEMON:
             demon_count += 1
