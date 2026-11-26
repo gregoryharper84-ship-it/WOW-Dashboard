@@ -45,6 +45,13 @@ def test_doc_queries_rotate_material_topics_by_slot():
     assert "(" in query and ")" in query
 
 
+def test_query_for_rejects_naive_datetime():
+    import pytest
+
+    with pytest.raises(ValueError, match="GDELT_SLOT_REQUIRES_UTC_AWARE_TIME"):
+        query_for("americanfootball_nfl", datetime(2026, 11, 26, 0))
+
+
 def test_topics_rotate_independently_when_active_count_divisible_by_three():
     """February has 9 active sports (divisible by 3). Same sport must visit all topics."""
     from datetime import timedelta

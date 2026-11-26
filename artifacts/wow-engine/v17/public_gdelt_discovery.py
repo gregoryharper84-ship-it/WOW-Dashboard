@@ -114,6 +114,8 @@ def _topic_slot_index(at: datetime, *, active_count: int) -> int:
 
 
 def query_for(sport_key: str, at: datetime) -> str:
+    if at.tzinfo is None:
+        raise ValueError("GDELT_SLOT_REQUIRES_UTC_AWARE_TIME")
     label = SPORT_QUERY_MAP.get(sport_key)
     if not label:
         raise ValueError("GDELT_SPORT_QUERY_UNKNOWN")
