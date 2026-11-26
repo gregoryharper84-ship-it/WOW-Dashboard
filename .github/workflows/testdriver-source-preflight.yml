@@ -1,0 +1,51 @@
+name: TestDriver Source Preflight (no cloud)
+
+# This workflow never launches a TestDriver sandbox, consumes TestDriver minutes,
+# authenticates to TestDriver, or replaces existing QA/Release checks.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/testdriver.yml'
+      - '.github/workflows/testdriver-source-preflight.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'tests/dashboard.test.mjs'
+      - 'tests/production.test.mjs'
+      - 'tests/fixtures/testdriver-props-mock.mjs'
+      - 'tests/testdriver-preflight.test.mjs'
+      - 'vitest.config.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testdriver-source-preflight-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  source-preflight:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+      - name: Validate dependency lock without package install scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Validate ESM test syntax
+        run: |
+          node --check vitest.config.mjs
+          node --check tests/dashboard.test.mjs
+          node --check tests/production.test.mjs
+          node --check tests/fixtures/testdriver-props-mock.mjs
+          node --check tests/testdriver-preflight.test.mjs
+      - name: Test isolated fixture contract
+        run: node --test tests/testdriver-preflight.test.mjs
