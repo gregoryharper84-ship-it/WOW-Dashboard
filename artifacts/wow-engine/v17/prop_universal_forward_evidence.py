@@ -464,6 +464,7 @@ def run_generic_forward_route(
     market_api: Any,
     now: datetime,
     skip_theses: frozenset[tuple[str, str, str, str]] = frozenset(),
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     # skip_theses: theses the caller knows are already captured for the active
     # artifact, so a bounded run moves on to unscored theses instead of
@@ -475,7 +476,11 @@ def run_generic_forward_route(
         snapshots = [row for row in snapshots if thesis_key(row) not in skip_theses][:max_snapshots]
     existing = _existing_thesis_directions(db, sport, stat_type)
     rows: list[dict[str, Any]] = []
-    for snapshot in snapshots:
+    for index, snapshot in enumerate(snapshots):
+        # A caller budget stops between snapshots; the rest stay for the next run.
+        if index and should_stop is not None and should_stop():
+            snapshots = snapshots[:index]
+            break
         thesis = thesis_key(snapshot)
         assert thesis is not None
         for direction in DIRECTIONS:
