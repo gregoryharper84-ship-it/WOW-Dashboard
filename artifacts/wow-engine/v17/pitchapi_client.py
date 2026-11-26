@@ -607,12 +607,12 @@ def league_discovery_canary(
                 "persisted": False,
                 "error": probe_exc.to_dict(),
             }
-        except Exception as probe_exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - never expose exception class names in receipts
             receipt["match_probe"] = {
                 "status": "FAILED",
                 "endpoint": f"{PITCHAPI_ORIGIN}{LEAGUES_PATH}/{matched.id}/matches",
                 "season": season,
-                "code": f"PITCHAPI_MATCH_PROBE_{type(probe_exc).__name__.upper()}",
+                "code": "PITCHAPI_MATCH_PROBE_FAILED",
                 "persisted": False,
             }
         return receipt
@@ -626,10 +626,10 @@ def league_discovery_canary(
             error=exc.to_dict(),
         )
         return receipt
-    except Exception as exc:  # noqa: BLE001 - maintenance hook must never raise
+    except Exception:  # noqa: BLE001 - never expose exception class names in receipts
         receipt.update(
             status="FAILED",
-            code=f"PITCHAPI_CANARY_{type(exc).__name__.upper()}",
+            code="PITCHAPI_CANARY_FAILED",
         )
         return receipt
 

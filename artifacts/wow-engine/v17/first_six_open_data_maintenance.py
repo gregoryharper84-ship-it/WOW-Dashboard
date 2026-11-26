@@ -334,8 +334,8 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
             try:
                 from v17.pitchapi_client import soccer_pitchapi_probe_after_forward
                 pitchapi = soccer_pitchapi_probe_after_forward(forward)
-            except Exception as exc:  # noqa: BLE001
-                pitchapi = {"status":"FAILED","code":f"PITCHAPI_HOOK_{type(exc).__name__.upper()}",
+            except Exception:  # noqa: BLE001 - never expose exception class/message to callers
+                pitchapi = {"status":"FAILED","code":"PITCHAPI_HOOK_FAILED",
                             "evidence_only":True,"persisted":False,"can_execute":False}
             return {**result,"forward_evidence":forward,"native_research":research,"pitchapi":pitchapi}
 

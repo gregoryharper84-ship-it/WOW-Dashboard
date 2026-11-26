@@ -336,3 +336,6 @@ def test_maintenance_route_exposes_pitchapi_receipt():
     source = inspect.getsource(mod.install_first_six_open_data_maintenance_routes)
     assert "soccer_pitchapi_probe_after_forward" in source
     assert "pitchapi" in source
+    assert "PITCHAPI_HOOK_FAILED" in source
+    assert "PITCHAPI_HOOK_{" not in source
+    assert "type(exc).__name__" not in source.split("pitchapi =")[1].split("return")[0]
