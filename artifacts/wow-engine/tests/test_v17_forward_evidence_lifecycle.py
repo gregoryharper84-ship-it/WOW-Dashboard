@@ -749,3 +749,60 @@ def test_view_least_privilege_migration_leaves_service_role_select_only():
             "  on table public.wow_v17_forward_evidence_graded from service_role;") in sql
     assert "grant select on table public.wow_v17_forward_evidence_graded to service_role;" in sql
     assert re.search(r"grant [^;]* to (public|anon|authenticated)", sql) is None
+
+
+# Regression: valid frozen registrations must settle existing captures even
+# when a new capture fails to initialize. The normal status remains non-green.
+@pytest.mark.parametrize("stage", [
+    "load_frozen_candidate", "verify_candidate", "upcoming_events", "load_context",
+])
+def test_capture_initialization_failure_does_not_starve_settlement(monkeypatch, stage):
+    db, state = make_db(NOW)
+    assert run(db, NOW)["captured"] == 2
+    before = copy.deepcopy(db.tables[fe.CAPTURE_TABLE])
+    after = KICK + timedelta(hours=13)
+    state["now"] = after
+    db.tables["wow_ncaaf_training_games"].append(game("401", "Home U", "Away U", KICK, 24, 27))
+    adapter = NCAAFResultFormAdapter(season_rows=lambda year: [
+        fixture("future", "Home U", "Away U", after + timedelta(days=1)),
+    ])
+
+    def blocked(*args, **kwargs):
+        raise fe.ForwardEvidenceBlocked("TEST_CAPTURE_BLOCKER")
+
+    monkeypatch.setattr(fe if stage == "load_frozen_candidate" else adapter, stage, blocked)
+    receipt = fe.run_forward_evidence(db, adapter, now=after)
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["code"] == "TEST_CAPTURE_BLOCKER"
+    assert receipt["captured"] == 0 and receipt["settled"] == 1
+    assert receipt["scorecard"]["graded_n"] == 1
+    assert db.tables[fe.CAPTURE_TABLE] == before
+    assert db.tables[fe.SETTLEMENT_TABLE][0]["official_event_id"] == "401"
+    assert db.tables[fe.SETTLEMENT_TABLE][0]["outcome"] == "AWAY"
+    for flag in fe._INERT:
+        assert receipt[flag] is False
+
+
+def test_capture_and_settlement_failure_codes_are_both_preserved(monkeypatch):
+    db, state = make_db(NOW)
+    assert run(db, NOW)["captured"] == 2
+    after = KICK + timedelta(hours=13)
+    state["now"] = after
+    adapter = NCAAFResultFormAdapter(season_rows=lambda year: [])
+
+    def capture_failed(*args, **kwargs):
+        raise RuntimeError("fixture acquisition failed")
+
+    def settlement_failed(*args, **kwargs):
+        raise fe.ForwardEvidenceBlocked("TEST_SETTLEMENT_BLOCKER")
+
+    monkeypatch.setattr(fe, "load_frozen_candidate", capture_failed)
+    monkeypatch.setattr(adapter, "settlements", settlement_failed)
+    receipt = fe.run_forward_evidence(db, adapter, now=after)
+    assert receipt["status"] == "FAILED"
+    assert receipt["code"] == "FORWARD_EVIDENCE_RUNTIMEERROR"
+    assert receipt["settlement_blocked_by_code"] == {"TEST_SETTLEMENT_BLOCKER": 1}
+    assert receipt["captured"] == receipt["settled"] == 0
+    assert not db.tables[fe.SETTLEMENT_TABLE]
+    for flag in fe._INERT:
+        assert receipt[flag] is False
