@@ -205,6 +205,12 @@ def _default_transport(request: urllib.request.Request, timeout_s: float) -> Pit
             final_url=str(exc.geturl() or request.full_url),
         )
     except urllib.error.URLError as exc:
+        # urllib wraps socket/TimeoutError as URLError.reason; classify before generic failure.
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, TimeoutError) or (
+            isinstance(reason, OSError) and "timed out" in str(reason).lower()
+        ):
+            raise PitchAPIError("PITCHAPI_TIMEOUT", "PitchAPI request timed out.") from exc
         raise PitchAPIError("PITCHAPI_REQUEST_FAILED", "PitchAPI request failed.") from exc
     except TimeoutError as exc:
         raise PitchAPIError("PITCHAPI_TIMEOUT", "PitchAPI request timed out.") from exc

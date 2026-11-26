@@ -155,6 +155,30 @@ def test_redirect_refused(monkeypatch):
     assert exc.value.code == "PITCHAPI_REDIRECT_REFUSED"
 
 
+def test_urlerror_timeout_reason_maps_to_pitchapi_timeout():
+    import urllib.error
+    from v17 import pitchapi_client as mod
+
+    request = __import__("urllib.request").request.Request(
+        f"{PITCHAPI_ORIGIN}{LEAGUES_PATH}",
+        headers={"X-API-KEY": SECRET, "User-Agent": USER_AGENT},
+        method="GET",
+    )
+
+    class FakeOpener:
+        def open(self, _req, timeout=None):
+            raise urllib.error.URLError(TimeoutError("timed out"))
+
+    original = mod.urllib.request.build_opener
+    mod.urllib.request.build_opener = lambda *_args, **_kwargs: FakeOpener()
+    try:
+        with pytest.raises(PitchAPIError) as exc:
+            mod._default_transport(request, 15.0)
+        assert exc.value.code == "PITCHAPI_TIMEOUT"
+    finally:
+        mod.urllib.request.build_opener = original
+
+
 def test_disallowed_path_and_trailing_slash(monkeypatch):
     monkeypatch.setenv("PITCHAPI_API_KEY", SECRET)
     client = PitchAPIClient.from_environment(transport=lambda *_: _raw(200, {}))
