@@ -342,36 +342,43 @@ def run_forward_evidence(
         receipt["registration_id"] = registration["registration_id"]
         receipt["frozen_artifact_checksum"] = registration["artifact_checksum"]
         receipt["frozen_model_artifact_version"] = registration["model_artifact_version"]
-        if capture:
-            candidate = load_frozen_candidate(db, registration)
-            try:
-                adapter.verify_candidate(candidate, now)
-            except Exception as exc:  # noqa: BLE001
-                raise ForwardEvidenceBlocked(_code(exc, "FORWARD_EVIDENCE_FROZEN_CANDIDATE_INVALID")) from exc
-            events = list(adapter.upcoming_events(db, now, horizon))[:MAX_EVENTS_PER_RUN]
-            receipt["events_considered"] = len(events)
-            context = adapter.load_context(db, now) if events else None
-            for event in events:
+        try:
+            if capture:
+                candidate = load_frozen_candidate(db, registration)
                 try:
-                    if not now < event.event_start_time_utc <= now + horizon:
-                        raise ForwardEvidenceBlocked("FORWARD_EVIDENCE_EVENT_OUTSIDE_WINDOW")
-                    forecast = adapter.score(event, context, candidate, now)
-                    row = capture_row(registration, candidate, event, forecast, adapter.outcome_space)
-                except Exception as exc:  # noqa: BLE001 - isolate each event
-                    key = _code(exc, f"FORWARD_EVIDENCE_SCORE_{type(exc).__name__.upper()}")
-                    blocked[key] = blocked.get(key, 0) + 1
-                    continue
-                try:
-                    db.table(CAPTURE_TABLE).insert(row).execute()
-                    receipt["captured"] += 1
+                    adapter.verify_candidate(candidate, now)
                 except Exception as exc:  # noqa: BLE001
-                    if _is_duplicate(exc):
-                        receipt["duplicate"] += 1
-                    else:
-                        blocked["FORWARD_EVIDENCE_CAPTURE_WRITE_FAILED"] = (
-                            blocked.get("FORWARD_EVIDENCE_CAPTURE_WRITE_FAILED", 0) + 1)
-        else:
-            receipt["capture_skipped_reason"] = capture_skip_reason or "CAPTURE_DISABLED_BY_CALLER"
+                    raise ForwardEvidenceBlocked(_code(exc, "FORWARD_EVIDENCE_FROZEN_CANDIDATE_INVALID")) from exc
+                events = list(adapter.upcoming_events(db, now, horizon))[:MAX_EVENTS_PER_RUN]
+                receipt["events_considered"] = len(events)
+                context = adapter.load_context(db, now) if events else None
+                for event in events:
+                    try:
+                        if not now < event.event_start_time_utc <= now + horizon:
+                            raise ForwardEvidenceBlocked("FORWARD_EVIDENCE_EVENT_OUTSIDE_WINDOW")
+                        forecast = adapter.score(event, context, candidate, now)
+                        row = capture_row(registration, candidate, event, forecast, adapter.outcome_space)
+                    except Exception as exc:  # noqa: BLE001 - isolate each event
+                        key = _code(exc, f"FORWARD_EVIDENCE_SCORE_{type(exc).__name__.upper()}")
+                        blocked[key] = blocked.get(key, 0) + 1
+                        continue
+                    try:
+                        db.table(CAPTURE_TABLE).insert(row).execute()
+                        receipt["captured"] += 1
+                    except Exception as exc:  # noqa: BLE001
+                        if _is_duplicate(exc):
+                            receipt["duplicate"] += 1
+                        else:
+                            blocked["FORWARD_EVIDENCE_CAPTURE_WRITE_FAILED"] = (
+                                blocked.get("FORWARD_EVIDENCE_CAPTURE_WRITE_FAILED", 0) + 1)
+            else:
+                receipt["capture_skipped_reason"] = capture_skip_reason or "CAPTURE_DISABLED_BY_CALLER"
+        except ForwardEvidenceBlocked as exc:
+            receipt["status"] = "BLOCKED"
+            receipt["code"] = exc.code
+        except Exception as exc:  # noqa: BLE001 - capture failure must not starve settlement
+            receipt["status"] = "FAILED"
+            receipt["code"] = _code(exc, f"FORWARD_EVIDENCE_{type(exc).__name__.upper()}")
 
         for row in adapter.settlements(db, _pending_settlements(db, adapter, registration, now)):
             if row.get("blocked_code"):
@@ -386,12 +393,20 @@ def run_forward_evidence(
                 key = "FORWARD_EVIDENCE_SETTLEMENT_DUPLICATE" if _is_duplicate(exc) else "FORWARD_EVIDENCE_SETTLEMENT_WRITE_FAILED"
                 settle_blocked[key] = settle_blocked.get(key, 0) + 1
         receipt["scorecard"] = scorecard(db, registration)
-        receipt["status"] = "FORWARD_EVIDENCE_UPDATED"
+        if receipt["status"] == "STARTED":
+            receipt["status"] = "FORWARD_EVIDENCE_UPDATED"
     except ForwardEvidenceBlocked as exc:
-        receipt["status"] = "BLOCKED"
-        receipt["code"] = exc.code
+        if receipt["status"] == "STARTED":
+            receipt["status"] = "BLOCKED"
+            receipt["code"] = exc.code
+        else:
+            settle_blocked[exc.code] = settle_blocked.get(exc.code, 0) + 1
     except Exception as exc:  # noqa: BLE001 - never raise into maintenance
-        receipt["status"] = "FAILED"
-        receipt["code"] = _code(exc, f"FORWARD_EVIDENCE_{type(exc).__name__.upper()}")
+        key = _code(exc, f"FORWARD_EVIDENCE_{type(exc).__name__.upper()}")
+        if receipt["status"] == "STARTED":
+            receipt["status"] = "FAILED"
+            receipt["code"] = key
+        else:
+            settle_blocked[key] = settle_blocked.get(key, 0) + 1
     receipt.update(_INERT)
     return receipt
