@@ -558,7 +558,13 @@ def test_overlarge_check_run_inventory_is_typed_hold(monkeypatch):
 def test_ci_completion_wakes_existing_single_writer_adoption():
     wf = yaml.safe_load((ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml").read_text())
     triggers = wf.get("on", wf.get(True))
-    assert {"wow-verify", "wow-engine-verify"} <= set(triggers["workflow_run"]["workflows"])
+    assert set(triggers["workflow_run"]["workflows"]) == {
+        "wow-v17-independent-qa-check", "wow-v17-release-authority-check", "wow-verify"
+    }
+    # Keep source-adoption liveness even if one CI wakeup is delayed or dropped.
+    assert triggers["schedule"]
+    assert "workflow_dispatch" in triggers
+    assert "pull_request_target" in triggers
     hold = wf["jobs"]["discover"]["if"]
     assert "wow-v17-independent-qa-check" in hold
     assert "wow-v17-release-authority-check" in hold
@@ -573,7 +579,7 @@ def test_ci_completion_wakes_existing_single_writer_adoption():
     assert "github.event.workflow_run.event == 'pull_request'" in expr
     assert "github.event.workflow_run.head_repository.full_name == github.repository" in expr
     assert "github.event.workflow_run.name == 'wow-verify'" in expr
-    assert "github.event.workflow_run.name == 'wow-engine-verify'" in expr
+    assert "github.event.workflow_run.name == 'wow-engine-verify'" not in expr
     assert "wow-v17-engineering-implementation-single-writer" in str(adopter["concurrency"])
     # Assert parsed workflow semantics, not Python's repr of YAML dicts:
     # str(steps) quotes keys/values and can false-fail correctly wired env.
