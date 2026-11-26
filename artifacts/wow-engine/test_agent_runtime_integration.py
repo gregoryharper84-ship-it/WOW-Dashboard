@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 import agent_runtime_api
 import api_prod
-from agent_runtime import idempotency, repository
+from agent_runtime import idempotency, repository, worker_release
 from agent_runtime.reconciliation import reconcile_from_ceilings
 from agent_runtime.reducer import RequiredJobResult, reduce_candidate
 from agent_runtime.registry import WORKERS
@@ -53,6 +53,19 @@ def _seed_registry(fake: FakeSupabaseClient) -> None:
             "contract_version": spec.contract_version, "implementation_type": spec.implementation_type,
             "authority_ceiling": spec.authority_ceiling, "enabled": True,
         }).execute()
+
+
+_DEPLOY_SHA = "ace4943e74c92bab2af4b030ff4ab5ced8638751"
+_OTHER_SHA = "b5533f88" + "0" * 32
+_DEPLOY_AUTH = {"Authorization": "Bearer deploy-identity-key"}
+
+
+def _registry_with_commit(fake: FakeSupabaseClient, commit: str | None) -> FakeSupabaseClient:
+    _seed_registry(fake)
+    for row in fake._store["wow_agent_worker_registry"]:
+        row["runtime_commit"] = commit
+        row["runtime_commit_recorded_at"] = "2026-11-12T07:05:00+00:00" if commit else None
+    return fake
 
 
 def _created_run(fake: FakeSupabaseClient, idempotency_key: str = "k1") -> dict:
@@ -312,3 +325,92 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
     }
     assert len(body["candidates"]) == 3
     assert body["can_execute"] is False
+
+
+# ── Worker deploy-identity pinning + authenticated readback ─────────────────
+
+
+def test_worker_records_render_git_commit_in_every_enabled_registry_row(monkeypatch):
+    """The resident worker pins its own RENDER_GIT_COMMIT at startup into the
+    existing wow_agent_worker_registry, so parity no longer needs the Render
+    API/dashboard."""
+    fake = FakeSupabaseClient()
+    _seed_registry(fake)
+    monkeypatch.setenv("RENDER_GIT_COMMIT", _DEPLOY_SHA)
+
+    assert worker_release.record_runtime_commit(fake) is None
+
+    rows = fake._store["wow_agent_worker_registry"]
+    assert len(rows) == len(WORKERS)
+    assert {row["runtime_commit"] for row in rows} == {_DEPLOY_SHA}
+    assert all(row["runtime_commit_recorded_at"] for row in rows)
+
+
+def test_worker_never_records_missing_or_malformed_render_git_commit(monkeypatch):
+    """Absent/malformed metadata writes nothing — no fabricated, no blanked SHA."""
+    fake = FakeSupabaseClient()
+    _seed_registry(fake)
+
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    worker_release.record_runtime_commit(fake)
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "not-a-commit")
+    worker_release.record_runtime_commit(fake)
+
+    assert all("runtime_commit" not in row for row in fake._store["wow_agent_worker_registry"])
+
+
+def test_deploy_identity_requires_authentication(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "deploy-identity-key")
+    monkeypatch.setenv("RENDER_GIT_COMMIT", _DEPLOY_SHA)
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: _registry_with_commit(FakeSupabaseClient(), _DEPLOY_SHA))
+
+    assert client.get("/wow/deploy-identity").status_code == 401
+    wrong = client.get("/wow/deploy-identity", headers={"Authorization": "Bearer wrong"})
+    assert wrong.status_code == 401
+
+
+def test_deploy_identity_reports_match_for_identical_commits(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "deploy-identity-key")
+    monkeypatch.setenv("RENDER_GIT_COMMIT", _DEPLOY_SHA)
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: _registry_with_commit(FakeSupabaseClient(), _DEPLOY_SHA))
+
+    response = client.get("/wow/deploy-identity", headers=_DEPLOY_AUTH)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["web_deployed_sha"] == _DEPLOY_SHA
+    assert body["worker_deployed_sha"] == _DEPLOY_SHA
+    assert body["parity"] == "MATCH"
+    assert body["parity_reason"] is None
+    assert body["worker_registry"]["rows_missing_runtime_commit"] == 0
+    assert body["can_execute"] is False
+
+
+def test_deploy_identity_reports_mismatch_not_match(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "deploy-identity-key")
+    monkeypatch.setenv("RENDER_GIT_COMMIT", _DEPLOY_SHA)
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: _registry_with_commit(FakeSupabaseClient(), _OTHER_SHA))
+
+    response = client.get("/wow/deploy-identity", headers=_DEPLOY_AUTH)
+    assert response.status_code == 409
+    body = response.json()["detail"]
+    assert body["parity"] == "MISMATCH"
+    assert body["web_deployed_sha"] == _DEPLOY_SHA
+    assert body["worker_deployed_sha"] == _OTHER_SHA
+
+
+def test_deploy_identity_fails_closed_when_worker_commit_field_is_missing(monkeypatch):
+    """The field this readback exists for: an absent runtime_commit must never
+    report parity. It fails closed with UNVERIFIED, not MATCH."""
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "deploy-identity-key")
+    monkeypatch.setenv("RENDER_GIT_COMMIT", _DEPLOY_SHA)
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: _registry_with_commit(FakeSupabaseClient(), None))
+
+    response = client.get("/wow/deploy-identity", headers=_DEPLOY_AUTH)
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["parity"] == "UNVERIFIED"
+    assert detail["parity_reason"] == "WORKER_RUNTIME_COMMIT_MISSING"
+    assert detail["worker_deployed_sha"] is None
+    assert detail["web_deployed_sha"] == _DEPLOY_SHA
+    assert detail["worker_registry"]["rows_missing_runtime_commit"] == len(WORKERS)
+    assert detail["can_execute"] is False

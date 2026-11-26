@@ -21,10 +21,10 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
-from api import app, get_client
-from agent_runtime import idempotency, repository, schemas
+from api import app, get_client, _render_deployed_sha, _require_action_api_key
+from agent_runtime import idempotency, repository, schemas, worker_release
 from agent_runtime.orchestrator import Orchestrator
 from agent_runtime.state_machine import RUN_TERMINAL_STATES
 from ml_research_readiness import get_ml_research_readiness
@@ -87,6 +87,53 @@ def health_ready() -> dict[str, Any]:
         "can_execute": False,
     }
     if not ready:
+        raise HTTPException(status_code=503, detail=body)
+    return body
+
+
+@app.get("/wow/deploy-identity", dependencies=[Depends(_require_action_api_key)])
+def deploy_identity() -> dict[str, Any]:
+    """Authenticated web<->worker deploy-SHA readback, no Render API key needed.
+
+    The resident Celery worker pins its own ``RENDER_GIT_COMMIT`` into every
+    enabled ``wow_agent_worker_registry`` row at each start
+    (agent_runtime/worker_release.py); this route compares that last observed
+    pin with this web process's ``RENDER_GIT_COMMIT``. Both sides are
+    self-reported Render env values, so this proves env parity, not
+    independently loaded code — and the pin is a start-time stamp, not a
+    worker-liveness heartbeat.
+
+    200 only on MATCH; 409 on MISMATCH (real drift); 503 with
+    ``parity: UNVERIFIED`` when the pin is missing or unreadable — never a
+    MATCH by default.
+    """
+    web_sha = _render_deployed_sha()
+    try:
+        worker = repository.read_worker_runtime_commit(get_client())
+        verdict = worker_release.classify_deploy_parity(web_sha, worker["commits"])
+    except Exception:
+        worker = {
+            "commits": [], "rows_missing_runtime_commit": 0, "latest_recorded_at": None,
+        }
+        verdict = {
+            "parity": worker_release.PARITY_UNVERIFIED,
+            "reason": worker_release.REASON_WORKER_RUNTIME_COMMIT_UNREADABLE,
+        }
+
+    body = {
+        "web_deployed_sha": web_sha,
+        "worker_deployed_sha": worker["commits"][0] if len(worker["commits"]) == 1 else None,
+        "worker_registry": {
+            "rows_missing_runtime_commit": worker["rows_missing_runtime_commit"],
+            "recorded_at": worker["latest_recorded_at"],
+        },
+        "parity": verdict["parity"],
+        "parity_reason": verdict["reason"],
+        "can_execute": False,
+    }
+    if body["parity"] == worker_release.PARITY_MISMATCH:
+        raise HTTPException(status_code=409, detail=body)
+    if body["parity"] == worker_release.PARITY_UNVERIFIED:
         raise HTTPException(status_code=503, detail=body)
     return body
 

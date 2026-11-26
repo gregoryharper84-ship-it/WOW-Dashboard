@@ -120,6 +120,11 @@ create table if not exists public.wow_agent_worker_registry (
     max_retries integer not null default 0,
     artifact_required boolean not null default false,
     configuration jsonb not null default '{}'::jsonb,
+    -- Render source commit pinned by the resident worker process at startup
+    -- (agent_runtime/worker_release.py). Null means "not yet observed":
+    -- /wow/deploy-identity reports UNVERIFIED rather than assuming parity.
+    runtime_commit text,
+    runtime_commit_recorded_at timestamptz,
     created_at timestamptz not null default now(),
     primary key (worker_id, worker_version),
     constraint wow_agent_worker_registry_impl_type check (implementation_type in (
@@ -127,7 +132,10 @@ create table if not exists public.wow_agent_worker_registry (
     )),
     constraint wow_agent_worker_registry_timeout_positive check (timeout_seconds > 0),
     constraint wow_agent_worker_registry_retries_nonneg check (max_retries >= 0),
-    constraint wow_agent_worker_registry_config_object check (jsonb_typeof(configuration) = 'object')
+    constraint wow_agent_worker_registry_config_object check (jsonb_typeof(configuration) = 'object'),
+    constraint wow_agent_worker_registry_runtime_commit_sha check (
+        runtime_commit is null or runtime_commit ~ '^[a-f0-9]{40}$'
+    )
 );
 
 alter table public.wow_agent_worker_registry enable row level security;

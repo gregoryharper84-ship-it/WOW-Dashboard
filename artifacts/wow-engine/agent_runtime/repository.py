@@ -512,3 +512,50 @@ def registry_matches(client: Any) -> bool:
         for row in (result.data or [])
     }
     return actual == expected
+
+
+def record_worker_runtime_commit(client: Any, *, commit: str, recorded_at: str) -> None:
+    """Pin a worker process's Render source commit on every enabled registry
+    row (agent_runtime/worker_release.py).
+
+    One commit covers the whole resident worker: it executes every registered
+    worker_id from a single deployed checkout, so per-row divergence would be
+    a defect rather than a normal state; the readback reports it as
+    UNVERIFIED. Callers validate the SHA first — this function never writes a
+    missing or fabricated value.
+    """
+    (
+        client.table("wow_agent_worker_registry")
+        .update({"runtime_commit": commit, "runtime_commit_recorded_at": recorded_at})
+        .eq("enabled", True)
+        .execute()
+    )
+
+
+def read_worker_runtime_commit(client: Any) -> dict[str, Any]:
+    """Read the commits pinned by the worker process, for the authenticated
+    /wow/deploy-identity readback. Reports gaps explicitly instead of
+    assuming one: an empty/mixed set is returned as-is so the caller can fail
+    closed."""
+    result = (
+        client.table("wow_agent_worker_registry")
+        .select("worker_id,runtime_commit,runtime_commit_recorded_at")
+        .eq("enabled", True)
+        .execute()
+    )
+    rows = result.data or []
+    commits = sorted({
+        str(row["runtime_commit"]).strip().lower()
+        for row in rows
+        if row.get("runtime_commit")
+    })
+    recorded = sorted(
+        str(row["runtime_commit_recorded_at"])
+        for row in rows
+        if row.get("runtime_commit_recorded_at")
+    )
+    return {
+        "commits": commits,
+        "rows_missing_runtime_commit": sum(1 for row in rows if not row.get("runtime_commit")),
+        "latest_recorded_at": recorded[-1] if recorded else None,
+    }
