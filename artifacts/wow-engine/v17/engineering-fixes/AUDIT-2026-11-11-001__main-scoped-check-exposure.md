@@ -6,6 +6,8 @@
 - **Reconciled:** 2026-11-25 against `main` @ `80423e73` — source-only recount,
   reproduced identically at `c1c6d359`. No workflow was modified by this
   reconciliation.
+- **Pinned:** 2026-11-26 — two governed writers are pinned never-isolate in the
+  isolation contract. No workflow was modified by that pin either.
 
 ## Scope and method
 
@@ -107,12 +109,36 @@ Two omissions deserve emphasis because they are not read-only observers:
   skipped main commits carrying a failing optional check, and now the single
   production deploy path since native auto-deploy was turned off on 2026-11-25.
   It must stay fail-closed and must **not** be isolated; its own comment states
-  that non-advancing outcomes already end green.
+  that non-advancing outcomes already end green. Pinned in
+  `NEVER_ISOLATED_WRITER_STEPS` on 2026-11-26 (see below).
 - `wow-v17-nfl-prospective-shadow.yml::capture-and-grade` runs the prospective
   capture/grade writer against Supabase. It belongs in the autonomous-writer
-  group requiring action-graph review, not in the read-only observer group, and
-  it is absent from
-  `artifacts/wow-engine/tests/test_v17_optional_observer_checkspass_isolation.py`.
+  group requiring action-graph review, not in the read-only observer group. The
+  action-graph review is complete and the job is now pinned never-isolate in
+  `artifacts/wow-engine/tests/test_v17_optional_observer_checkspass_isolation.py`
+  (see below); it is deliberately **not** in `OPTIONAL_MAIN_SCOPED_JOBS`.
+
+### Never-isolate pins (contract-enforced, 2026-11-26)
+
+Neither workflow below is an optional observer: on these checks a green
+conclusion asserts that a governed write actually happened. Both are pinned in
+`NEVER_ISOLATED_WRITER_STEPS` so a later blanket-isolation sweep cannot flip
+them green.
+
+| Workflow | Job | Pinned steps | Why it stays fail-closed |
+| --- | --- | --- | --- |
+| `wow-v17-nfl-prospective-shadow.yml` | `capture-and-grade` | `Capture genuine prekickoff challenger receipts`; `Grade only independently reconciled completed NFL games`; `Verify capture receipt is not all-held` | Service-role Supabase writer over the frozen prospective ledger. Its `run_ok` is false only for `CAPTURE_ACCOUNTING_INCONSISTENT` and `EVIDENCE_ALL_HELD`; `NO_EVENTS_IN_CAPTURE_WINDOW` and `EXISTING_OR_HELD` already end green, so a red check is a real integrity or evidence failure and not schedule noise. Isolation would report a capture that never happened. |
+| `wow-v17-required-checks-deploy.yml` | `deploy` | `Deploy exact current main SHA once required checks are green` | Sole production deploy path since native auto-deploy was turned off on 2026-11-25. It POSTs Render deploys only after the three ruleset-required checks are green on the exact current `main` SHA, and `v17.required_checks_deploy` already ends green on non-advancing outcomes (superseded SHA, required checks pending or failed, pre-write read failure). Isolation could therefore only conceal a real deploy, identity or health failure. |
+
+Isolation is deliberately *not* the guard for these two exposures. Since
+2026-11-25 the deploy path gates on the three required check names filtered to
+app `15368` (`REQUIRED_REGRESSION_CHECKS`) rather than on `checksPass`, and
+neither pinned job is one of those contexts, so a red writer check can neither
+block nor advance a deploy. Main-SHA consumers
+(`wow-v17-engineering-auto-repair.yml`, `wow-v17-morning-green-continuation.yml`,
+`wow-engineering-24x7.yml`) select check runs by exact name and app id rather
+than by "any failing check", so a red writer check cannot provoke a spurious
+repair or a false hold either. What remains is the explicit pin above.
 
 ## Why this audit did not blanket-isolate all remaining jobs
 
@@ -134,10 +160,10 @@ receipts plus guards, per workflow. Classified exposure groups:
 | --- | --- | --- |
 | Authoritative merge/deploy gates | `wow-v17-independent-qa-check`, `wow-v17-release-authority-check` | Must stay fail-closed; never isolated |
 | Required-context producers | `wow-verify`, `wow-engine-verify` | Must stay fail-closed; never isolated |
-| Sanctioned deploy writers | `wow-v17-required-checks-deploy`, `wow-v17-render-production-deploy` (disabled) | Must stay fail-closed; never isolated |
+| Sanctioned deploy writers | `wow-v17-required-checks-deploy`, `wow-v17-render-production-deploy` (disabled) | Must stay fail-closed; never isolated; the active writer is contract-pinned (`NEVER_ISOLATED_WRITER_STEPS`) |
 | Read-only observers / recovery | `wow-v17-lean-production-readback`, `wow-v17-main-verification-reconciler` | Fixed here: all steps isolated, typed reasons preserved |
 | Acceptance evidence | `wow-v17-post-deploy-verification-orchestrator` | `acceptance-receipts` isolated; `deployment-readback` intentionally fail-closed |
-| Autonomous writers | model maintenance, snapshots, Scout persist/refresh, prospective capture, dispatchers, secret sync, issue tickers | Not isolated in this change: each needs action-graph review so a failed verification cannot be followed by a write |
+| Autonomous writers | model maintenance, snapshots, Scout persist/refresh, prospective capture, dispatchers, secret sync, issue tickers | Not isolated in this change: each needs action-graph review so a failed verification cannot be followed by a write. Prospective `capture-and-grade` has since been reviewed and pinned never-isolate |
 | Disabled controller | `wow-v17-render-production-deploy` | Retired; must not be re-enabled |
 
 ## Fixed (cumulative)
@@ -276,7 +302,10 @@ before enablement.
   every step sets `continue-on-error: true`.
 - Both fixed workflows parse as YAML and each embedded `run` script passes `bash -n`.
 - The isolation contract pins 15 workflows / 22 job pairs and passes
-  (`pytest -q tests/test_v17_optional_observer_checkspass_isolation.py`, 14 passed).
+  (`pytest -q tests/test_v17_optional_observer_checkspass_isolation.py`;
+  15 passed, 2026-11-26 — 14 pre-existing plus the new writer pin).
 - The 22 pinned pairs cover 17 of the 49 schedule/`workflow_run` jobs plus the 5
   `workflow_call` canary jobs reached through the post-deploy orchestrator.
+- `NEVER_ISOLATED_WRITER_STEPS` pins 2 workflows / 2 jobs / 4 writer steps as
+  never isolable, and asserts neither workflow is listed as an optional observer.
 - No authoritative gate, deploy writer, or acceptance workflow changed.
