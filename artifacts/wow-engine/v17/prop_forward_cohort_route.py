@@ -118,6 +118,7 @@ def install_prop_forward_cohort_route(
         app,
         auth_dependency=auth_dependency,
         db_client_fn=db_client_fn,
+        market_api=cohort_market_api,
     )
 
     install_prop_action_canary_capture(app, db_client_fn=db_client_fn)
