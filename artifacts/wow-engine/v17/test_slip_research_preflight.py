@@ -1093,3 +1093,37 @@ def test_nov25_target_without_bound_quote_is_not_a_confirmed_multiplier():
     out = audit_research_slips([non_pp], as_of_utc=AS_OF)
     assert "RESEARCH_PAYOUT_TARGET_UNVERIFIED" in out["cards"][0]["blockers"]
     assert out["can_execute"] is False
+
+
+def test_nov25_explicit_target_cannot_bypass_optimizer_preflight_on_non_pp_card():
+    targeted, unrelated = cards(
+        [leg("a", "event-a"), leg("b", "event-b")],
+        [leg("c", "event-c"), leg("d", "event-d")],
+    )
+    targeted["target_gross_payout_multiple"] = 3
+    original = deepcopy([targeted, unrelated])
+    result = optimize_portfolio([targeted, unrelated], research_as_of_utc=AS_OF)
+    assert [targeted, unrelated] == original
+    assert result.research_preflight is not None
+    gov = result.cards[0]["portfolio_governance"]
+    assert "RESEARCH_PAYOUT_TARGET_UNVERIFIED" in gov["research_blockers"]
+    assert gov["portfolio_status"] == "HELD_RESEARCH_ONLY"
+    assert not gov["portfolio_qualified"]
+    assert result.cards[1]["portfolio_governance"]["portfolio_qualified"] is True
+    assert result.probability_fields_mutated is False
+    assert result.can_execute is False
+
+
+def test_nov25_optimizer_preserves_target_and_rechecks_prizepicks_quote():
+    card = prizepicks_card(
+        prizepicks_prop("a", "event-a", player="NBA-A"),
+        prizepicks_prop("b", "event-b", player="NBA-B"),
+    )
+    card["target_gross_payout_multiple"] = 3
+    result = optimize_portfolio([card], research_as_of_utc=AS_OF)
+    assert result.cards[0]["target_gross_payout_multiple"] == 3
+    gov = result.cards[0]["portfolio_governance"]
+    assert "RESEARCH_PAYOUT_TARGET_NOT_MET" in gov["original_research_blockers"]
+    assert "RESEARCH_PAYOUT_TARGET_NOT_MET" in gov["research_blockers"]
+    assert result.cards_qualified == 0
+    assert result.can_execute is False
