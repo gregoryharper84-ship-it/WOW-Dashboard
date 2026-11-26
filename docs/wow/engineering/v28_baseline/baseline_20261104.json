@@ -1,0 +1,117 @@
+{
+  "metrics": {
+    "total": 2870,
+    "classes": {
+      "R": {
+        "commits": 1334,
+        "mechanism": 3,
+        "mechanism_rate": 0.0022,
+        "red_first": 117,
+        "red_first_rate": 0.0877,
+        "fix_titled": 201,
+        "fix_rate": 0.1507,
+        "reverts": 0,
+        "rework_events": 82,
+        "rework_commits": 67,
+        "rework_per_fix": 0.408,
+        "unsupported_claim": 8,
+        "unsupported_claim_rate": 0.006,
+        "median_lines_changed": 42.0
+      },
+      "P": {
+        "commits": 663,
+        "mechanism": 5,
+        "mechanism_rate": 0.0075,
+        "red_first": 326,
+        "red_first_rate": 0.4917,
+        "fix_titled": 261,
+        "fix_rate": 0.3937,
+        "reverts": 0,
+        "rework_events": 300,
+        "rework_commits": 164,
+        "rework_per_fix": 1.1494,
+        "unsupported_claim": 3,
+        "unsupported_claim_rate": 0.0045,
+        "median_lines_changed": 67
+      },
+      "C": {
+        "commits": 873,
+        "mechanism": 10,
+        "mechanism_rate": 0.0115,
+        "red_first": 364,
+        "red_first_rate": 0.417,
+        "fix_titled": 405,
+        "fix_rate": 0.4639,
+        "reverts": 2,
+        "rework_events": 300,
+        "rework_commits": 215,
+        "rework_per_fix": 0.7407,
+        "unsupported_claim": 10,
+        "unsupported_claim_rate": 0.0115,
+        "median_lines_changed": 113
+      }
+    },
+    "unavailable": [
+      "mechanism-before-first-edit (needs PR body edit timing, not git)",
+      "red-before-green proof (needs a recorded failing run, not a diff)",
+      "stop-despite-available-rung (needs final messages / handoff docs)",
+      "force-push count (needs reflog/PR events)",
+      "check-level first-pass rate (needs check runs)"
+    ],
+    "window": {
+      "since": "2026-08-06T00:00:00Z",
+      "until": "2026-11-04T14:07:05Z"
+    },
+    "merges_excluded": 525
+  },
+  "classes": {
+    "R": {
+      "commits": 1334,
+      "mechanism": 3,
+      "mechanism_rate": 0.0022,
+      "red_first": 117,
+      "red_first_rate": 0.0877,
+      "fix_titled": 201,
+      "fix_rate": 0.1507,
+      "reverts": 0,
+      "rework_events": 82,
+      "rework_commits": 67,
+      "rework_per_fix": 0.408,
+      "unsupported_claim": 8,
+      "unsupported_claim_rate": 0.006,
+      "median_lines_changed": 42.0
+    },
+    "P": {
+      "commits": 663,
+      "mechanism": 5,
+      "mechanism_rate": 0.0075,
+      "red_first": 326,
+      "red_first_rate": 0.4917,
+      "fix_titled": 261,
+      "fix_rate": 0.3937,
+      "reverts": 0,
+      "rework_events": 300,
+      "rework_commits": 164,
+      "rework_per_fix": 1.1494,
+      "unsupported_claim": 3,
+      "unsupported_claim_rate": 0.0045,
+      "median_lines_changed": 67
+    },
+    "C": {
+      "commits": 873,
+      "mechanism": 10,
+      "mechanism_rate": 0.0115,
+      "red_first": 364,
+      "red_first_rate": 0.417,
+      "fix_titled": 405,
+      "fix_rate": 0.4639,
+      "reverts": 2,
+      "rework_events": 300,
+      "rework_commits": 215,
+      "rework_per_fix": 0.7407,
+      "unsupported_claim": 10,
+      "unsupported_claim_rate": 0.0115,
+      "median_lines_changed": 113
+    }
+  }
+}
