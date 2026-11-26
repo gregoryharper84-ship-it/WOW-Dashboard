@@ -1047,3 +1047,49 @@ def test_context_hold_remains_when_receipt_claim_is_supplied():
     )
     assert "CONTEXT_STALE_RECALC_REQUIRED" in report["cards"][0]["blockers"]
     assert report["cards"][0]["can_publish_as_certified"] is False
+
+
+@pytest.mark.parametrize("target,quoted,expected", [
+    (2, 1.9, "RESEARCH_PAYOUT_TARGET_NOT_MET"),
+    (3, 2.5, "RESEARCH_PAYOUT_TARGET_NOT_MET"),
+    (5, 4.99, "RESEARCH_PAYOUT_TARGET_NOT_MET"),
+    (2, 2.0, None),
+    (3, 3.1, None),
+    (5, 5.0, None),
+    (True, 3.0, "RESEARCH_PAYOUT_TARGET_INVALID"),
+    (10, 10.0, "RESEARCH_PAYOUT_TARGET_INVALID"),
+])
+def test_nov25_requested_payout_requires_matching_whole_lineup_quote(target, quoted, expected):
+    card = prizepicks_card(
+        prizepicks_prop("a", "event-a"),
+        prizepicks_prop("b", "event-b"),
+    )
+    card["target_gross_payout_multiple"] = target
+    card["platform_lineup_payout"]["gross_payout_multiple"] = quoted
+    before = deepcopy(card)
+    out = audit_research_slips([card], as_of_utc=AS_OF)
+    assert card == before
+    if expected:
+        assert expected in out["cards"][0]["blockers"]
+    else:
+        assert not out["cards"][0]["blockers"]
+    assert out["joint_probability"] is None
+    assert out["can_execute"] is False
+    assert out["cards"][0]["executable_quote_verified"] is False
+
+
+def test_nov25_target_without_bound_quote_is_not_a_confirmed_multiplier():
+    card = prizepicks_card(
+        prizepicks_prop("a", "event-a"),
+        prizepicks_prop("b", "event-b"),
+    )
+    card["target_gross_payout_multiple"] = 3
+    card["platform_lineup_payout"]["gross_payout_multiple"] = 3.5
+    card["platform_lineup_payout"]["ordered_offer_bindings"][0]["exact_line"] = 99.5
+    out = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "RESEARCH_PAYOUT_TARGET_UNVERIFIED" in out["cards"][0]["blockers"]
+    non_pp = cards([leg("a", "event-a"), leg("b", "event-b")])[0]
+    non_pp["target_gross_payout_multiple"] = 2
+    out = audit_research_slips([non_pp], as_of_utc=AS_OF)
+    assert "RESEARCH_PAYOUT_TARGET_UNVERIFIED" in out["cards"][0]["blockers"]
+    assert out["can_execute"] is False
