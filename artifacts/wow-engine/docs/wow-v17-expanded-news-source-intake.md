@@ -10,7 +10,7 @@ and `V17_TERMINAL_REDUCER` stay unchanged. `can_execute=false`.
 
 | Source | Purpose | Access / evidence gate | Actual enabled state |
 |---|---|---|---|
-| GDELT | Public article discovery | Existing collector; verify current nonempty receipt and 429 recovery | Existing collector, live health not established by this PR |
+| GDELT | Public article discovery | Existing DOC collector plus same-ToU GKG dump fallback on 429/timeout; verify scheduled nonempty receipt | Existing collector with dump fallback; production schedule readback still required after merge |
 | ESPN RSS | Supplemental publisher headlines | Document permissible automated/RSS use and verify feed accessible without circumvention | Not enabled |
 | NewsAPI | Supplemental global/sports headlines | Free Developer plan is **non-production**; production license + key required | Not enabled |
 | SportsDataIO Global | Broader structured data | Separate Global API entitlement and real-data contract; existing league API key does not prove this | Not enabled |
