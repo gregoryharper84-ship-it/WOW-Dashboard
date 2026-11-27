@@ -16,6 +16,15 @@ from v17.forward_evidence import EventIdentity, Forecast, ForwardEvidenceBlocked
 
 CAN_EXECUTE = False
 START_MATCH_TOLERANCE = timedelta(minutes=90)
+# A final may record a later start than the one captured (the source re-dates
+# a game to its actual tip, e.g. a delayed tournament session). The capture
+# stays pregame, so same-day late tips settle. An earlier start, or a move to
+# another day, stays a typed mismatch for review.
+LATE_TIP_TOLERANCE = timedelta(hours=12)
+
+
+def _start_consistent(official: datetime, captured: datetime) -> bool:
+    return captured - START_MATCH_TOLERANCE <= official <= captured + LATE_TIP_TOLERANCE
 
 
 def _rows(response: Any) -> list[Mapping[str, Any]]:
@@ -162,7 +171,7 @@ class NCAAFResultFormAdapter:
             if final.get("result_source") != "CFBD:/games":
                 out.append({"blocked_code": "NCAAF_SETTLEMENT_SOURCE_UNVERIFIED"})
                 continue
-            if abs(_aware(final.get("event_start_time")) - start) > START_MATCH_TOLERANCE:
+            if not _start_consistent(_aware(final.get("event_start_time")), start):
                 out.append({"blocked_code": "NCAAF_SETTLEMENT_START_MISMATCH"})
                 continue
             if type(final.get("home_won")) is not bool or (hp != ap and final["home_won"] != (hp > ap)):
@@ -635,7 +644,7 @@ class NHLRegularSeasonAdapter:
             if final.get("source_provider") != self.source:
                 out.append({"blocked_code": "NHL_SETTLEMENT_SOURCE_UNVERIFIED"})
                 continue
-            if abs(_aware(final.get("event_start_time")) - start) > START_MATCH_TOLERANCE or hs == as_:
+            if not _start_consistent(_aware(final.get("event_start_time")), start) or hs == as_:
                 out.append({"blocked_code": "NHL_SETTLEMENT_INCONSISTENT"})
                 continue
             out.append({
@@ -844,7 +853,7 @@ class NCAABResultFormAdapter:
             if start is None:
                 continue
             hs, as_ = game.get("home_score"), game.get("away_score")
-            if abs(_aware(game["event_start"]) - start) > START_MATCH_TOLERANCE or type(hs) is not int or hs == as_:
+            if not _start_consistent(_aware(game["event_start"]), start) or type(hs) is not int or hs == as_:
                 out.append({"blocked_code": "NCAAB_SETTLEMENT_INCONSISTENT"})
                 continue
             out.append({
