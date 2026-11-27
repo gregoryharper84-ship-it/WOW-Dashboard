@@ -43,20 +43,33 @@ class SlipLedgerStore:
         self,
         data_dir: str | Path = DEFAULT_DATA_DIR,
         supabase_client: SupabaseClient | None = None,
+        *,
+        append_jsonl: bool = True,
     ) -> None:
+        # Production persists through the governed service-role mirror only;
+        # the JSONL cache is for local/research runs. append_jsonl=False keeps
+        # the hourly lane from writing an ephemeral file on the Render host.
+        self.append_jsonl = append_jsonl
         self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        if append_jsonl:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
         self.snapshots_path = self.data_dir / SNAPSHOTS_FILENAME
         self.grades_path = self.data_dir / GRADES_FILENAME
         self._supabase = supabase_client
 
     def _append_jsonl(self, path: Path, row: dict[str, Any]) -> None:
+        if not self.append_jsonl:
+            return
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
             handle.write("\n")
 
     def _mirror_insert(self, table: str, row: dict[str, Any]) -> None:
         if self._supabase is None:
+            if not self.append_jsonl:
+                raise RuntimeError(
+                    "persistence unavailable: no service-role client and JSONL disabled"
+                )
             return
         # supabase-py builds a request on insert(); execute() performs the write.
         self._supabase.table(table).insert(row).execute()
