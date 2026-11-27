@@ -261,6 +261,7 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
         lease_id, lease = reserve_cursor(
             lease_api, comments, incident=incident_number, main_sha=main_sha,
             pr_number=pr_number, pr_sha=expected_head,
+            branch=current_pr["head"]["ref"],
             cursor_agent_id=body["agentId"],
             worker_id=f"github-actions:{os.environ.get('GITHUB_RUN_ID', 'local')}:"
                       f"{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
@@ -273,6 +274,7 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
             "REMOTE_HEARTBEAT_INVALID": "CURSOR_SHARED_WRITER_LEASE_INVALID",
             "CURSOR_DUPLICATE_DISPATCH_SUPPRESSED": "CURSOR_DUPLICATE_DISPATCH_SUPPRESSED",
             "CURSOR_LEASE_RECEIPT_UNVERIFIED": "CURSOR_SHARED_WRITER_LEASE_UNAVAILABLE",
+            "CURSOR_RESERVATION_BRANCH_INVALID": "CURSOR_UNSAFE_TARGET_BRANCH",
         }
         raise HandoffBlocked(codes.get(str(exc), "CURSOR_SHARED_WRITER_LEASE_UNAVAILABLE")) from exc
     try:
@@ -281,6 +283,8 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
             raise HandoffBlocked("CURSOR_GITHUB_PR_RESPONSE_INVALID")
         validate_pr(current_pr, repo=repo, number=pr_number,
                     sha=expected_head, incident_number=incident_number)
+        if current_pr["head"]["ref"] != lease["branch"]:
+            raise HandoffBlocked("CURSOR_RESERVATION_BRANCH_MISMATCH")
         current_incident = api(
             f"{GITHUB_API}/repos/{repo}/issues/{incident_number}", token=github_token,
         )
