@@ -133,7 +133,10 @@ def assert_no_local_writer(comments):
 
 
 def reserve_cursor(api, comments, *, incident, main_sha, pr_number, pr_sha,
-                   cursor_agent_id, worker_id):
+                   cursor_agent_id, worker_id, branch):
+    if (not isinstance(branch, str) or not branch
+            or branch in {"main", "master"} or any(c.isspace() for c in branch)):
+        raise ProviderUnavailable("CURSOR_RESERVATION_BRANCH_INVALID")
     attempts = reservations(comments)
     assert_no_remote_writer(
         comments, get_run=lambda run_id: api.request(
@@ -150,7 +153,7 @@ def reserve_cursor(api, comments, *, incident, main_sha, pr_number, pr_sha,
         lease_group=f"PR_{pr_number}", main_sha=main_sha, hold=True,
         worker_id=worker_id, assignment_attempts=1, source_pr=pr_number,
         pr_number=str(pr_number), pr_sha=pr_sha, cursor_agent_id=cursor_agent_id,
-        cursor_run_id=None,
+        cursor_run_id=None, branch=branch,
         next_action="Reconcile this reservation; keep the shared writer hold until Cursor "
                     "termination and independent review are verified.",
     )
