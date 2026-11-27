@@ -273,6 +273,74 @@ def test_spread_warm_retries_exact_postgrest_schema_cache_failure(monkeypatch):
     assert state["can_execute"] is False
 
 
+def test_spread_warm_retries_postgres_statement_timeout_57014(monkeypatch):
+    """X fails because 57014 (statement_timeout under startup DB contention) is
+    classified deterministic, so the bounded warm retry never runs; predicts a
+    second attempt succeeds once retry applies."""
+    attempts = []
+    sleeps = []
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+
+    async def fake_sleep(seconds):
+        sleeps.append(float(seconds))
+
+    class APIError(Exception):
+        code = "57014"
+
+    def fake_warm(_client):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise APIError("canceling statement due to statement timeout")
+        return {
+            "status": "READY",
+            "code": "SPREAD_FORWARD_CONTEXT_READY",
+            "cache_status": "MISS_REBUILT",
+            "cache_age_seconds": 0.0,
+            "training_cutoff_event_time": "2026-09-30T00:00:00+00:00",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", fake_warm)
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    assert attempts == [1, 2]
+    assert sleeps == [15.0]
+    state = api.get_ncaaf_spread_forward_warm_status()
+    assert state["status"] == "READY"
+    assert state["can_execute"] is False
+
+
+def test_spread_warm_57014_persisting_fails_closed_after_bounded_attempts(monkeypatch):
+    attempts = []
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+
+    async def fake_sleep(_seconds):
+        return None
+
+    class APIError(Exception):
+        code = "57014"
+
+    def fake_warm(_client):
+        attempts.append(1)
+        raise APIError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", fake_warm)
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    assert len(attempts) == 3
+    state = api.get_ncaaf_spread_forward_warm_status()
+    assert state["status"] == "FAILED"
+    assert state["code"] == "SPREAD_FORWARD_CONTEXT_WARM_FAILED"
+    assert state["error_code"] == "57014"
+    assert state["can_execute"] is False
+
+
 def test_spread_warm_status_read_is_process_local_and_db_free(monkeypatch):
     monkeypatch.setattr(
         api,
