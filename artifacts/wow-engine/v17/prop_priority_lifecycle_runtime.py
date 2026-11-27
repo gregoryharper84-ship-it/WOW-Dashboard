@@ -40,6 +40,7 @@ from v17.prop_lifecycle_autopilot_runtime import (
     enrich_calibrator_candidate_health,
 )
 from v17.prop_operator_summary import summarize_prop_routes
+from v17.prop_slip_lane_runtime import run_slip_lane
 from v17.prop_production_registration import (
     PropProductionRegistrationAuditRequest,
     run_prop_production_registration_audit,
@@ -386,14 +387,21 @@ def run_priority_durable_audit(req: PriorityPropDurableAuditRequest, *, db: Any,
                                market_api: Any = None, now: datetime | None = None) -> dict[str, Any]:
     captured_at = datetime.now(timezone.utc).isoformat()
     cycle_id = str(uuid4())
+    audit_now = now or datetime.now(timezone.utc)
     tokens = lifecycle_base._requested_tokens(req.routes)
     scoring_stage = None
     if market_api is not None:
         scoring_stage = lifecycle_base._safe_stage(
             "PREGAME_FORWARD_SCORING",
-            lambda: run_pregame_forward_scoring(db, market_api, tokens,
-                                                now=now or datetime.now(timezone.utc)),
+            lambda: run_pregame_forward_scoring(db, market_api, tokens, now=audit_now),
         )
+
+    # Paper-trade construction reads only persisted, already-scored predictions,
+    # so it runs after scoring and before the durable counting stages.
+    slip_stage = lifecycle_base._safe_stage(
+        "PAPER_TRADE_SLIP_LANE",
+        lambda: run_slip_lane(db, now=audit_now),
+    )
 
     forward_stage = lifecycle_base._safe_stage(
         "DURABLE_FORWARD_EVIDENCE_AUDIT",
@@ -435,6 +443,7 @@ def run_priority_durable_audit(req: PriorityPropDurableAuditRequest, *, db: Any,
         "certification_readiness": certification_stage,
         "production_registration": registration_stage,
         "calibrator_candidate_evidence": candidate_stage,
+        "paper_trade_slip_lane": slip_stage,
         "dashboard": dashboard,
         "automatic_certification": False,
         "automatic_promotion": False,
@@ -444,7 +453,7 @@ def run_priority_durable_audit(req: PriorityPropDurableAuditRequest, *, db: Any,
     enrich_calibrator_candidate_health(result, candidate_stage.get("result"))
     stage_statuses = {
         stage["stage"]: stage["status"]
-        for stage in (forward_stage, certification_stage, registration_stage, candidate_stage)
+        for stage in (forward_stage, certification_stage, registration_stage, candidate_stage, slip_stage)
     }
     failed = [name for name, status in stage_statuses.items() if status != "PASS"]
     result["stage_statuses"] = stage_statuses
