@@ -729,6 +729,28 @@ def test_ncaab_captures_with_calibrated_probability_and_settles():
     assert receipt["settled"] == 1 and db.tables[fe.SETTLEMENT_TABLE][0]["outcome"] == "AWAY"
 
 
+@pytest.mark.parametrize("shift_minutes,settles", [(120, True), (13 * 60, False), (-120, False)])
+def test_ncaab_settlement_accepts_same_day_late_tip_only(shift_minutes, settles):
+    # Production 11-26: ESPN re-dated three tournament games to their actual
+    # tip, 103-120 min after the captured start. A later tip keeps the capture
+    # pregame; an earlier one, or a move to another day, stays typed.
+    db = ncaab_db()
+    adapter = NCAABResultFormAdapter(fetch_schedule=ncaab_schedule, fetch_games=lambda seasons: ncaab_games())
+    assert fe.run_forward_evidence(db, adapter, now=NCAAB_NOW)["captured"] == 1
+    later = NCAAB_TIP + timedelta(hours=15)
+    db.clock = lambda: later
+    final = {"game_id": "401900001", "event_start": NCAAB_TIP + timedelta(minutes=shift_minutes),
+             "home_team_id": "2250", "away_team_id": "2", "home_score": 61, "away_score": 66, "home": {}, "away": {}}
+    settled = NCAABResultFormAdapter(fetch_schedule=ncaab_schedule, fetch_games=lambda seasons: ncaab_games([final]))
+    receipt = fe.run_forward_evidence(db, settled, now=later)
+    if settles:
+        assert receipt["settled"] == 1, receipt
+        assert db.tables[fe.SETTLEMENT_TABLE][0]["event_start_time_utc"] == NCAAB_TIP.isoformat()
+    else:
+        assert receipt["settled"] == 0
+        assert receipt["settlement_blocked_by_code"] == {"NCAAB_SETTLEMENT_INCONSISTENT": 1}, receipt
+
+
 def test_ncaab_history_source_failure_is_typed():
     def boom(seasons):
         raise ncaab_mod.NCAABCandidateUnavailable("NCAAB_SPORTSDATAVERSE_HTTP_FAILED", "503")
