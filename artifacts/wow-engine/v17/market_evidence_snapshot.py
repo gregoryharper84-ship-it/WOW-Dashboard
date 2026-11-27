@@ -447,6 +447,17 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
 
 def probe(provider: str, capability: str, *, sport_key: str | None = None, date: str | None = None) -> dict[str, Any]:
     provider_name = provider.upper()
+    # A diagnostic must not resolve provider sport IDs or invoke clients
+    # before the no-paid-source policy has been enforced.
+    if source_policy.free_core_enabled():
+        return {
+            "provider": provider_name,
+            "capability": capability,
+            "status": "BLOCKED",
+            "reason_code": source_policy.BLOCK_FREE_CORE,
+            "paid_provider_network_attempted": False,
+            "can_execute": False,
+        }
     path_values: dict[str, Any] = {}
     if sport_key and provider_name == "RUNDOWN" and capability in {"events", "openers"}:
         resolved = sources.rundown_sport_id(sport_key)
