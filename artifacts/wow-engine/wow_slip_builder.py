@@ -278,6 +278,7 @@ class SlipLeg(BaseModel):
     calibrated_lower_bound: float
     projected_mean: float
     projected_std: float
+    event_start_time: datetime
     is_confirmed_active: Literal[True] = True
     adverse_bump: float = 0.0
     is_direction_exception: bool = False
@@ -291,6 +292,9 @@ class SlipLeg(BaseModel):
             object.__setattr__(self, "player_id", self.player_or_combo)
         if not self.game_id:
             object.__setattr__(self, "game_id", self.event_id)
+        object.__setattr__(
+            self, "event_start_time", _ensure_aware(self.event_start_time)
+        )
         return self
 
 
@@ -332,10 +336,16 @@ class SlipSnapshot(BaseModel):
         object.__setattr__(self, "multiplier", self.payout_multiplier)
         object.__setattr__(self, "built_at", self.created_at)
         if self.captured_at is None and self.legs:
+            # Prefer earliest leg event start when present; otherwise created_at.
+            starts = [
+                leg.event_start_time
+                for leg in self.legs
+                if getattr(leg, "event_start_time", None) is not None
+            ]
             object.__setattr__(
                 self,
                 "captured_at",
-                min(leg.event_start_time for leg in self.legs),
+                min(starts) if starts else self.created_at,
             )
         if self.primary_direction is None and self.legs:
             # Majority direction for diagnostics only.
@@ -478,6 +488,7 @@ def _to_slip_leg(
         calibrated_lower_bound=leg.calibrated_lower_bound,
         projected_mean=leg.projected_mean,
         projected_std=leg.projected_std,
+        event_start_time=leg.event_start_time,
         is_confirmed_active=True,
         adverse_bump=bump,
         is_direction_exception=is_exception,

@@ -1407,6 +1407,80 @@ class TestCodexReviewRegressions:
         assert grade.hold_to_settlement_net_units == pytest.approx(18.25)
         assert grade.realized_net_units == pytest.approx(18.25)
 
+    def test_slip_leg_preserves_event_start_for_captured_at_fallback(self):
+        captured = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+        start = captured + timedelta(hours=6)
+        snap = build_paper_slip(
+            ArchetypeId.KALSHI_NBA_BOARDS_DIMES_SGP,
+            [
+                _leg(
+                    leg_id="r",
+                    event_id="nba1",
+                    market="nba_rebounds",
+                    direction=Direction.MORE,
+                    platform="kalshi",
+                    sport="NBA",
+                    event_start=start,
+                    captured_at=captured,
+                ),
+                _leg(
+                    leg_id="a",
+                    event_id="nba1",
+                    market="nba_assists",
+                    direction=Direction.MORE,
+                    platform="kalshi",
+                    sport="NBA",
+                    event_start=start,
+                    captured_at=captured,
+                ),
+            ],
+            captured_at=captured,
+            payout_multiplier=2.4,
+        )
+        assert all(hasattr(leg, "event_start_time") for leg in snap.legs)
+        payload = snap.model_dump(mode="python")
+        payload["captured_at"] = None
+        rebuilt = SlipSnapshot.model_validate(payload)
+        assert rebuilt.captured_at is not None
+
+    def test_kalshi_partial_void_refunds_not_full_multiplier(self):
+        captured = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+        start = captured + timedelta(hours=6)
+        snap = build_paper_slip(
+            ArchetypeId.KALSHI_NFL_QB_STACK_SGP,
+            [
+                _leg(
+                    leg_id="qb",
+                    event_id="nfl1",
+                    market="nfl_pass_yards",
+                    direction=Direction.MORE,
+                    platform="kalshi",
+                    sport="NFL",
+                    line=250.5,
+                    event_start=start,
+                    captured_at=captured,
+                ),
+                _leg(
+                    leg_id="rec",
+                    event_id="nfl1",
+                    market="nfl_rec_yards",
+                    direction=Direction.MORE,
+                    platform="kalshi",
+                    sport="NFL",
+                    line=60.5,
+                    event_start=start,
+                    captured_at=captured,
+                ),
+            ],
+            captured_at=captured,
+            payout_multiplier=3.0,
+        )
+        grade = grade_slip(snap, {"qb": 300.0, "rec": None})
+        assert grade.legs_won == 1
+        assert grade.legs_pushed == 1
+        assert grade.effective_multiplier == 1.0
+        assert grade.hold_to_settlement_net_units == 0.0
+
 
 class TestPropLaneAndIntelligenceCompat:
     def test_prop_lane_drops_uncertified_rows(self):

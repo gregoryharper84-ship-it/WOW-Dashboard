@@ -221,7 +221,9 @@ def _hold_net_units(
     if slip_type in {SlipType.KALSHI_SGP_2, SlipType.KALSHI_SGP_3}:
         if losses > 0:
             return 0.0, -1.0 * stake
-        if active >= 1 and losses == 0:
+        # Prediction-market SGPs pay the joint multiplier only when every leg
+        # remains active and wins. Partial voids/pushes refund stake.
+        if active == total and wins == total and losses == 0:
             eff = float(snapshot.payout_multiplier)
             return eff, (eff - 1.0) * stake
         return 1.0, 0.0
