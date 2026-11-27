@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,6 +22,36 @@ def test_alias_registry_covers_current_2026_wnba_teams_without_duplicate_espn_id
     assert espn_team_id_for_wnba_stats_tricode("PDX") == "espn-132052"
     assert espn_team_id_for_wnba_stats_tricode("TOR") == "espn-131935"
     assert espn_team_id_for_wnba_stats_tricode("WAS") == "espn-16"
+
+
+def _ledger_rows(*, home, away, line):
+    """Two-sided main-line pregame observations for the 2099 fixture.
+
+    Only the event is future-dated. The capture instant is a real past
+    observation, because a quote timestamped in the future is not evidence
+    that the market line was ever observed.
+    """
+    observed_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    common = {
+        "provider_event_id": "rd-wnba-1042600122",
+        "sport_key": "basketball_wnba",
+        "event_start_utc": "2099-10-04T20:00:00Z",
+        "market_id": "2",
+        "market_name": "spreads",
+        "sportsbook": "Pinnacle",
+        "price_updated_at": observed_at,
+        "fetched_at": observed_at,
+        "snapshot_kind": "CURRENT",
+        "is_live": False,
+        "is_main_line": True,
+        "is_available": True,
+    }
+    return [
+        {**common, "participant_type": "home", "participant_name": home, "selection": home, "line_value": line},
+        {**common, "participant_type": "away", "participant_name": away, "selection": away, "line_value": -line},
+    ]
 
 
 def test_espn_forbidden_circuits_immediately_to_stats_identity(monkeypatch):
@@ -68,9 +98,17 @@ def test_espn_forbidden_circuits_immediately_to_stats_identity(monkeypatch):
             "p_not_cover": 0.5,
         }
 
+    monkeypatch.setattr(
+        canary,
+        "_read_pregame_spread_observations",
+        lambda *_a, **_k: _ledger_rows(
+            home="Minnesota Lynx", away="Washington Mystics", line=-4.5
+        ),
+    )
     monkeypatch.setattr(canary, "run_wnba_forward_shadow", shadow)
     result = canary.run_wnba_spread_auto_canary(object(), fetcher=fetcher)
     assert len(calls) == 1
+    assert seen["home_spread"] == -4.5
     assert seen["event_id"] == "wnba-stats-1042600122"
     assert seen["home_team_id"] == "espn-8"
     assert seen["away_team_id"] == "espn-16"
