@@ -102,15 +102,27 @@ def assess_slip_exposure(snapshot: SlipSnapshot) -> SlipExposureReport:
         same_game_pairs=same_game_pairs,
         independence_combined_probability=joint_p,
         independence_combined_lower_bound=joint_lb,
-        payout_multiplier=float(snapshot.multiplier),
+        payout_multiplier=float(snapshot.payout_multiplier),
         can_execute=False,
         notes=notes,
     )
 
 
 def record_slip_learning(grade: SlipGrade) -> SlipLearningRecord:
-    decided = grade.wins + grade.losses
-    hit_rate = (grade.wins / decided) if decided else 0.0
+    product = grade.product or grade.slip_type
+    total_legs = grade.total_legs if grade.total_legs is not None else (
+        grade.legs_won + grade.legs_lost + grade.legs_pushed
+    )
+    wins = grade.wins if grade.wins is not None else grade.legs_won
+    losses = grade.losses if grade.losses is not None else grade.legs_lost
+    pushes = grade.pushes if grade.pushes is not None else grade.legs_pushed
+    net = (
+        grade.net_units
+        if grade.net_units is not None
+        else grade.realized_net_units
+    )
+    decided = int(wins) + int(losses)
+    hit_rate = (int(wins) / decided) if decided else 0.0
     clears = (
         decided >= MIN_DECIDED_LEGS_FOR_PROMOTION_REVIEW
         and hit_rate > MIN_LEG_HIT_RATE_FOR_PROMOTION_REVIEW
@@ -118,14 +130,14 @@ def record_slip_learning(grade: SlipGrade) -> SlipLearningRecord:
     return SlipLearningRecord(
         slip_id=str(grade.slip_id),
         archetype=grade.archetype,
-        product=grade.product,
-        leg_count=grade.total_legs,
-        wins=grade.wins,
-        losses=grade.losses,
-        pushes=grade.pushes,
+        product=str(product),
+        leg_count=int(total_legs),
+        wins=int(wins),
+        losses=int(losses),
+        pushes=int(pushes),
         fragile_win_count=grade.fragile_win_count,
         effective_multiplier=grade.effective_multiplier,
-        net_units=grade.net_units,
+        net_units=float(net),
         failed_leg_ids=[
             g.leg_id for g in grade.graded_legs if g.result.value == "LOSS"
         ],

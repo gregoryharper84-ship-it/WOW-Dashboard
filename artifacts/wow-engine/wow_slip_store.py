@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from wow_slip_builder import SlipSnapshot
-from wow_slip_grader import SlipGrade
+from wow_slip_grader import GradedSlip, SlipGrade
 
 DEFAULT_DATA_DIR = Path("data/wow_slips")
 SNAPSHOTS_FILENAME = "snapshots.jsonl"
@@ -29,9 +29,8 @@ class SupabaseClient(Protocol):
     def table(self, name: str) -> SupabaseTable: ...
 
 
-def _jsonable(model: SlipSnapshot | SlipGrade) -> dict[str, Any]:
+def _jsonable(model: SlipSnapshot | GradedSlip | SlipGrade) -> dict[str, Any]:
     payload = model.model_dump(mode="json")
-    # Belt-and-suspenders: never persist a truthy can_execute.
     payload["can_execute"] = False
     return payload
 
@@ -58,7 +57,6 @@ class SlipLedgerStore:
     def _mirror_insert(self, table: str, row: dict[str, Any]) -> None:
         if self._supabase is None:
             return
-        # supabase-py builds a request on insert(); execute() performs the write.
         self._supabase.table(table).insert(row).execute()
 
     def write_snapshot(self, snapshot: SlipSnapshot) -> dict[str, Any]:
@@ -68,44 +66,64 @@ class SlipLedgerStore:
         self._append_jsonl(self.snapshots_path, row)
         mirror = {
             "slip_id": row["slip_id"],
+            "platform": row["platform"],
             "archetype": row["archetype"],
-            "product": row["product"],
-            "multiplier": row["multiplier"],
-            "primary_direction": row["primary_direction"],
-            "captured_at": row["captured_at"],
-            "built_at": row["built_at"],
-            "stake_units": row["stake_units"],
-            "lane": row.get("lane", "WOW_PROP_LANE"),
+            "slip_type": row["slip_type"],
+            "payout_multiplier": row["payout_multiplier"],
+            "recommended_unit_scale": row["recommended_unit_scale"],
+            "joint_calibrated_prob": row["joint_calibrated_prob"],
+            "expected_value_roi": row["expected_value_roi"],
+            "min_leg_lower_bound": row["min_leg_lower_bound"],
+            "unprotected_leg_count": row["unprotected_leg_count"],
+            "signal_sources": row.get("signal_sources") or [],
             "can_execute": False,
             "legs_json": row["legs"],
         }
         self._mirror_insert("wow_slip_snapshots", mirror)
         return row
 
-    def write_grade(self, grade: SlipGrade) -> dict[str, Any]:
+    def write_grade(self, grade: GradedSlip | SlipGrade) -> dict[str, Any]:
         if grade.can_execute is not False:
             raise ValueError("refusing to persist grade with can_execute!=False")
         row = _jsonable(grade)
         self._append_jsonl(self.grades_path, row)
         mirror = {
             "slip_id": row["slip_id"],
+            "platform": row["platform"],
             "archetype": row["archetype"],
-            "product": row["product"],
-            "total_legs": row["total_legs"],
-            "wins": row["wins"],
-            "losses": row["losses"],
-            "pushes": row["pushes"],
-            "active_legs": row["active_legs"],
-            "original_multiplier": row["original_multiplier"],
+            "legs_won": row["legs_won"],
+            "legs_lost": row["legs_lost"],
+            "legs_pushed": row["legs_pushed"],
             "effective_multiplier": row["effective_multiplier"],
-            "net_units": row["net_units"],
+            "realized_net_units": row["realized_net_units"],
+            "hold_to_settlement_net_units": row["hold_to_settlement_net_units"],
+            "exit_alpha_units": row["exit_alpha_units"],
+            "exit_action": row.get("exit_action"),
             "fragile_win_count": row["fragile_win_count"],
-            "graded_at": row["graded_at"],
-            "can_execute": False,
             "graded_legs_json": row["graded_legs"],
         }
         self._mirror_insert("wow_slip_grades", mirror)
         return row
+
+    def count_snapshots_for_archetype_today(
+        self,
+        archetype: str,
+        *,
+        day_utc: str | None = None,
+    ) -> int:
+        """Helper for core_2p max_slips_per_day tracking."""
+        from datetime import datetime, timezone
+
+        if day_utc is None:
+            day_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        count = 0
+        for row in self.read_snapshots():
+            if row.get("archetype") != archetype:
+                continue
+            created = str(row.get("created_at") or "")
+            if created.startswith(day_utc):
+                count += 1
+        return count
 
     def read_snapshots(self) -> list[dict[str, Any]]:
         return self._read_jsonl(self.snapshots_path)
