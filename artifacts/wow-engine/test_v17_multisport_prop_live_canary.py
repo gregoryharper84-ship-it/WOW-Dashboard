@@ -114,3 +114,47 @@ def test_publishable_row_without_numeric_probability_is_rejected():
             sport="MLB",
             require_publishable=True,
         )
+
+
+def test_historical_fixture_structures_remain_testable_without_production_submission(capsys):
+    # Historical fixtures are legitimate negative/regression data, not live offers.
+    subject.self_test()
+    output = capsys.readouterr().out
+    assert '"status": "SELF_TEST_PASS"' in output
+    assert '"live_coverage_certified": false' in output
+
+
+def test_nov22_canary_excludes_all_stale_fixtures():
+    from datetime import datetime, timezone
+
+    sports = subject.future_fixture_sports(datetime(2026, 11, 22, tzinfo=timezone.utc))
+    assert sports == ()
+
+
+def test_direct_live_mode_abstains_before_auth_or_post_when_no_future_fixture(monkeypatch, capsys):
+    import json
+
+    monkeypatch.setattr(subject, "future_fixture_sports", lambda now=None: ())
+    monkeypatch.setattr(subject, "_post", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("historical row reached authenticated network")
+    ))
+    monkeypatch.setattr(subject.sys, "argv", ["canary", "all"])
+    assert subject.main() == 78
+    response = json.loads(capsys.readouterr().out)
+    assert response["status"] == "LIVE_CANARY_NOT_RUN_STALE_STATIC_FIXTURES"
+    assert response["live_coverage_certified"] is False
+    assert response["can_execute"] is False
+
+
+def test_future_eligible_subset_does_not_send_stale_sports(monkeypatch, capsys):
+    import json
+
+    monkeypatch.setattr(subject, "future_fixture_sports", lambda now=None: ("NFL",))
+    monkeypatch.setattr(subject, "run_primary", lambda *, sports: [{"sport": s} for s in sports])
+    monkeypatch.setattr(subject, "run_stress", lambda *, sports: {"sports": list(sports)})
+    monkeypatch.setattr(subject.sys, "argv", ["canary", "all"])
+    assert subject.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["primary"] == [{"sport": "NFL"}]
+    assert result["stress"]["sports"] == ["NFL"]
+    assert result["can_execute"] is False

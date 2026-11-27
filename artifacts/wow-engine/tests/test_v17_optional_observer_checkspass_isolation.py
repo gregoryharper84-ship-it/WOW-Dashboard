@@ -36,12 +36,28 @@ OPTIONAL_MAIN_SCOPED_JOBS: dict[str, tuple[str, ...]] = {
     "wow-v17-nightly-engineering-scan.yml": ("nightly-engineering-scan",),
     "wow-v17-lean-production-readback.yml": ("production-readback",),
     "wow-v17-main-verification-reconciler.yml": ("reconcile",),
+    "wow-v17-nhl-model-maintenance.yml": ("refresh-timeline",),
     "wow-v17-engineering-auto-repair.yml": (
         "discover",
         "adoption-readonly-preflight",
         "adopt-reviewed-owner-source",
         "route-hold-findings",
     ),
+    # Optional observers that attach check runs to protected-main SHAs
+    # (schedule / workflow_run / push). Step isolation only; PR contract
+    # jobs in these workflows remain fail-closed.
+    "wow-v17-spread-forward-production-canary.yml": (
+        "ncaaf-canary",
+        "nfl-canary",
+        "wnba-canary",
+        "mlb-canary",
+        "canary-authentic",
+    ),
+    "wow-v17-post-deploy-verification-orchestrator.yml": ("acceptance-receipts",),
+    "wow-v17-first-six-transport-rescue.yml": ("rescue",),
+    "wow-v17-first-six-model-maintenance.yml": ("maintain",),
+    "wow-v17-basketball-model-maintenance.yml": ("maintain",),
+    "wow-v17-continuous-intelligence.yml": ("learn",),
 }
 
 

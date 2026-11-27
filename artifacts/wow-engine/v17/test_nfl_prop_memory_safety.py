@@ -80,8 +80,44 @@ def test_compact_cache_preserves_exact_history_outputs(monkeypatch) -> None:
         provider_season=2026,
     )
 
-    assert actual == expected
-    assert actual[0] == [56.0, 57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 51.0, 52.0, 53.0]
+    # The installed cache deliberately replaces list[dict[str,str]] with
+    # tuple[_CompactNFLRow]. Equality of internal storage types is not a
+    # sporting-history invariant. Earlier whole-object equality was test-order
+    # dependent: it passed only if another test installed the overlay first.
+    assert actual.game_log == expected.game_log
+    assert actual.box_score_log == expected.box_score_log
+    assert actual.source_hashes == expected.source_hashes
+    assert actual.player_id == expected.player_id
+    assert actual.provider_season_source is not None
+    assert expected.provider_season_source is not None
+    assert actual.provider_season_source.digest == expected.provider_season_source.digest
+
+    text_fields = (
+        "player_display_name", "season_type", "game_id", "team",
+        "opponent_team", "position",
+    )
+    numeric_fields = (
+        "season", "week", "passing_yards", "attempts", "rushing_yards",
+        "carries", "receiving_yards", "targets", "rushing_tds",
+        "receiving_tds", "special_teams_tds",
+    )
+
+    def sporting_projection(rows):
+        return [
+            (
+                tuple(str(row.get(field) or "") for field in text_fields),
+                tuple(nfl._num(row, field) for field in numeric_fields),
+            )
+            for row in rows
+        ]
+
+    # Compare every consumed source field in sequence, including historical
+    # stat/role inputs, not merely a summary hash or result length. The source
+    # digest remains byte-exact above, while unused CSV columns may be dropped.
+    assert sporting_projection(actual.provider_season_source.rows) == (
+        sporting_projection(expected.provider_season_source.rows)
+    )
+    assert actual.game_log == [56.0, 57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 51.0, 52.0, 53.0]
 
 
 def test_live_compact_cache_is_singleflight_and_drops_unused_columns(monkeypatch) -> None:

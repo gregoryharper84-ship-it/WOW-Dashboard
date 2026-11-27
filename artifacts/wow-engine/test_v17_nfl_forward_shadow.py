@@ -222,10 +222,125 @@ class _ForwardPagedDB:
         return _ForwardPagedQuery(self, name)
 
 
+class _ForwardHealthDB(_ForwardPagedDB):
+    """PostgREST boundary double retaining real grading and health logic."""
+    def __init__(self, *, verified_count=99, missing_view=False,
+                 v1_verified_count=None, missing_v2_view=False):
+        from dataclasses import asdict, replace
+        predictions = [_prediction_row(event_id=f'event-{i:03d}',
+                        prediction_id=f'prediction-{i:03d}', p=.7, lower=.6, upper=.8)
+                       for i in range(100)]
+        outcomes = [{'game_id': f'event-{i:03d}', 'home_score': 24 if i < 70 else 17,
+                     'away_score': 17 if i < 70 else 24, 'home_win': i < 70, 'tie': False}
+                    for i in range(100)]
+        grades = grade_forward_predictions(select_canonical_forward_predictions(predictions), outcomes)
+        super().__init__({
+            'wow_nfl_event_predictions': predictions,
+            'wow_nfl_training_games': outcomes,
+            'wow_nfl_forward_shadow_grades': [dict(asdict(g), grade_id=f'grade-{i:03d}')
+                                              for i, g in enumerate(grades)],
+            'wow_nfl_forward_verified_grades': [
+                asdict(g) for g in grades[:verified_count if v1_verified_count is None else v1_verified_count]],
+            'wow_nfl_forward_shadow_grades_v2': [
+                dict(asdict(replace(g, schema_version='NFL_FORWARD_SHADOW_GRADE_V2')),
+                     selection_policy='LATEST_VALID_PREKICKOFF_V2', grade_id=f'grade-v2-{i:03d}')
+                for i, g in enumerate(grades)],
+            'wow_nfl_forward_verified_grades_v2': [
+                dict(asdict(replace(g, schema_version='NFL_FORWARD_SHADOW_GRADE_V2')),
+                     selection_policy='LATEST_VALID_PREKICKOFF_V2')
+                for g in grades[:verified_count]],
+        })
+        self.health_writes = []
+        self.missing_view = missing_view
+        self.missing_v2_view = missing_v2_view
+
+    def table(self, name):
+        if name == 'wow_nfl_forward_verified_grades' and self.missing_view:
+            raise RuntimeError('verified view missing or read denied')
+        if name == 'wow_nfl_forward_verified_grades_v2' and self.missing_v2_view:
+            raise RuntimeError('v2 verified view missing or read denied')
+        if name == 'wow_nfl_forward_calibration_health':
+            db = self
+            class HealthWrite:
+                def insert(self, row):
+                    db.health_writes.append(dict(row))
+                    return self
+                def execute(self):
+                    return SimpleNamespace(data=db.health_writes[-1:])
+            return HealthWrite()
+        return super().table(name)
+
+
+@pytest.mark.parametrize('verified_count,expected_status', [
+    (99, 'INSUFFICIENT_FORWARD_EVIDENCE'), (100, 'PASS'), (0, 'INSUFFICIENT_FORWARD_EVIDENCE'),
+])
+def test_v2_producer_health_uses_only_verified_persisted_cohort(verified_count, expected_status):
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB(verified_count=verified_count)
+    result = shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert result['new_grades_persisted'] == 0
+    assert result['calibration_health']['graded_n'] == verified_count
+    assert result['calibration_health']['status'] == expected_status
+    # Owner decision 2026-11-24: the persisted receipt is the V2-cohort (V3) health.
+    assert result['calibration_health']['schema_version'] == 'NFL_FORWARD_CALIBRATION_HEALTH_V3'
+    assert result['calibration_cohort_source'] == 'wow_nfl_forward_verified_grades_v2'
+    assert result['v1_frozen_scorecard']['schema_version'] == 'NFL_FORWARD_CALIBRATION_HEALTH_V2'
+    assert len(db.health_writes) == 1
+    assert db.health_writes[0]['schema_version'] == 'NFL_FORWARD_CALIBRATION_HEALTH_V3'
+    assert db.health_writes[0]['graded_n'] == verified_count
+    assert db.health_writes[0]['can_execute'] is False
+    assert result['automatic_certification'] is False
+    assert result['automatic_promotion'] is False
+
+
+def test_frozen_v1_pass_cannot_become_the_persisted_health_receipt():
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB(verified_count=99, v1_verified_count=100)
+    result = shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert result['v1_frozen_scorecard']['status'] == 'PASS'  # diagnostic only
+    assert len(db.health_writes) == 1
+    assert db.health_writes[0]['schema_version'] == 'NFL_FORWARD_CALIBRATION_HEALTH_V3'
+    assert db.health_writes[0]['graded_n'] == 99
+    assert db.health_writes[0]['status'] == 'INSUFFICIENT_FORWARD_EVIDENCE'
+    assert db.health_writes[0]['certification_recommendation'] == 'DO_NOT_CERTIFY_YET'
+
+
+def test_missing_v2_view_persists_a_typed_non_pass_v3_receipt():
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB(verified_count=100, missing_v2_view=True)
+    result = shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert result['forward_grading_v2']['status'] == 'FAILED'
+    assert len(db.health_writes) == 1
+    write = db.health_writes[0]
+    assert write['schema_version'] == 'NFL_FORWARD_CALIBRATION_HEALTH_V3'
+    assert write['status'] == 'INSUFFICIENT_FORWARD_EVIDENCE'
+    assert write['certification_recommendation'] == 'DO_NOT_CERTIFY_YET'
+    assert write['blockers'] == ['NFL_FORWARD_V2_RUNTIMEERROR']
+    assert write['graded_n'] == 0 and write['can_execute'] is False
+
+
+def test_missing_verified_view_cannot_persist_a_v2_health_receipt():
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB(missing_view=True)
+    with pytest.raises(RuntimeError, match='verified view missing'):
+        shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert db.health_writes == []
+
+
+def test_duplicate_verified_events_cannot_persist_a_v2_health_receipt():
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB()
+    db.rows['wow_nfl_forward_verified_grades'].append(db.rows['wow_nfl_forward_verified_grades'][0])
+    with pytest.raises(NFLForwardShadowError, match='ID_DUPLICATED'):
+        shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert db.health_writes == []
+
+
 @pytest.mark.parametrize("table,key", [
     ("wow_nfl_event_predictions", "event_prediction_id"),
     ("wow_nfl_training_games", "game_id"),
     ("wow_nfl_forward_shadow_grades", "grade_id"),
+    ("wow_nfl_forward_verified_grades", "official_event_id"),
 ])
 def test_forward_pagination_is_deterministic_across_1000_row_boundary(table, key):
     data = [{key: f"id{i:04d}"} for i in reversed(range(1002))]
@@ -241,6 +356,7 @@ def test_forward_pagination_is_deterministic_across_1000_row_boundary(table, key
     ("wow_nfl_event_predictions", "event_prediction_id"),
     ("wow_nfl_training_games", "game_id"),
     ("wow_nfl_forward_shadow_grades", "grade_id"),
+    ("wow_nfl_forward_verified_grades", "official_event_id"),
 ])
 def test_forward_pagination_rejects_missing_and_duplicate_source_ids(table, key):
     for dataset, expected in [
@@ -442,3 +558,145 @@ def test_forward_insert_dedupes_grade_on_second_page():
     assert db.orders == [(table, "grade_id"), (table, "grade_id")]
     assert all("grade_id" in projection and "official_event_id" in projection
                for name, projection in db.selections if name == table)
+@pytest.mark.parametrize("tie,home_win", [(False, False), (None, False), (False, True)])
+def test_forward_tie_score_overrides_corrupt_tie_flag_and_home_win(tie, home_win):
+    """The dedicated NFL forward CI must run this red-before/green-after test."""
+    p = _prediction(event_id="2026_05_NYG_WAS", p=0.65, lower=0.55, upper=0.75, index=7)
+    grades = grade_forward_predictions([p], [{
+        "game_id": p.official_event_id,
+        "home_score": 27,
+        "away_score": 27,
+        "home_win": home_win,
+        "tie": tie,
+    }])
+    assert grades == []
+
+
+@pytest.mark.parametrize("home_score,away_score,home_win", [
+    (27, 17, False),
+    (17, 27, True),
+])
+def test_forward_grade_excludes_score_winner_flag_conflict(home_score, away_score, home_win):
+    p = _prediction(event_id="2026_05_NYG_WAS", p=0.65, lower=0.55, upper=0.75, index=8)
+    assert grade_forward_predictions([p], [{
+        "game_id": p.official_event_id,
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_win": home_win,
+        "tie": False,
+    }]) == []
+
+
+def test_p0_verification_view_sql_and_adversarial_history_run_in_nfl_workflow():
+    """The dedicated NFL workflow selects this file; run the actual new SQL tests.
+
+    Keeping the native workflow selection unchanged avoids a second P0 CI lane
+    while ensuring migration predicates and synthetic conflict cases execute.
+    """
+    import test_v17_nfl_forward_verified_grade_migration as safety
+
+    safety.test_verified_grade_view_reconciles_original_prediction_and_current_outcome()
+    safety.test_reconciliation_preserves_immutable_grade_ledger_and_private_rls()
+    safety.test_sql_view_excludes_actual_corrupt_historical_grade_shapes()
+
+
+def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
+    """A legacy grade can stay immutable without authorizing a 100th outcome."""
+    from types import SimpleNamespace
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = list(rows)
+
+        def select(self, *_a, **_kw):
+            return self
+
+        def eq(self, *_a):
+            return self
+
+        def order(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a):
+            return self
+
+        def range(self, start, end):
+            self.rows = self.rows[start:end + 1]
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=self.rows, count=len(self.rows))
+
+    class Db:
+        def __init__(self, verified, health_version="NFL_FORWARD_CALIBRATION_HEALTH_V3"):
+            self.verified = verified
+            self.health_version = health_version
+
+        def rpc(self, name, args):
+            assert name == "wow_v17_active_team_event_certification"
+            assert args == {"p_sport": "NFL", "p_league_scope": "NFL"}
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data={
+                "ok": True, "certification_status": "CERTIFIED",
+                "independent_verification_status": "PASS", "probability_publishable": True,
+                "can_execute": False, "sport": "NFL", "league_scope": "NFL",
+                "controlling_specialist": "wow.nfl-game-win-probability-expert",
+                "model_family": "NFL_EXACT_TEST_FAMILY", "model_version": "fitted-nfl-test",
+                "artifact_id": "fitted-test", "artifact_sha256": "test-checksum",
+                "feature_schema_version": "NFL_EVENT_PREGAME_PRIOR_V1",
+                "calibration_artifact_id": "calibrator-test",
+                "calibration_method": "PLATT_TIME_SPLIT_V1",
+                "calibration_sha256": "b" * 64,
+                "certified_at": "2025-12-01T00:00:00+00:00",
+            }))
+
+        def table(self, name):
+            if name == "wow_calibrators":
+                return Query([{
+                    "calibrator_id": "calibrator-test",
+                    "calibration_method": "PLATT_TIME_SPLIT_V1",
+                    "fit_metrics_json": {"calibration_artifact_sha256": "b" * 64},
+                    "active": True, "promoted": True,
+                    "validation_status": "PASS", "health_status": "PASS",
+                }])
+            if name == "wow_nfl_event_fitted_model_artifacts":
+                return Query([{
+                    "active": True, "promoted": True, "probability_publishable": False,
+                    "artifact_checksum": "test-checksum", "model_artifact_version": "fitted-nfl-test",
+                    "model_family": "NFL_EXACT_TEST_FAMILY",
+                    "feature_schema_version": "NFL_EVENT_PREGAME_PRIOR_V1",
+                    "calibrator_id": "calibrator-test",
+                }])
+            if name == "wow_nfl_forward_calibration_health":
+                return Query([{
+                    "schema_version": self.health_version,
+                    "graded_n": 100,
+                    "minimum_forward_required": 100,
+                    "status": "PASS",
+                    "certification_recommendation": "FORWARD_EVIDENCE_PASS",
+                    "blockers": [],
+                }])
+            if name == "wow_nfl_forward_verified_grades_v2":
+                if self.verified is None:
+                    raise RuntimeError("migration not applied")
+                from dataclasses import asdict
+                predictions = [_prediction(event_id=f"event-{i}", p=.7, lower=.6, upper=.8, index=i) for i in range(self.verified)]
+                outcomes = [{"game_id": p.official_event_id, "home_score": 24 if i % 10 < 7 else 17,
+                             "away_score": 17 if i % 10 < 7 else 24, "home_win": i % 10 < 7, "tie": False}
+                            for i, p in enumerate(predictions)]
+                return Query([{**asdict(g), "model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test", "artifact_checksum": "test-checksum",
+                               "schema_version": "NFL_FORWARD_SHADOW_GRADE_V2", "selection_policy": "LATEST_VALID_PREKICKOFF_V2"}
+                              for g in grade_forward_predictions(predictions, outcomes)])
+            raise AssertionError(name)
+
+    row = {
+        "model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test",
+        "model_timestamp": "2026-01-01T00:00:00+00:00",
+        "model_output_snapshot": {"artifact_checksum": "test-checksum"},
+    }
+    assert not _forward_certification_proven(Db(99), row)
+    assert not _forward_certification_proven(Db(100, "NFL_FORWARD_CALIBRATION_HEALTH_V1"), row)
+    # A frozen-V1-cohort receipt (schema V2) no longer admits (owner decision 2026-11-24).
+    assert not _forward_certification_proven(Db(100, "NFL_FORWARD_CALIBRATION_HEALTH_V2"), row)
+    assert not _forward_certification_proven(Db(None), row)
+    assert _forward_certification_proven(Db(100), row)

@@ -28,6 +28,14 @@ from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
 
+GOVERNANCE_CLASS_A_SCRIPT = REPO_ROOT / ".github/scripts/verify_existing_pr_governance_receipt.py"
+_class_a_spec = importlib.util.spec_from_file_location("_existing_pr_class_a_policy", GOVERNANCE_CLASS_A_SCRIPT)
+assert _class_a_spec and _class_a_spec.loader
+_class_a_policy = importlib.util.module_from_spec(_class_a_spec)
+_class_a_spec.loader.exec_module(_class_a_policy)
+# One canonical exact allowlist; QA never invents a broader R-class classifier.
+CLASS_A_EXACT_PATHS = _class_a_policy.CLASS_A_EXACT_PATHS
+
 SOURCE_REVIEW_SCRIPT = REPO_ROOT / ".github/scripts/independent_source_review_receipt.py"
 _source_review_spec = importlib.util.spec_from_file_location(
     "_independent_source_review_receipt", SOURCE_REVIEW_SCRIPT
@@ -45,6 +53,19 @@ MAX_PAGES = 10
 PER_PAGE = 100
 NATIVE_REGRESSION_WORKFLOW_ID = 338954264
 NATIVE_REGRESSION_WORKFLOW_PATH = ".github/workflows/wow-verify.yml"
+# The governed-backend aggregate check is published by a needs-gated job in a
+# *different* workflow. GitHub creates that job (and its check run) only after all
+# five dependencies finish, so for the first minutes of a fresh head there is no
+# check run to observe. An authentic active run of this workflow at the exact head
+# is then the only evidence that the required context is still coming.
+NATIVE_ENGINE_VERIFY_WORKFLOW_ID = 343452862
+NATIVE_ENGINE_VERIFY_WORKFLOW_PATH = ".github/workflows/wow-engine-verify.yml"
+GOVERNED_PROBABILITY_CHECK = "WOW governed probability backend"
+assert GOVERNED_PROBABILITY_CHECK in REQUIRED_REGRESSION_CHECKS
+NATIVE_WORKFLOW_IDENTITIES = (
+    (NATIVE_REGRESSION_WORKFLOW_ID, NATIVE_REGRESSION_WORKFLOW_PATH),
+    (NATIVE_ENGINE_VERIFY_WORKFLOW_ID, NATIVE_ENGINE_VERIFY_WORKFLOW_PATH),
+)
 MAX_NATIVE_RUN_AGE = timedelta(hours=2)
 ACTIVE_WORK_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting"})
 
@@ -119,6 +140,8 @@ def _paged_exact(
 
 def _native_workflow_run_matches(
     run: dict, *, repo: str, pr_number: int, head: str, head_ref: str,
+    workflow_id: int = NATIVE_REGRESSION_WORKFLOW_ID,
+    workflow_path: str = NATIVE_REGRESSION_WORKFLOW_PATH,
 ) -> bool:
     repository = run.get("repository")
     head_repository = run.get("head_repository")
@@ -132,8 +155,8 @@ def _native_workflow_run_matches(
         and isinstance(run.get("run_attempt"), int)
         and not isinstance(run.get("run_attempt"), bool)
         and run["run_attempt"] > 0
-        and run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID
-        and run.get("path") == NATIVE_REGRESSION_WORKFLOW_PATH
+        and run.get("workflow_id") == workflow_id
+        and run.get("path") == workflow_path
         and run.get("event") == "pull_request"
         and run.get("head_sha") == head
         and run.get("head_branch") == head_ref
@@ -162,41 +185,46 @@ def _native_workflow_evidence(
         errors,
         "NATIVE_WORKFLOW_RUNS",
     )
-    matching = [
-        run for run in runs
-        if isinstance(run, dict)
-        and _native_workflow_run_matches(
-            run,
-            repo=repo,
-            pr_number=int(pr.get("number") or 0),
-            head=head,
-            head_ref=str(pr.get("head_ref") or ""),
-        )
-    ]
-    latest = max(matching, key=lambda run: run["id"], default=None)
-    if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
-        return []
+    evidence: list[dict] = []
+    for workflow_id, workflow_path in NATIVE_WORKFLOW_IDENTITIES:
+        matching = [
+            run for run in runs
+            if isinstance(run, dict)
+            and _native_workflow_run_matches(
+                run,
+                repo=repo,
+                pr_number=int(pr.get("number") or 0),
+                head=head,
+                head_ref=str(pr.get("head_ref") or ""),
+                workflow_id=workflow_id,
+                workflow_path=workflow_path,
+            )
+        ]
+        latest = max(matching, key=lambda run: run["id"], default=None)
+        if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
+            continue
 
-    jobs = _paged_exact(
-        fetch,
-        f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
-        "jobs",
-        errors,
-        "NATIVE_WORKFLOW_JOBS",
-    )
-    return [{
-        key: latest.get(key)
-        for key in (
-            "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
-            "head_branch", "created_at", "status", "repository",
-            "head_repository", "pull_requests",
+        jobs = _paged_exact(
+            fetch,
+            f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
+            "jobs",
+            errors,
+            "NATIVE_WORKFLOW_JOBS",
         )
-    } | {
-        "jobs": [
-            {"name": job.get("name"), "status": job.get("status")}
-            for job in jobs if isinstance(job, dict)
-        ],
-    }]
+        evidence.append({
+            key: latest.get(key)
+            for key in (
+                "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
+                "head_branch", "created_at", "status", "repository",
+                "head_repository", "pull_requests",
+            )
+        } | {
+            "jobs": [
+                {"name": job.get("name"), "status": job.get("status")}
+                for job in jobs if isinstance(job, dict)
+            ],
+        })
+    return evidence
 
 
 def _recent_active_timestamp(value: Any, *, now: datetime | None = None) -> bool:
@@ -259,12 +287,15 @@ def gather(
     # must not disguise an incomplete paginated file inventory.
     ev["files"] = []
     ev["source_review_paths"] = []
+    ev["zero_credit_disallowed_file_operations"] = []
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
             errors.append("FILES_PATH_INVALID")
             continue
         ev["files"].append(entry["filename"])
         ev["source_review_paths"].append(entry["filename"])
+        if entry.get("status") not in {"added", "modified", "changed"} or entry.get("previous_filename") is not None:
+            ev["zero_credit_disallowed_file_operations"].append(entry["filename"])
         if entry.get("status") == "renamed" or "previous_filename" in entry:
             origin = entry.get("previous_filename")
             if isinstance(origin, str) and origin:
@@ -333,6 +364,30 @@ def gather(
 MAX_TARGETS = 20
 
 
+def _pr_read_failure_detail(status: int, payload: object) -> str:
+    """Only classify a verified HTTP response; never log untrusted API text.
+
+    A workflow_run can have exact PR metadata but must not bypass the live
+    GitHub read. This diagnostic distinguishes rate-pressure from missing
+    permissions while preserving TARGET_PR_UNREADABLE fail-closed behavior.
+    """
+    if status not in (403, 429) or not isinstance(payload, dict):
+        return str(status)
+    raw = payload.get("message")
+    if not isinstance(raw, str):
+        return str(status)
+    message = raw.lower()
+    if "secondary rate limit" in message or "abuse detection" in message:
+        return f"{status}:SECONDARY_RATE_LIMIT"
+    if "rate limit" in message:
+        return f"{status}:RATE_LIMIT"
+    if "resource not accessible by integration" in message:
+        return f"{status}:APP_PERMISSION_DENIED"
+    if "bad credentials" in message:
+        return f"{status}:CREDENTIAL_REJECTED"
+    return str(status)
+
+
 def targets(repo: str, *, pr: str | None = None,
             workflow_run_prs: list[dict] | None = None,
             neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
@@ -353,7 +408,7 @@ def targets(repo: str, *, pr: str | None = None,
             head = (live or {}).get("head") or {}
             base = (live or {}).get("base") or {}
             if status != 200 or not isinstance(live, dict):
-                errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
+                errors.append(f"TARGET_PR_UNREADABLE:{number}:{_pr_read_failure_detail(status, live)}")
                 continue
             # A source PR can move between the workflow_run event and QA.
             # A single proved same-origin moved/closed source is no longer a
@@ -383,6 +438,24 @@ def targets(repo: str, *, pr: str | None = None,
                     "disposition": "neutral",
                     "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
                 }
+            # A draft cannot be merged, so it is never a QA target. Mirrors
+            # Release's --neutral-if-draft-target: an automatic callback for a
+            # draft publishes no check and must not fail the protected-main
+            # commit Render's checksPass trigger is evaluating. Manual
+            # dispatch still evaluates drafts (QA_PR_DRAFT HOLD). Only a draft
+            # still at the exact event head qualifies; a moved draft keeps the
+            # strict identity-mismatch error below.
+            if (
+                neutral_superseded and len(workflow_run_prs) == 1
+                and same_origin and live.get("state") == "open"
+                and live.get("draft") is True and not live.get("merged_at")
+                and current_sha == sha
+            ):
+                return {
+                    "targets": [], "errors": [],
+                    "disposition": "neutral",
+                    "reason": "QA_SOURCE_PR_DRAFT",
+                }
             if (
                 live.get("number") != number
                 or head.get("sha") != sha
@@ -400,7 +473,7 @@ def targets(repo: str, *, pr: str | None = None,
             status, body = fetch(f"repos/{repo}/pulls/{int(pr)}")
             sha = ((body or {}).get("head") or {}).get("sha") if status == 200 and isinstance(body, dict) else None
             if not SHA_RE.match(str(sha or "")):
-                errors.append(f"TARGET_PR_UNREADABLE:{status}")
+                errors.append(f"TARGET_PR_UNREADABLE:{_pr_read_failure_detail(status, body)}")
             elif (
                 body.get("number") != int(pr)
                 or ((body.get("head") or {}).get("repo") or {}).get("full_name") != repo
@@ -577,23 +650,47 @@ def pending_required_regressions(ev: dict) -> list[str]:
     native_runs = ev.get("native_workflow_runs")
     if not isinstance(native_runs, list):
         return pending
+    # Once the governed-backend aggregate has published a completed run, whatever
+    # its conclusion, that run is the evidence: the surrounding workflow still
+    # being active must not keep deferring a verdict that already exists.
+    governed_published = any(
+        run.get("name") == GOVERNED_PROBABILITY_CHECK
+        and run.get("head_sha") == head
+        and str(run.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+        and run.get("status") == "completed"
+        for run in runs if isinstance(run, dict)
+    )
     for run in native_runs:
-        if (
-            not isinstance(run, dict)
-            or not _native_workflow_run_matches(
-                run,
-                repo=str(ev.get("repository") or ""),
-                pr_number=int(pr.get("number") or 0),
-                head=head,
-                head_ref=str(pr.get("head_ref") or ""),
-            )
-            or run.get("status") not in ACTIVE_WORK_STATUSES
-        ):
+        if not isinstance(run, dict) or run.get("status") not in ACTIVE_WORK_STATUSES:
             continue
         if not _recent_active_timestamp(run.get("created_at")):
             continue
+        identity = next(
+            (
+                (workflow_id, workflow_path)
+                for workflow_id, workflow_path in NATIVE_WORKFLOW_IDENTITIES
+                if _native_workflow_run_matches(
+                    run,
+                    repo=str(ev.get("repository") or ""),
+                    pr_number=int(pr.get("number") or 0),
+                    head=head,
+                    head_ref=str(pr.get("head_ref") or ""),
+                    workflow_id=workflow_id,
+                    workflow_path=workflow_path,
+                )
+            ),
+            None,
+        )
+        if identity is None:
+            continue
         jobs = run.get("jobs")
         if not isinstance(jobs, list):
+            continue
+        if identity[0] == NATIVE_ENGINE_VERIFY_WORKFLOW_ID:
+            # The needs-gated aggregate has no job or check run yet; the active
+            # authentic run at this exact head is the pending evidence.
+            if not governed_published:
+                pending.append(GOVERNED_PROBABILITY_CHECK)
             continue
         active_jobs = {
             str(job.get("name"))
@@ -711,6 +808,14 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         if mode not in {"legacy", "independent", "canary", "zero_credit"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
         elif mode == "zero_credit":
+            # The protected-main certifier owns the narrow R-class allowlist.
+            # Deterministic-only QA cannot pass P/C or unknown source.
+            # Renamed origin paths are already included in ev["files"].
+            if not files or ev.get("zero_credit_disallowed_file_operations") or any(
+                not isinstance(path, str) or path not in CLASS_A_EXACT_PATHS
+                for path in files
+            ):
+                findings.append("QA_INDEPENDENT_SOURCE_REVIEW_MISSING")
             # Reduced-assurance evidence checks only: not adversarial source review.
             if ev.get("zero_credit_enabled") is not True:
                 findings.append("QA_ZERO_CREDIT_POLICY_NOT_ENABLED")

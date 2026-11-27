@@ -37,6 +37,7 @@ class ResearchFetchResult:
     data: Any = None
     status: int | None = None
     code: str | None = None
+    retry_after_seconds: int | None = None
     observed_at: str | None = None
     endpoint: str | None = None
     prediction_authority: bool = False
