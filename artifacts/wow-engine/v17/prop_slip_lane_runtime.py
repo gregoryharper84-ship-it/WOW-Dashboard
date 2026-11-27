@@ -39,7 +39,12 @@ from wow_slip_intelligence import assess_slip_exposure, record_slip_learning
 from wow_slip_prop_lane import build_paper_slip_from_prop_lane
 from wow_slip_store import DEFAULT_DATA_DIR, SlipLedgerStore
 
-from v17.player_availability_gate import evaluate_player_availability
+from v17.player_availability_gate import (
+    PLAYER_AVAILABILITY_RECHECK_REQUIRED,
+    PLAYER_AVAILABILITY_UNVERIFIED,
+    PLAYER_RULED_OUT,
+    evaluate_player_availability,
+)
 
 CAN_EXECUTE = False
 PROVIDER = "WOW_PROP_FITTED_MODEL_V1"
@@ -70,6 +75,16 @@ HELD_INSUFFICIENT_ELIGIBLE_LEGS = "HELD_INSUFFICIENT_ELIGIBLE_LEGS"
 HELD_EXACT_GAME_STACK = "HELD_EXACT_GAME_STACK"
 HELD_DISTINCT_GAMES = "HELD_DISTINCT_GAMES"
 HELD_BUILD_REJECTED = "HELD_BUILD_REJECTED"
+
+# The persisted snapshot stores the availability verdict in ``blockers``
+# (pick_request_runtime_core._snapshot_payload). Only these codes mean the
+# participant is not cleared; an unrelated caller-supplied blocker code must
+# not silently hold an otherwise cleared production row.
+AVAILABILITY_BLOCKER_CODES = frozenset({
+    PLAYER_RULED_OUT,
+    PLAYER_AVAILABILITY_UNVERIFIED,
+    PLAYER_AVAILABILITY_RECHECK_REQUIRED,
+})
 
 
 def _aware(value: Any) -> datetime | None:
@@ -142,7 +157,11 @@ def _availability_confirmed(evidence: Mapping[str, Any] | None) -> bool:
         return False
     if str(evidence.get("hydration_status") or "").strip().upper() != "PASS":
         return False
-    if evidence.get("blockers"):
+    blockers = {
+        str(code).strip().upper()
+        for code in (evidence.get("blockers") or [])
+    }
+    if blockers & AVAILABILITY_BLOCKER_CODES:
         return False
     role = evidence.get("role_status")
     decision = evaluate_player_availability(role if isinstance(role, Mapping) else {})
