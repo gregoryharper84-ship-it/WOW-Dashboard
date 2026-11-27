@@ -53,19 +53,26 @@ def _week(week_id: str = "2026-W4", fold: str = "DISCOVERY") -> dict:
                 "source": "pregame-opponent-poll",
                 "audience": "OPPONENT_ENTRIES",
                 "observed_at": "2026-09-30T12:00:00Z",
+                "available_to_user_at": "2026-09-30T12:01:00Z",
             },
         },
         "opponent_entries": [
             {
                 "entry_id": "other1",
                 "receipt_id": f"entry1-{week_id}",
+                "audience": "OPPONENT_ENTRIES",
+                "availability_source": "prelock-test-visibility-receipt",
                 "submitted_at": "2026-09-30T18:00:00Z",
+                "available_to_user_at": "2026-09-30T18:01:00Z",
                 "picks": {event: "H"},
             },
             {
                 "entry_id": "other2",
                 "receipt_id": f"entry2-{week_id}",
+                "audience": "OPPONENT_ENTRIES",
+                "availability_source": "prelock-test-visibility-receipt",
                 "submitted_at": "2026-09-30T18:00:00Z",
+                "available_to_user_at": "2026-09-30T18:01:00Z",
                 "picks": {event: "H"},
             },
         ],
@@ -196,3 +203,63 @@ def test_legitimate_probability_bearing_hold_is_preserved_without_upgrade():
     assert out["source_terminal_labels_preserved"][event] == "MODEL_QUALIFIED_HOLD"
     assert out["shadow"]["correct"] == 1
     assert out["automatic_promotion"] is False
+
+
+def test_hidden_opponent_submissions_do_not_count_as_prelock_information():
+    week = _week()
+    week["opponent_entries"][0]["available_to_user_at"] = "2026-10-01T00:00:01Z"
+    with pytest.raises(ReplayInputError, match="PICKEM_REPLAY_POST_LOCK_OPPONENT_AVAILABILITY"):
+        replay_one_week(week)
+
+
+def test_ownership_snapshot_available_only_after_lock_is_rejected():
+    week = _week()
+    event = next(iter(week["ownership_snapshots"]))
+    week["ownership_snapshots"][event]["available_to_user_at"] = "2026-10-01T00:00:01Z"
+    with pytest.raises(ReplayInputError, match="PICKEM_REPLAY_POST_LOCK_OWNERSHIP_AVAILABILITY"):
+        replay_one_week(week)
+
+
+def test_duplicate_opponent_receipts_cannot_count_as_multiple_pool_members():
+    week = _week()
+    week["opponent_entries"][1]["receipt_id"] = week["opponent_entries"][0]["receipt_id"]
+    with pytest.raises(ReplayInputError, match="PICKEM_REPLAY_DUPLICATE_OPPONENT_RECEIPT"):
+        replay_one_week(week)
+
+
+def test_opponent_audience_must_exclude_user_entry():
+    week = _week()
+    week["opponent_entries"][0]["audience"] = "ALL_ENTRIES"
+    with pytest.raises(ReplayInputError, match="PICKEM_REPLAY_OPPONENT_AUDIENCE_INVALID"):
+        replay_one_week(week)
+
+
+def test_tied_event_scores_no_points_only_with_explicit_policy():
+    week = _week()
+    event = next(iter(week["settled_winners"]))
+    week["settled_winners"][event] = "TIE"
+    with pytest.raises(ReplayInputError, match="PICKEM_REPLAY_TIE_RULE_REQUIRED"):
+        replay_one_week(week)
+    week["tie_policy"] = "NO_POINT"
+    result = replay_one_week(week)
+    assert result["tied_events"] == [event]
+    assert result["historical_ties_scored_no_points"] is True
+    assert result["baseline"]["correct"] == 0
+    assert result["shadow"]["correct"] == 0
+    assert result["baseline"]["equal_tie_share_proxy"] == pytest.approx(1 / 3)
+    assert result["nfl_tie_probabilities_certified"] is False
+    assert result["can_execute"] is False
+
+
+def test_invalid_tie_policy_rejected_even_without_settled_tie():
+    week = _week()
+    week["tie_policy"] = "AWARD_HALF_POINT"
+    with pytest.raises(ReplayInputError, match="PICKEM_REPLAY_TIE_POLICY_UNSUPPORTED"):
+        replay_one_week(week)
+
+
+def test_opponent_availability_must_not_precede_submission():
+    week = _week()
+    week["opponent_entries"][0]["available_to_user_at"] = "2026-09-30T17:00:00Z"
+    with pytest.raises(ReplayInputError, match="PICKEM_REPLAY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION"):
+        replay_one_week(week)
