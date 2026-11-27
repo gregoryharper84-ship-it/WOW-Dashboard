@@ -234,7 +234,7 @@ def grade_slip(
     snapshot: SlipSnapshot,
     actuals: dict[str, float | None],
     *,
-    stake: float = 1.0,
+    stake: Optional[float] = None,
     early_exit_payout: Optional[float] = None,
     exit_action: Optional[str] = None,
 ) -> GradedSlip:
@@ -242,7 +242,11 @@ def grade_slip(
     Grade each slip leg against post-slate actuals keyed by leg_id.
 
     Missing keys are treated as DNP (None).
+    When stake is omitted, defaults to snapshot.stake_units.
     """
+    resolved_stake = (
+        float(stake) if stake is not None else float(snapshot.stake_units or 1.0)
+    )
     graded_legs: list[GradedLeg] = []
     for leg in snapshot.legs:
         actual = actuals[leg.leg_id] if leg.leg_id in actuals else None
@@ -258,11 +262,11 @@ def grade_slip(
         wins=wins,
         losses=losses,
         pushes=pushes,
-        stake=float(stake),
+        stake=resolved_stake,
     )
 
     if early_exit_payout is not None:
-        realized = float(early_exit_payout) - float(stake)
+        realized = float(early_exit_payout) - resolved_stake
     else:
         realized = hold_net
     exit_alpha = round(realized - hold_net, 4)

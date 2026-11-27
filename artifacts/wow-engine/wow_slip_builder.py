@@ -172,6 +172,13 @@ CS2_MARKETS = frozenset(
     }
 )
 
+# Keep in sync with wow_slip_grader.FLEX_TABLES (build-time EV only).
+FLEX_EV_TABLES: dict[int, dict[int, float]] = {
+    6: {6: 25.0, 5: 2.0, 4: 0.4},
+    5: {5: 10.0, 4: 2.0, 3: 0.4},
+    4: {4: 5.0, 3: 1.5},
+}
+
 
 class CtWindow(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -735,20 +742,65 @@ def _micro_volume_line_ok(leg: PropLegCandidate) -> bool:
     return True
 
 
+def _flex_expected_roi(probs: Sequence[float]) -> float:
+    """Independence EV across Flex paying win-counts (not just the jackpot)."""
+    n = len(probs)
+    if n == 0:
+        return -1.0
+    total = 0.0
+    for mask in range(1 << n):
+        p = 1.0
+        wins = 0
+        for i, prob in enumerate(probs):
+            if mask & (1 << i):
+                p *= float(prob)
+                wins += 1
+            else:
+                p *= 1.0 - float(prob)
+        if n <= 3:
+            if n == 3 and wins == 3:
+                eff = 3.0
+            elif n == 2 and wins == 2:
+                eff = 1.5
+            elif n < 2:
+                eff = 1.0
+            else:
+                eff = 0.0
+        else:
+            eff = float(FLEX_EV_TABLES.get(n, {}).get(wins, 0.0))
+        total += p * (eff - 1.0)
+    return float(total)
+
+
+def _kalshi_combo_coherent(combo: Sequence[PropLegCandidate]) -> bool:
+    """Reject duplicate or contradictory player/market selections."""
+    seen: dict[tuple[str, str, str], Direction] = {}
+    for leg in combo:
+        key = (leg.event_id, leg.player_or_combo, leg.market)
+        prior = seen.get(key)
+        if prior is not None:
+            return False
+        seen[key] = leg.direction
+    return True
+
+
 def _filter_candidates(
     *,
     spec: ArchetypeSpec,
     candidates: Sequence[PropLegCandidate],
     captured_at: Optional[datetime] = None,
 ) -> list[PropLegCandidate]:
+    slip_captured: Optional[datetime] = None
+    if captured_at is not None:
+        slip_captured = _ensure_aware(captured_at)
+
     if spec.ct_window is not None:
-        if captured_at is None:
+        if slip_captured is None:
             _raise_slip_error(
                 f"captured_at required for {spec.archetype_id.value}",
                 loc=("captured_at",),
             )
-        captured = _ensure_aware(captured_at)
-        if not spec.ct_window.contains(captured):
+        if not spec.ct_window.contains(slip_captured):
             _raise_slip_error(
                 f"captured_at outside CT window for {spec.archetype_id.value}",
                 loc=("captured_at",),
@@ -784,6 +836,14 @@ def _filter_candidates(
             and not _micro_volume_line_ok(leg)
         ):
             continue
+        if slip_captured is not None and not (
+            slip_captured < leg.event_start_time
+        ):
+            _raise_slip_error(
+                "captured_at must be strictly before event_start_time "
+                "(pregame integrity)",
+                loc=("captured_at",),
+            )
         if spec.platform == "kalshi":
             if leg.market in KALSHI_HARD_BANNED_MARKETS:
                 continue
@@ -1135,33 +1195,74 @@ def _assemble_prizepicks(
         )
 
     if aid == ArchetypeId.CS2_KILLS_UNDER_POWER:
-        # Try 4-pick then 2-pick.
-        for need, slip_type in (
-            (4, SlipType.FOUR_PICK_POWER),
-            (2, SlipType.TWO_PICK_POWER),
-        ):
-            selected = _select_greedy(
-                ranked,
-                need=need,
+        less_pool = [leg for leg in ranked if leg.direction == Direction.LESS]
+        more_pool = [leg for leg in ranked if leg.direction == Direction.MORE]
+
+        # Prefer 4-pick with direction quota enforced during selection:
+        # >= 75% LESS => at least 3 LESS, at most 1 MORE.
+        four_less = _select_greedy(
+            less_pool,
+            need=4,
+            primary=None,
+            max_legs_per_game=None,
+            max_promo=4,
+            allow_goblin=False,
+            unique_players=True,
+        )
+        if len(four_less) == 4:
+            _validate_prizepicks_global(four_less, allow_goblin=False)
+            return (
+                four_less,
+                SlipType.FOUR_PICK_POWER,
+                POWER_MULTIPLIERS[SlipType.FOUR_PICK_POWER],
+            )
+
+        three_less = _select_greedy(
+            less_pool,
+            need=3,
+            primary=None,
+            max_legs_per_game=None,
+            max_promo=3,
+            allow_goblin=False,
+            unique_players=True,
+        )
+        if len(three_less) == 3:
+            used_players = {leg.player_or_combo for leg in three_less}
+            one_more = _select_greedy(
+                [leg for leg in more_pool if leg.player_or_combo not in used_players],
+                need=1,
                 primary=None,
                 max_legs_per_game=None,
-                max_promo=need,
+                max_promo=1,
                 allow_goblin=False,
                 unique_players=True,
             )
-            if len(selected) != need:
-                continue
-            if len({leg.sport for leg in selected}) != 1:
-                continue
-            less_count = sum(1 for leg in selected if leg.direction == Direction.LESS)
-            if need == 2 and less_count != 2:
-                continue
-            if need == 4:
-                more_count = need - less_count
-                if less_count / need < 0.75 or more_count > 1:
-                    continue
-            _validate_prizepicks_global(selected, allow_goblin=False)
-            return selected, slip_type, POWER_MULTIPLIERS[slip_type]
+            if len(one_more) == 1:
+                selected = three_less + one_more
+                _validate_prizepicks_global(selected, allow_goblin=False)
+                return (
+                    selected,
+                    SlipType.FOUR_PICK_POWER,
+                    POWER_MULTIPLIERS[SlipType.FOUR_PICK_POWER],
+                )
+
+        two_less = _select_greedy(
+            less_pool,
+            need=2,
+            primary=None,
+            max_legs_per_game=None,
+            max_promo=2,
+            allow_goblin=False,
+            unique_players=True,
+        )
+        if len(two_less) == 2:
+            _validate_prizepicks_global(two_less, allow_goblin=False)
+            return (
+                two_less,
+                SlipType.TWO_PICK_POWER,
+                POWER_MULTIPLIERS[SlipType.TWO_PICK_POWER],
+            )
+
         _raise_slip_error(
             "cs2_kills_under_power requires 2-pick all LESS or 4-pick >=75% LESS"
         )
@@ -1221,6 +1322,8 @@ def _assemble_kalshi(
                 continue
             if a.player_or_combo != b.player_or_combo:
                 continue
+            if not _kalshi_combo_coherent((a, b)):
+                continue
             markets = frozenset({a.market, b.market})
             if markets not in SAME_PLAYER_DOUBLE_PAIRS:
                 continue
@@ -1255,6 +1358,8 @@ def _assemble_kalshi(
                 if len({c.event_id for c in combo}) != 1:
                     continue
                 if len({c.sport for c in combo}) != 1 or combo[0].sport != "NFL":
+                    continue
+                if not _kalshi_combo_coherent(combo):
                     continue
                 markets = [c.market for c in combo]
                 if any(m == "nfl_rush_yards" for m in markets):
@@ -1294,6 +1399,8 @@ def _assemble_kalshi(
                 if any(c.sport != "NBA" for c in combo):
                     continue
                 if any(c.market in {"nba_points", "nba_threes"} for c in combo):
+                    continue
+                if not _kalshi_combo_coherent(combo):
                     continue
                 key = (
                     sum(1 for c in combo if c.is_protected),
@@ -1406,7 +1513,10 @@ def build_paper_slip(
     probs = [leg.calibrated_probability for leg in selected]
     lowers = [leg.calibrated_lower_bound for leg in selected]
     joint = float(prod(probs)) if probs else 0.0
-    ev_roi = (joint * float(mult)) - 1.0
+    if slip_type == SlipType.SIX_PICK_FLEX:
+        ev_roi = _flex_expected_roi(probs)
+    else:
+        ev_roi = (joint * float(mult)) - 1.0
     sources = sorted({leg.signal_source for leg in selected})
 
     return SlipSnapshot(

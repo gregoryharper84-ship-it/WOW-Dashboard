@@ -1260,6 +1260,152 @@ class TestMigrationContract:
             assert "kalshi_nba_boards_dimes_sgp" in text
             assert "6_pick_flex" in text
             assert "total_exit_alpha_units" in text
+            # Preserve + backfill; do not hard-drop live research rows.
+            assert "wow_slip_snapshots_pre_20261126" in text
+            assert "on conflict (slip_id) do nothing" in text
+            assert "drop table if exists public.wow_slip_snapshots;" not in text
+            # Kalshi promotion floor counts graded slips, not ungraded snapshots.
+            assert "count(g.slip_id) >= 25" in text
+
+
+class TestCodexReviewRegressions:
+    def test_slip_level_captured_at_must_precede_event_starts(self):
+        # 05:00 CT is inside nba_niche_under_early window but after a 10:00 UTC tip.
+        slip_captured = _ts(2026, 11, 26, 5, 0, CT)
+        start = slip_captured - timedelta(minutes=30)
+        leg_captured = start - timedelta(hours=2)
+        legs = [
+            _leg(
+                leg_id=f"l{i}",
+                event_id=f"g{i // 2}",
+                market="personal_fouls",
+                direction=Direction.LESS,
+                event_start=start,
+                captured_at=leg_captured,
+                lower=0.62,
+            )
+            for i in range(6)
+        ]
+        with pytest.raises(ValidationError):
+            build_paper_slip(
+                ArchetypeId.NBA_NICHE_UNDER_EARLY,
+                legs,
+                captured_at=slip_captured,
+            )
+
+    def test_cs2_direction_quota_searches_less_pool(self):
+        captured = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+        start = captured + timedelta(hours=4)
+        legs = []
+        # Two high-ranked MORE first — must not poison selection.
+        for i in range(2):
+            legs.append(
+                _leg(
+                    leg_id=f"more{i}",
+                    event_id="m1",
+                    market="cs2_maps_1_2_kills",
+                    direction=Direction.MORE,
+                    sport="CS2",
+                    event_start=start,
+                    captured_at=captured,
+                    lower=0.90 - i * 0.01,
+                )
+            )
+        for i in range(4):
+            legs.append(
+                _leg(
+                    leg_id=f"less{i}",
+                    event_id="m1",
+                    market="cs2_maps_1_2_kills",
+                    direction=Direction.LESS,
+                    sport="CS2",
+                    event_start=start,
+                    captured_at=captured,
+                    lower=0.70 - i * 0.01,
+                )
+            )
+        snap = build_paper_slip(
+            ArchetypeId.CS2_KILLS_UNDER_POWER, legs, captured_at=captured
+        )
+        assert snap.slip_type == SlipType.FOUR_PICK_POWER
+        assert sum(1 for leg in snap.legs if leg.direction == Direction.LESS) >= 3
+
+    def test_kalshi_rejects_contradictory_same_player_market(self):
+        captured = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+        start = captured + timedelta(hours=6)
+        with pytest.raises(ValidationError):
+            build_paper_slip(
+                ArchetypeId.KALSHI_NBA_BOARDS_DIMES_SGP,
+                [
+                    _leg(
+                        leg_id="more",
+                        event_id="nba1",
+                        market="nba_rebounds",
+                        direction=Direction.MORE,
+                        platform="kalshi",
+                        sport="NBA",
+                        player="Player A",
+                        event_start=start,
+                        captured_at=captured,
+                        lower=0.70,
+                    ),
+                    _leg(
+                        leg_id="less",
+                        event_id="nba1",
+                        market="nba_rebounds",
+                        direction=Direction.LESS,
+                        platform="kalshi",
+                        sport="NBA",
+                        player="Player A",
+                        event_start=start,
+                        captured_at=captured,
+                        lower=0.69,
+                    ),
+                ],
+                captured_at=captured,
+                payout_multiplier=2.2,
+            )
+
+    def test_flex_expected_value_includes_partial_wins(self):
+        captured = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+        start = captured + timedelta(hours=6)
+        markets = [
+            "passes_attempted",
+            "goalie_saves",
+            "shots",
+            "shots_on_target",
+            "fantasy_score",
+            "passes_attempted",
+        ]
+        legs = [
+            _leg(
+                leg_id=f"l{i}",
+                event_id="m1" if i < 3 else "m2",
+                market=markets[i],
+                direction=Direction.MORE if i % 2 == 0 else Direction.LESS,
+                sport="SOCCER",
+                event_start=start,
+                captured_at=captured,
+                lower=0.50,
+                prob=0.50,
+            )
+            for i in range(6)
+        ]
+        snap = build_paper_slip(
+            ArchetypeId.SOCCER_POSSESSION_STACK_FLEX, legs, captured_at=captured
+        )
+        # Jackpot-only EV would be 0.5**6 * 25 - 1 = -0.609375.
+        # Partial Flex payouts raise EV above that floor.
+        assert snap.expected_value_roi > (0.5**6) * 25.0 - 1.0
+        assert snap.expected_value_roi == pytest.approx(-0.328125)
+
+    def test_grader_defaults_to_snapshot_stake_units(self):
+        snap = TestGraderAndStore()._nba_niche_snap()
+        object.__setattr__(snap, "stake_units", 0.5)
+        grade = grade_slip(snap, {leg.leg_id: leg.line - 1 for leg in snap.legs})
+        # 6-pick all-win power: (37.5 - 1) * 0.5 = 18.25
+        assert grade.hold_to_settlement_net_units == pytest.approx(18.25)
+        assert grade.realized_net_units == pytest.approx(18.25)
 
 
 class TestPropLaneAndIntelligenceCompat:

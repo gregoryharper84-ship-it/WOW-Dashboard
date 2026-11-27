@@ -1,14 +1,25 @@
 -- WOW unified paper-trade slip ledger (PrizePicks + Kalshi).
 -- Hard lock: can_execute must remain false on every row. No live execution.
--- Supersedes the PrizePicks-only 20261125 schema for research ledger tables.
+-- Evolves the PrizePicks-only 20261125 schema without destroying existing rows:
+-- legacy tables are renamed, new tables created, then rows are backfilled.
 -- Apply only after protected review; service-role writes, no anon/authenticated mutation.
 
 drop view if exists public.wow_archetype_performance;
 
-drop table if exists public.wow_slip_grades;
-drop table if exists public.wow_slip_snapshots;
+-- Preserve any already-recorded research ledger rows.
+do $$
+begin
+  if to_regclass('public.wow_slip_grades') is not null
+     and to_regclass('public.wow_slip_grades_pre_20261126') is null then
+    execute 'alter table public.wow_slip_grades rename to wow_slip_grades_pre_20261126';
+  end if;
+  if to_regclass('public.wow_slip_snapshots') is not null
+     and to_regclass('public.wow_slip_snapshots_pre_20261126') is null then
+    execute 'alter table public.wow_slip_snapshots rename to wow_slip_snapshots_pre_20261126';
+  end if;
+end $$;
 
-create table public.wow_slip_snapshots (
+create table if not exists public.wow_slip_snapshots (
   slip_id uuid primary key,
   created_at timestamptz not null default now(),
   platform text not null check (platform in ('prizepicks', 'kalshi')),
@@ -49,7 +60,7 @@ create table public.wow_slip_snapshots (
   constraint wow_slip_snapshots_legs_is_array check (jsonb_typeof(legs_json) = 'array')
 );
 
-create table public.wow_slip_grades (
+create table if not exists public.wow_slip_grades (
   slip_id uuid primary key
     references public.wow_slip_snapshots (slip_id) on delete cascade,
   graded_at timestamptz not null default now(),
@@ -68,6 +79,106 @@ create table public.wow_slip_grades (
   constraint wow_slip_grades_legs_is_array check (jsonb_typeof(graded_legs_json) = 'array')
 );
 
+-- Backfill preserved 20261125 research rows into the unified schema.
+do $$
+begin
+  if to_regclass('public.wow_slip_snapshots_pre_20261126') is not null then
+    insert into public.wow_slip_snapshots (
+      slip_id,
+      created_at,
+      platform,
+      archetype,
+      slip_type,
+      payout_multiplier,
+      recommended_unit_scale,
+      joint_calibrated_prob,
+      expected_value_roi,
+      min_leg_lower_bound,
+      unprotected_leg_count,
+      signal_sources,
+      can_execute,
+      legs_json
+    )
+    select
+      s.slip_id,
+      coalesce(s.built_at, timezone('utc', now())),
+      'prizepicks',
+      s.archetype,
+      s.product,
+      s.multiplier,
+      1.00,
+      0.00000,
+      0.0000,
+      0.0000,
+      0,
+      '{}'::text[],
+      false,
+      s.legs_json
+    from public.wow_slip_snapshots_pre_20261126 as s
+    where s.can_execute = false
+      and s.product in (
+        '2_pick_power',
+        '3_pick_power',
+        '4_pick_power',
+        '5_pick_power',
+        '6_pick_power',
+        '6_pick_flex'
+      )
+      and s.archetype in (
+        'nba_niche_under_early',
+        'nba_4_pack_fade',
+        'nba_half_pace_fade',
+        'nba_micro_volume_over',
+        'nfl_1q_kicker_combo',
+        'nfl_niche_fade',
+        'core_2p_value_power',
+        'soccer_possession_core_2p',
+        'soccer_possession_stack_flex',
+        'cs2_kills_under_power'
+      )
+    on conflict (slip_id) do nothing;
+  end if;
+
+  if to_regclass('public.wow_slip_grades_pre_20261126') is not null then
+    insert into public.wow_slip_grades (
+      slip_id,
+      graded_at,
+      platform,
+      archetype,
+      legs_won,
+      legs_lost,
+      legs_pushed,
+      effective_multiplier,
+      realized_net_units,
+      hold_to_settlement_net_units,
+      exit_alpha_units,
+      exit_action,
+      fragile_win_count,
+      graded_legs_json
+    )
+    select
+      g.slip_id,
+      coalesce(g.graded_at, timezone('utc', now())),
+      'prizepicks',
+      g.archetype,
+      g.wins,
+      g.losses,
+      g.pushes,
+      g.effective_multiplier,
+      g.net_units,
+      g.net_units,
+      0.0000,
+      null,
+      coalesce(g.fragile_win_count, 0),
+      g.graded_legs_json
+    from public.wow_slip_grades_pre_20261126 as g
+    join public.wow_slip_snapshots as s
+      on s.slip_id = g.slip_id
+    where g.can_execute = false
+    on conflict (slip_id) do nothing;
+  end if;
+end $$;
+
 alter table public.wow_slip_snapshots enable row level security;
 alter table public.wow_slip_grades enable row level security;
 
@@ -81,6 +192,21 @@ revoke update, delete, truncate, references, trigger
 
 grant select, insert on table public.wow_slip_snapshots to service_role;
 grant select, insert on table public.wow_slip_grades to service_role;
+
+-- Legacy preserved tables stay readable for audit/rollback; no client mutation.
+do $$
+begin
+  if to_regclass('public.wow_slip_snapshots_pre_20261126') is not null then
+    execute 'alter table public.wow_slip_snapshots_pre_20261126 enable row level security';
+    execute 'revoke all on table public.wow_slip_snapshots_pre_20261126 from public, anon, authenticated';
+    execute 'grant select on table public.wow_slip_snapshots_pre_20261126 to service_role';
+  end if;
+  if to_regclass('public.wow_slip_grades_pre_20261126') is not null then
+    execute 'alter table public.wow_slip_grades_pre_20261126 enable row level security';
+    execute 'revoke all on table public.wow_slip_grades_pre_20261126 from public, anon, authenticated';
+    execute 'grant select on table public.wow_slip_grades_pre_20261126 to service_role';
+  end if;
+end $$;
 
 create or replace view public.wow_archetype_performance
 with (security_invoker = true, security_barrier = true)
@@ -123,7 +249,7 @@ select
       ) > 0.56
     )
     when s.platform = 'kalshi' then (
-      count(s.slip_id) >= 25
+      count(g.slip_id) >= 25
       and coalesce(
         100.0 * sum(g.realized_net_units)::numeric / nullif(count(g.slip_id), 0)::numeric,
         0
