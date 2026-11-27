@@ -450,6 +450,13 @@ def run_slip_lane(
             continue
         stored += 1
 
+    if stored == 0 and store_failures:
+        # A governed ledger that rejects every write (for example an unapplied
+        # migration) is a stage blocker, not a quiet zero-snapshot cycle.
+        raise RuntimeError(
+            f"slip persistence failed for {store_failures} snapshot(s)"
+        )
+
     grading = grade_pending_slips(db, store, limit=grade_limit)
 
     holds: dict[str, int] = {}

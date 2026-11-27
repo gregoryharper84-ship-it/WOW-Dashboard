@@ -250,6 +250,31 @@ def test_partial_official_outcomes_leave_the_slip_pending_instead_of_pushing():
     assert db.tables["wow_slip_grades"] == []
 
 
+def test_rejected_ledger_write_fails_the_stage_instead_of_reporting_zero_snapshots():
+    db = _full_slate()
+
+    class _BrokenInsertQuery(_Query):
+        def execute(self):
+            if self._insert is not None:
+                raise RuntimeError("relation wow_slip_snapshots does not exist")
+            return super().execute()
+
+    class _BrokenDb(_Db):
+        def table(self, name):
+            if name == "wow_slip_snapshots":
+                return _BrokenInsertQuery(self, name)
+            return super().table(name)
+
+    broken = _BrokenDb(db.tables)
+    result = run_priority_durable_audit(PriorityPropDurableAuditRequest(routes=[ROUTE]), db=broken, now=NOW)
+    stage = result["paper_trade_slip_lane"]
+    assert stage["status"] == "FAILED"
+    assert stage["error_type"] == "RuntimeError"
+    assert "PAPER_TRADE_SLIP_LANE" in result["failed_stages"]
+    assert result["run_status"] == "COMPLETED_WITH_STAGE_BLOCKERS"
+    assert result["can_execute"] is False
+
+
 def test_service_role_only_store_writes_no_local_file_and_fails_closed_without_a_client(tmp_path):
     db = _Db()
     store = SlipLedgerStore(data_dir=tmp_path / "slips", supabase_client=db, append_jsonl=False)
