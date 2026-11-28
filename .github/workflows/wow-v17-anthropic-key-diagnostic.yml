@@ -1,10 +1,16 @@
 name: wow-v17-anthropic-key-diagnostic
 
-# Manual, status-only check of the ANTHROPIC_API_KEY secret (#1021).
-# Prints only key format, whitespace warning, HTTP status and error.type per
-# model. Never prints the key or any response body. Safe for a public repo.
+# Manual diagnostic of the ANTHROPIC_API_KEY secret (#1021).
+# Logs only status, redacted error.message and validated request IDs.
+# Never logs credentials, successful response content or whole response bodies.
 on:
   workflow_dispatch:
+    inputs:
+      workspace_id:
+        description: Anthropic workspace to use for both diagnostic requests
+        type: string
+        required: true
+        default: wrkspc_01L3gWim3FDtWzGUXWeDamtm
 
 permissions: {}
 
@@ -17,28 +23,114 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check ANTHROPIC_API_KEY (status only)
+      - name: Check ANTHROPIC_API_KEY (redacted errors)
         shell: bash
         env:
           K: ${{ secrets.ANTHROPIC_API_KEY }}
+          WORKSPACE_ID: ${{ inputs.workspace_id }}
         run: |
-          set -uo pipefail
-          note() { echo "$1"; echo "::notice title=anthropic-key-diagnostic::$1"; }
-          if [ -z "${K:-}" ]; then note "secret: EMPTY or not available to this run"; exit 1; fi
-          case "$K" in
-            sk-ant-api03-*) note "format: sk-ant-api03" ;;
-            sk-ant-usr-*)   note "format: sk-ant-usr" ;;
-            *)              note "format: unrecognized" ;;
-          esac
-          if [ "$K" != "$(printf '%s' "$K" | tr -d '[:space:]')" ]; then
-            note "WARNING: key contains whitespace/newline"
-          fi
-          resp="$RUNNER_TEMP/anthropic-diag.json"
-          for M in claude-opus-5-5 claude-sonnet-5-5; do
-            CODE=$(curl -s -o "$resp" -w "%{http_code}" https://api.anthropic.com/v1/messages \
-              -H "x-api-key: $K" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
-              -d "{\"model\":\"$M\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
-            TYPE=$(jq -r '.error.type // "none"' "$resp" 2>/dev/null || echo "unparseable")
-            note "$M -> HTTP $CODE, error.type=$TYPE"
-            rm -f "$resp"
-          done
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+
+          KEY = os.environ.get("K", "")
+          WORKSPACE_ID = os.environ.get("WORKSPACE_ID", "")
+          MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
+          ERROR_TYPES = {
+              "invalid_request_error", "authentication_error", "billing_error",
+              "permission_error", "not_found_error", "rate_limit_error",
+              "api_error", "overloaded_error", "timeout_error",
+          }
+
+
+          def redact(value):
+              # Redact before truncation, including a whitespace-normalized credential.
+              text = str(value)
+              for secret in sorted({KEY, KEY.strip(), "".join(KEY.split())}, key=len, reverse=True):
+                  if secret:
+                      text = text.replace(secret, "[REDACTED]")
+              text = re.sub(r"sk-ant-(?:api03|usr)-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{16,}", "[REDACTED]", text)
+              text = re.sub(r"(?i)(bearer\s+|x-api-key\s*[:=]\s*)\S+", r"\1[REDACTED]", text)
+              # Keep output on one line; never allow response text to inject log commands.
+              text = "".join(c if c.isprintable() else " " for c in text)
+              return text[:600]
+
+
+          def note(value):
+              text = redact(value)
+              print(text)
+              escaped = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print("::notice title=anthropic-key-diagnostic::" + escaped)
+
+
+          def main():
+              if not KEY:
+                  note("secret: EMPTY or not available to this run")
+                  return 1
+              prefix = next((p for p in ("sk-ant-api03", "sk-ant-usr") if KEY.startswith(p + "-")), "unrecognized")
+              note("format: " + prefix)
+              if any(c.isspace() for c in KEY):
+                  note("ERROR: key contains whitespace/newline; requests skipped")
+                  return 1
+              if not re.fullmatch(r"wrkspc_[A-Za-z0-9]+", WORKSPACE_ID):
+                  note("ERROR: workspace_id must be a wrkspc_ ID; requests skipped")
+                  return 1
+
+              failed = False
+              for model in MODELS:
+                  request = urllib.request.Request(
+                      "https://api.anthropic.com/v1/messages",
+                      data=json.dumps({"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                      headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-workspace-id": WORKSPACE_ID},
+                      method="POST",
+                  )
+                  try:
+                      try:
+                          response = urllib.request.urlopen(request, timeout=30)
+                      except urllib.error.HTTPError as error:
+                          response = error
+                      with response:
+                          status = response.code
+                          # A successful response may contain generated text: never read or log it.
+                          raw = response.read(65537) if status != 200 else b""
+                  except Exception:
+                      # Transport exception strings may contain headers or credentials.
+                      note(model + " -> transport error (details suppressed)")
+                      failed = True
+                      continue
+
+                  if status == 200:
+                      note(model + " -> HTTP 200, error.type=none")
+                      continue
+
+                  failed = True
+                  try:
+                      if len(raw) > 65536:
+                          raise ValueError("oversized response")
+                      body = json.loads(raw)
+                      error = body.get("error")
+                      if not isinstance(error, dict) or not isinstance(error.get("message"), str):
+                          raise ValueError("unexpected error shape")
+                  except (ValueError, AttributeError, TypeError):
+                      note(f"{model} -> HTTP {status}, error.type=unparseable; response body suppressed")
+                      continue
+
+                  error_type = error.get("type")
+                  if not isinstance(error_type, str) or error_type not in ERROR_TYPES:
+                      error_type = "unknown"
+                  note(f"{model} -> HTTP {status}, error.type={error_type}")
+                  note(model + " error.message=" + error["message"])
+                  request_id = body.get("request_id")
+                  if isinstance(request_id, str) and re.fullmatch(r"req_[A-Za-z0-9_-]{1,100}", request_id):
+                      note(model + " request_id=" + request_id)
+              return int(failed)
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PY
