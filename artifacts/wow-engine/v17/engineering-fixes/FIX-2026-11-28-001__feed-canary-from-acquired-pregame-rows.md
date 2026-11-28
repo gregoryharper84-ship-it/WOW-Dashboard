@@ -4,6 +4,11 @@
 - linked_postmortem: PM-2026-11-28-001
 - implementation_owner: ENGINEERING_AGENT
 - risk: R1
+- pull_request: 2904
+- merge_commit: d1458c3173587cf6bac77e13819a5c3491c80a95
+- review_status: PASS
+- qa_status: PASS
+- release_status: NOT_APPLICABLE
 - created_utc: 2026-11-28T03:40:23Z
 - updated_utc: 2026-11-28T04:14:00Z
 - runtime_generation: V17_ACTIVE
@@ -77,7 +82,9 @@ change. No Render deployment is produced by this fix.
 
 Fresh dispatched run 46106105938 on merge commit `d1458c317` completed success
 with the live canary and stress steps executed (NFL-only coverage; MLB/WNBA out
-of season). No new P0/P1 issue appeared.
+of season). No new P0/P1 issue appeared. Push run 46106101546 also succeeded.
+Release status is `NOT_APPLICABLE`: no runtime deployment exists for this
+CI-only repair, so no `PRODUCTION_VERIFIED` claim is made.
 
 ## Rollback
 
