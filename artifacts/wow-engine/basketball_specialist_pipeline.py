@@ -32,6 +32,7 @@ from basketball_team_event_specialist import (
     _sigmoid,
 )
 from calibration import phase_b_platt
+from basketball_certification_write import verify_certification_write
 
 can_execute: bool = False
 
@@ -293,6 +294,15 @@ def fit_and_persist(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }, on_conflict="sport").execute()
 
+    # A PostgREST write can return without the row changing.  Re-read it before
+    # reporting success so a silent no-op cannot look like persisted evidence.
+    verify_certification_write(
+        client,
+        sport=sport,
+        model_artifact_version=model_version,
+        calibrator_version=calibrator_version,
+    )
+
     return {
         "sport": sport, "corpus_rows": len(games), "feature_rows": len(features),
         "model_artifact_version": model_version, "calibrator_version": calibrator_version,
@@ -304,6 +314,7 @@ def fit_and_persist(
         "calibration_holdout_overlap_rows": 0,
         "untouched_holdout_evidence": holdout_evidence,
         "persisted_status": persisted_status,
+        "certification_write_verified": True,
         "provenance_complete": bool(provenance_complete),
         "promotion_attempted": False,
         "can_execute": False,

@@ -150,7 +150,18 @@ jobs:
           if payload.get("status") == "BLOCKED" or blocked_rows:
               raise RuntimeError("BASKETBALL_MAINTENANCE_BLOCKED:" + json.dumps({
                   "status": payload.get("status"),
-                  "blocked_rows": [{"sport": row.get("sport"), "code": row.get("code")} for row in blocked_rows],
+                  "blocked_rows": [
+                      {
+                          "sport": row.get("sport"),
+                          "code": row.get("code"),
+                          "error_type": row.get("error_type"),
+                          "error_code": (row.get("error_details") or {}).get("code"),
+                          "error_message": (row.get("error_details") or {}).get("message"),
+                          "error_details": (row.get("error_details") or {}).get("details"),
+                          "error_hint": (row.get("error_details") or {}).get("hint"),
+                      }
+                      for row in blocked_rows
+                  ],
               }, sort_keys=True))
           basketball = payload
 
