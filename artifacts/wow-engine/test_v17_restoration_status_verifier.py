@@ -111,6 +111,42 @@ def sql_body(path: pathlib.Path) -> str:
     return "\n".join(line.split("--", 1)[0] for line in path.read_text(encoding="utf-8").splitlines())
 
 
+QUERY_MARKERS = {
+    "NFL": "wow_nfl_forward_calibration_health",
+    "NBA": "wow_basketball_team_event_certification",
+    "NCAAF": "wow_ncaaf_fitted_model_artifacts",
+}
+
+
+def sql_statements() -> list[str]:
+    return [part.strip() for part in sql_body(SQL_PATH).split(";") if part.strip()]
+
+
+def query_for(sport: str) -> str:
+    """Select a verdict query by the relation it reads, never by position."""
+    marker = QUERY_MARKERS[sport]
+    matches = [statement for statement in sql_statements() if marker in statement.lower()]
+    if len(matches) != 1:
+        raise AssertionError(f"expected exactly one query touching {marker}, found {len(matches)}")
+    return matches[0]
+
+
+def verdict_expression(statement: str) -> str:
+    """The parenthesised predicate a query assigns to ``model_certified``."""
+    marker = re.search(r"\bas\s+model_certified\b", statement, re.IGNORECASE)
+    if marker is None:
+        raise AssertionError("statement does not assign model_certified")
+    body = statement[: marker.start()].rstrip()
+    if not body.endswith(")"):
+        raise AssertionError("model_certified must be assigned a parenthesised predicate")
+    depth = 0
+    for i in range(len(body) - 1, -1, -1):
+        depth += {")": 1, "(": -1}.get(body[i], 0)
+        if depth == 0:
+            return body[i + 1 :].strip()
+    raise AssertionError("unbalanced predicate")
+
+
 class TestProvenanceGuard(unittest.TestCase):
     def test_fixture_sha_can_never_restore_a_sport(self):
         """The original defect: caller-supplied 'c0ffee1' established success."""
@@ -271,6 +307,62 @@ class TestModuleInvariants(unittest.TestCase):
         self.assertTrue(floors, "no minimum_forward_required floor in verdict SQL")
         for floor in floors:
             self.assertEqual(int(floor), governed)
+
+
+class TestModelVerdictSqlInvariants(unittest.TestCase):
+    """Locks the invariants that keep an omitted check from passing as a verdict.
+
+    Both defects found in this file were silent: a filter on a column pinned
+    false (the query could never return a row) and a skipped calibrator gate
+    (absence of evidence looked like a recorded failure).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.nfl = query_for("NFL")
+
+    def test_one_query_per_governed_sport(self):
+        statements = sql_statements()
+        self.assertEqual(len(statements), 3)
+        for sport, marker in QUERY_MARKERS.items():
+            with self.subTest(sport=sport):
+                self.assertEqual(sum(marker in statement.lower() for statement in statements), 1)
+
+    def test_nfl_verdict_reads_the_capability_row(self):
+        lowered = self.nfl.lower()
+        self.assertIn("wow_runtime_capabilities", lowered)
+        self.assertRegex(lowered, r"capability_key\s*=\s*'nfl_event_probability'")
+        # Joined, not merely declared: cap.* with no FROM entry is an invalid
+        # query that a text-only check would happily approve.
+        self.assertRegex(lowered, r"\bjoin\s+capability\s+cap\b")
+        predicate = verdict_expression(self.nfl).lower()
+        self.assertRegex(predicate, r"capability_status\s*=\s*'available'")
+        self.assertIn("calibrator_ready", predicate)
+
+    def test_nfl_verdict_never_filters_the_dead_publishable_column(self):
+        """wow_nfl_event_fitted_registry_not_probability_publication pins it false."""
+        self.assertNotIn("probability_publishable", self.nfl.lower())
+
+    def test_nfl_verdict_avoids_unprovable_calibrator_columns(self):
+        """No DDL in this repo defines them; reading them risks SQLSTATE 42703."""
+        lowered = self.nfl.lower()
+        self.assertNotIn("wow_calibrators", lowered)
+        for column in ("market_family", "validation_status", "health_status"):
+            self.assertNotIn(column, lowered)
+
+    def test_nfl_verdict_requires_calibrator_evidence_presence(self):
+        self.assertRegex(self.nfl.lower(), r"evidence\s*->>\s*'calibrator_ready'\s+is\s+not\s+null")
+
+    def test_no_query_defaults_absence_to_false(self):
+        """A LEFT JOIN, a stub, or a coalesced predicate turns missing evidence into false."""
+        for sport in QUERY_MARKERS:
+            statement = query_for(sport)
+            with self.subTest(sport=sport):
+                self.assertNotRegex(statement.lower(), r"\bleft\s+(?:outer\s+)?join\b")
+                predicate = verdict_expression(statement)
+                self.assertRegex(predicate, r"\w+\.\w+")  # a real column, not a literal
+                self.assertNotIn("coalesce", predicate.lower())
+                self.assertNotRegex(predicate.lower(), r"\b(?:true|false)\b")
 
 
 if __name__ == "__main__":
