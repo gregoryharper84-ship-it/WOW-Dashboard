@@ -50,3 +50,24 @@ def test_runtime_overrides_are_installed():
     assert runtime._cohort_counts is _cohort_counts
     assert runtime._reconcile_capability.__module__ == "v17.prop_forward_cohort_thesis_dedupe"
     assert runtime._eligible_snapshots.__module__ == "v17.prop_forward_cohort_thesis_dedupe"
+
+
+def test_same_thesis_written_as_integer_and_decimal_line_collapses_to_one_key():
+    """A line carried as 5 and as "5.0" is one thesis, not two observations."""
+    integer_line = {"event_id": "MLB:1", "player": "Cam Schlittler", "stat_type": "PITCHER_STRIKEOUTS", "line": 5}
+    decimal_line = {"event_id": "MLB:1", "player": "Cam Schlittler", "stat_type": "PITCHER_STRIKEOUTS", "line": "5.0"}
+    assert thesis_key(integer_line) == thesis_key(decimal_line)
+    assert _cohort_counts(
+        [
+            {"prediction_id": "a", "direction": "MORE", **integer_line},
+            {"prediction_id": "b", "direction": "MORE", **decimal_line},
+        ],
+        {"a", "b"},
+    ) == (1, 1)
+
+
+def test_nearby_lines_are_not_collapsed_by_line_normalisation():
+    """Normalisation must not merge genuinely different lines."""
+    base = {"event_id": "MLB:1", "player": "Cam Schlittler", "stat_type": "PITCHER_STRIKEOUTS"}
+    assert thesis_key({**base, "line": 5.5}) != thesis_key({**base, "line": 5.0})
+    assert thesis_key({**base, "line": "5.50"}) != thesis_key({**base, "line": "6.5"})
