@@ -1,6 +1,6 @@
 # FIX-2026-11-28-001 — Feed the multi-sport live canary from acquired pregame rows
 
-- status: MERGED_PENDING_DEPLOY
+- status: VERIFIED_CLOSED
 - linked_postmortem: PM-2026-11-28-001
 - implementation_owner: ENGINEERING_AGENT
 - risk: R1
@@ -10,7 +10,8 @@
 - qa_status: PASS
 - release_status: NOT_APPLICABLE
 - created_utc: 2026-11-28T03:40:23Z
-- updated_utc: 2026-11-28T04:14:00Z
+- updated_utc: 2026-11-28T04:40:27Z
+- closed_utc: 2026-11-28T04:40:27Z
 - runtime_generation: V17_ACTIVE
 - terminal_authority: V17_TERMINAL_REDUCER
 - can_execute: false
