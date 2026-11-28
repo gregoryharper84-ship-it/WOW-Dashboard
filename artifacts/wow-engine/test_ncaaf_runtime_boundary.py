@@ -1,5 +1,6 @@
 # Protected-check refresh: non-behavioral test-file touch after branch-governance update.
 import asyncio
+import json
 import logging
 from pathlib import Path
 import time
@@ -346,6 +347,80 @@ def test_spread_warm_persistent_statement_timeout_still_fails_closed(monkeypatch
     assert state["max_attempts"] == 3
     assert state["probability_publishable"] is False
     assert state["can_execute"] is False
+
+
+def test_spread_warm_retry_state_exposes_sanitized_error_attribution(monkeypatch):
+    """A retrying warm must name its cause so a canary can attribute the retry."""
+    observed = []
+    attempts = []
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+
+    async def fake_sleep(_seconds):
+        observed.append(api.get_ncaaf_spread_forward_warm_status())
+
+    class APIError(Exception):
+        code = "57014"
+
+    def fake_warm(_client):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise APIError(
+                "canceling statement due to statement timeout postgresql://user:secret@db.internal/wow"
+            )
+        return {
+            "status": "READY",
+            "code": "SPREAD_FORWARD_CONTEXT_READY",
+            "cache_status": "MISS_REBUILT",
+            "cache_age_seconds": 0.0,
+            "training_cutoff_event_time": "2026-09-30T00:00:00+00:00",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", fake_warm)
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    assert attempts == [1, 2]
+    assert len(observed) == 1
+    retry_state = observed[0]
+    assert retry_state["status"] == "RETRYING"
+    assert retry_state["code"] == "SPREAD_FORWARD_CONTEXT_WARM_RETRYING"
+    assert retry_state["error_type"] == "APIError"
+    assert retry_state["error_code"] == "57014"
+    assert retry_state["transient"] is True
+    assert retry_state["attempt"] == 2
+    assert retry_state["max_attempts"] == 3
+    assert retry_state["can_execute"] is False
+    rendered = json.dumps(retry_state)
+    assert "postgresql" not in rendered
+    assert "secret" not in rendered
+
+
+def test_spread_warm_error_attribution_never_publishes_a_message(monkeypatch):
+    """An unusable code shape falls back to the exception type, never the message."""
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+
+    class APIError(Exception):
+        code = "57014 postgresql://user:secret@db.internal/wow"
+
+    def fake_warm(_client):
+        raise APIError("boom postgresql://user:secret@db.internal/wow")
+
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", fake_warm)
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    state = api.get_ncaaf_spread_forward_warm_status()
+    assert state["status"] == "FAILED"
+    assert state["error_type"] == "APIError"
+    assert state["error_code"] == "APIError"
+    assert state["transient"] is False
+    rendered = json.dumps(state)
+    assert "postgresql" not in rendered
+    assert "secret" not in rendered
 
 
 def test_spread_warm_status_read_is_process_local_and_db_free(monkeypatch):
