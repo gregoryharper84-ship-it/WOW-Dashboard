@@ -434,7 +434,7 @@
           "verification_run": 46106105938,
           "push_run": 46106101546,
           "rollback": "Revert merge commit d1458c3173587cf6bac77e13819a5c3491c80a95.",
-          "release_note": "PR #2904 merged 2026-11-28T04:07:59Z; dispatched run 46106105938 and merge-triggered push run 46106101546 both completed success. No runtime deployment is involved; Reporter/governance closure remains open.",
+          "release_note": "PR #2904 merged 2026-11-28T04:07:59Z; dispatched run 46106105938 and merge-triggered push run 46106101546 both completed success. No runtime deployment is involved; release NOT_APPLICABLE and Reporter closure FIXED_VERIFIED recorded 2026-11-28T04:40:27Z.",
           "review_status": "PASS",
           "qa_status": "PASS",
           "release_status": "NOT_APPLICABLE"
