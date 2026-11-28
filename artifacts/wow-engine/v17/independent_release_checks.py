@@ -259,12 +259,24 @@ def gather(
     # must not disguise an incomplete paginated file inventory.
     ev["files"] = []
     ev["source_review_paths"] = []
+    # Per-file change shape for the trust-root negative-test requirement below.
+    # Only GitHub-supplied values are kept; anything malformed becomes None and
+    # is treated as unusable evidence rather than as a satisfied requirement.
+    ev["file_changes"] = []
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
             errors.append("FILES_PATH_INVALID")
             continue
         ev["files"].append(entry["filename"])
         ev["source_review_paths"].append(entry["filename"])
+        additions = entry.get("additions")
+        deletions = entry.get("deletions")
+        ev["file_changes"].append({
+            "filename": entry["filename"],
+            "status": entry.get("status") if isinstance(entry.get("status"), str) else None,
+            "additions": additions if isinstance(additions, int) and not isinstance(additions, bool) else None,
+            "deletions": deletions if isinstance(deletions, int) and not isinstance(deletions, bool) else None,
+        })
         if entry.get("status") == "renamed" or "previous_filename" in entry:
             origin = entry.get("previous_filename")
             if isinstance(origin, str) and origin:
@@ -636,6 +648,58 @@ def _owner_approved_at_head(ev: dict, head: str) -> bool:
     return last.get("state") == "APPROVED" and last.get("commit_id") == head
 
 
+# A trust-root change must carry a deterministic negative test: a changed test
+# file that adds at least one line. Path plus diff shape is the strongest
+# property GitHub exposes without executing the suite here, so it is exactly
+# what this gate can prove. It never claims a semantic judgement.
+#
+# The FILE NAME must follow the test convention. Being inside a test directory
+# is not enough: conftest.py, helpers.py, fixtures.py and similar support files
+# contain no test cases, so they can never satisfy this requirement.
+TEST_FILE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def is_test_path(path: str) -> bool:
+    """Test-file convention used for the trust-root negative-test requirement."""
+    if not isinstance(path, str) or not path:
+        return False
+    name = path.lower().rsplit("/", 1)[-1]
+    if not name.endswith(TEST_FILE_SUFFIXES):
+        return False
+    if name.startswith(("test_", "test-", "spec_")):
+        return True
+    return "_test." in name or ".test." in name or ".spec." in name
+
+
+def negative_test_findings(ev: dict, *, trust_root_change: bool) -> list[str]:
+    """A trust-root change needs a changed test file that adds at least one line.
+
+    Fail-closed by construction: absent, malformed, zero-addition or deleted
+    test changes are typed, never read as a satisfied requirement.
+    """
+    if not trust_root_change:
+        return []
+    changes = ev.get("file_changes")
+    if not isinstance(changes, list):
+        return ["QA_TRUST_ROOT_NEGATIVE_TEST_INVALID"]
+    tests = [
+        change for change in changes
+        if isinstance(change, dict) and is_test_path(str(change.get("filename") or ""))
+    ]
+    if not tests:
+        return ["QA_TRUST_ROOT_NEGATIVE_TEST_MISSING"]
+    for change in tests:
+        additions = change.get("additions")
+        if (
+            isinstance(additions, int)
+            and not isinstance(additions, bool)
+            and additions > 0
+            and change.get("status") != "removed"
+        ):
+            return []
+    return ["QA_TRUST_ROOT_NEGATIVE_TEST_INVALID"]
+
+
 def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> list[str]:
     findings = [f"QA_EVIDENCE_INCOMPLETE:{e}" for e in ev.get("evidence_errors") or []]
     if governance_files is None:
@@ -762,6 +826,9 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         # APPROVED review, preserving an attributable human authorization.
         if pr.get("author") != ev.get("owner_login") and not _owner_approved_at_head(ev, head):
             findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
+        # Independent of who authorized it, a trust-root change must be
+        # accompanied by an executable negative test that adds a line.
+        findings += negative_test_findings(ev, trust_root_change=True)
     return sorted(set(findings))
 
 

@@ -12,7 +12,8 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 ROOTS = frozenset({"src/trust-root.py"})
 
 
-def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="src/code.py"):
+def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="src/code.py", test_path=None):
+    files = [path] + ([test_path] if test_path else [])
     checks = [
         {"id": i, "name": name, "head_sha": SHA, "app_id": policy.GITHUB_ACTIONS_APP_ID,
          "status": "completed", "conclusion": "success"}
@@ -23,7 +24,9 @@ def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="src/code.py
         "evidence_errors": [], "owner_login": "gregoryharper84-ship-it",
         "pr": {"head_sha": SHA, "body": "Incident: #2136", "head_ref": "fix/nfl", "head_repo": REPO, "base_ref": "main",
                "state": "open", "merged": False, "draft": False, "author": author},
-        "files": [path], "reviews": [], "source_review": None,
+        "files": files, "reviews": [], "source_review": None,
+        "file_changes": [{"filename": name, "status": "modified", "additions": 3, "deletions": 0}
+                         for name in files],
         "independent_review_active": False, "current_review_active": False,
         "zero_credit_enabled": enabled,
         "qa_review_policy": {
@@ -86,8 +89,11 @@ def test_free_mode_rejects_stale_head():
     assert "QA_HEAD_STALE" in qa(ev)
 
 
-def test_free_mode_owner_authored_trust_root_can_pass_deterministic_qa():
+def test_free_mode_owner_authored_trust_root_still_needs_a_negative_test():
     ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py")
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" in qa(ev)
+    ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py",
+                  test_path="src/test_trust_root_negative.py")
     assert qa(ev) == []  # no independent-review claim; exact-head regressions remain mandatory
     ev["check_runs"].pop()
     assert any(x.startswith("QA_EVIDENCE_MISSING:") for x in qa(ev))
