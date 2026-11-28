@@ -468,23 +468,40 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "REPORTER_CLOSURE":
         raise ValueError("verified closure requires REPORTER_CLOSURE stage")
-    closed_utc = _utc_now()
+    receipt = row.get("reporter_closure") or {}
+    already_closed = row.get("state") == "VERIFIED_CLOSED" or receipt.get("status") == "FIXED_VERIFIED"
+    if already_closed:
+        if (
+            row.get("state") != "VERIFIED_CLOSED"
+            or receipt.get("status") != "FIXED_VERIFIED"
+            or not receipt.get("closed_utc")
+        ):
+            raise ValueError(
+                "verified closure is already recorded but inconsistent; "
+                "refusing to overwrite the closure receipt"
+            )
+        closed_utc = receipt["closed_utc"]
+    else:
+        closed_utc = _utc_now()
+    notes_changed = False
     for fix_id in row.get("engineering_fix_ids", []):
         fix = (row.get("engineering_fixes") or {}).get(fix_id)
         if fix and release_note_claims_open_closure(fix.get("release_note")):
             fix["release_note"] = resolve_closure_release_note(fix["release_note"], closed_utc)
-    row["reporter_closure"] = {
-        "status": "FIXED_VERIFIED",
-        "evidence": evidence,
-        "closed_utc": closed_utc,
-    }
-    if preventive_control:
-        row.setdefault("learning", {})["preventive_control"] = preventive_control
-    row["state"] = "VERIFIED_CLOSED"
-    latest_fix = _latest_fix_id(row)
-    if latest_fix:
-        row["engineering_fixes"][latest_fix]["state"] = "VERIFIED_CLOSED"
-        row["engineering_fixes"][latest_fix]["updated_utc"] = closed_utc
+            notes_changed = True
+    if not already_closed:
+        row["reporter_closure"] = {
+            "status": "FIXED_VERIFIED",
+            "evidence": evidence,
+            "closed_utc": closed_utc,
+        }
+        if preventive_control:
+            row.setdefault("learning", {})["preventive_control"] = preventive_control
+        row["state"] = "VERIFIED_CLOSED"
+        latest_fix = _latest_fix_id(row)
+        if latest_fix:
+            row["engineering_fixes"][latest_fix]["state"] = "VERIFIED_CLOSED"
+            row["engineering_fixes"][latest_fix]["updated_utc"] = closed_utc
     for fix_id in row.get("engineering_fix_ids", []):
         fix = (row.get("engineering_fixes") or {}).get(fix_id) or {}
         if release_note_claims_open_closure(fix.get("release_note")):
@@ -494,6 +511,8 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
     errors = validate_team_record(row, enforce_closure=True)
     if errors:
         raise ValueError("closure blocked: " + "; ".join(errors))
+    if already_closed and not notes_changed:
+        return
     row["updated_utc"] = closed_utc
     _save_ledger(ledger)
 

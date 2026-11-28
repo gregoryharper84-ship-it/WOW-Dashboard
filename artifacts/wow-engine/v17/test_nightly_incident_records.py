@@ -112,3 +112,49 @@ def test_checked_in_records_have_no_open_closure_release_note() -> None:
     pending_note = pending["engineering_fixes"]["FIX-2026-11-10-001"]["release_note"]
     assert pending["state"] == "MERGED_PENDING_DEPLOY"
     assert not records.release_note_claims_open_closure(pending_note)
+
+
+def test_close_verified_is_idempotent_on_already_closed_record(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "incident-ledger.json"
+    path.write_text(records.LEDGER.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(records, "LEDGER", path)
+
+    before_text = path.read_text(encoding="utf-8")
+    before = json.loads(before_text)
+    before_row = next(r for r in before["records"] if r["postmortem_id"] == "PM-2026-11-28-001")
+    closed_utc = before_row["reporter_closure"]["closed_utc"]
+    evidence = before_row["reporter_closure"]["evidence"]
+    note = before_row["engineering_fixes"]["FIX-2026-11-28-001"]["release_note"]
+    assert before_row["state"] == "VERIFIED_CLOSED"
+    assert "FIXED_VERIFIED recorded " + closed_utc in note
+
+    records.close_verified(
+        postmortem_id="PM-2026-11-28-001",
+        evidence="Redundant re-run with different evidence.",
+        preventive_control="This re-run must not change the preventive control.",
+    )
+
+    assert path.read_text(encoding="utf-8") == before_text
+    after = json.loads(path.read_text(encoding="utf-8"))
+    after_row = next(r for r in after["records"] if r["postmortem_id"] == "PM-2026-11-28-001")
+    assert after_row["reporter_closure"]["closed_utc"] == closed_utc
+    assert after_row["reporter_closure"]["evidence"] == evidence
+    assert after_row["engineering_fixes"]["FIX-2026-11-28-001"]["release_note"] == note
+
+
+def test_close_verified_refuses_inconsistent_existing_closure(tmp_path, monkeypatch) -> None:
+    ledger = json.loads(records.LEDGER.read_text(encoding="utf-8"))
+    row = next(r for r in ledger["records"] if r["postmortem_id"] == "PM-2026-11-28-001")
+    del row["reporter_closure"]["closed_utc"]
+    path = tmp_path / "incident-ledger.json"
+    path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(records, "LEDGER", path)
+    before_text = path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="inconsistent"):
+        records.close_verified(
+            postmortem_id="PM-2026-11-28-001",
+            evidence="This re-run must be refused.",
+        )
+
+    assert path.read_text(encoding="utf-8") == before_text
