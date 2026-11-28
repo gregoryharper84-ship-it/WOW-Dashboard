@@ -39,29 +39,47 @@
 -- (or the reverse).
 
 -- ---------------------------------------------------------------------------
--- 1. NFL: the latest forward calibration-health row, cross-checked against the
---    champion model's own prospective cohort.
+-- 1. NFL: the champion exactly as
+--    `public.wow_nfl_event_certified_model_artifact('NFL_EVENT_PREGAME_PRIOR_V1')`
+--    selects it, plus the latest forward calibration-health row cross-checked
+--    against the champion's own prospective cohort.
 --
---    Mirrors `_forward_certification_proven` in v17/nfl_daily_stage_receipts.py:
---    the ledger's graded_n is a global snapshot, so a passing ledger alone must
---    not authorize a champion that lacks its own grades. The cohort CTE recounts
---    distinct official_event_id rows for the exact active+promoted+publishable
---    model version, and `champion_count = 1` refuses an ambiguous champion set.
+--    The champion is read THROUGH the governed RPC, not re-selected from the
+--    table here, so the selection rule (CHAMPION first, then promoted_at, then
+--    created_at) cannot drift from the function the runtime actually calls.
+--
+--    Do NOT add `a.probability_publishable` here. That column exists but is
+--    pinned false by `wow_nfl_event_fitted_registry_not_probability_publication`,
+--    which no later migration drops; filtering on it returns zero rows and the
+--    verdict would read as UNVERIFIED forever. NFL publication authority is the
+--    certified-artifact RPC, not this column.
+--
+--    Omitted deliberately: `wow_v17_refresh_nfl_event_capability()` additionally
+--    requires an active PASS calibrator row. That predicate reads
+--    wow_calibrators.sport / market_family / model_family / validation_status /
+--    health_status, none of which is defined by any create table or alter table
+--    in this repository (schema.sql's calibrator block predates them and is
+--    truncated mid-constraint). Referencing them here would risk SQLSTATE 42703,
+--    so this query does not: a true verdict below is necessary but not
+--    sufficient, and the calibrator half must be read from
+--    `wow_v17_refresh_nfl_event_capability()`.
+--
+--    The ledger's graded_n is a global snapshot, so a passing ledger alone must
+--    not authorize a champion that lacks its own grades: the cohort CTE recounts
+--    distinct official_event_id rows for the exact selected model version.
 -- ---------------------------------------------------------------------------
-with champion as (
-    select a.model_artifact_version
-      from public.wow_nfl_event_fitted_model_artifacts a
-     where a.active
-       and a.promoted
-       and a.probability_publishable
+with artifact as (
+    select public.wow_nfl_event_certified_model_artifact('NFL_EVENT_PREGAME_PRIOR_V1') as state
 ),
-champion_count as (
-    select count(*) as n from champion
+champion as (
+    select a.state ->> 'model_artifact_version' as model_artifact_version,
+           coalesce((a.state ->> 'ok')::boolean, false) as certified
+      from artifact a
 ),
 cohort as (
     select count(distinct g.official_event_id) as graded_n
       from public.wow_nfl_forward_shadow_grades g
-      join champion c on c.model_artifact_version = g.model_version
+      join champion ch on ch.model_artifact_version = g.model_version
 )
 select
     'NFL' as sport,
@@ -78,20 +96,22 @@ select
         and h.graded_n >= h.minimum_forward_required
         and cohort.graded_n >= h.minimum_forward_required
         and h.minimum_forward_required >= 100   -- MIN_FORWARD_GRADED floor
-        and champion_count.n = 1
+        and exists (select 1 from champion where certified)
     ) as model_certified
   from public.wow_nfl_forward_calibration_health h
  cross join cohort
- cross join champion_count
  order by h.generated_at desc
  limit 1;
 
 -- ---------------------------------------------------------------------------
 -- 2. NBA: the certification row, joined to a live artifact.
 --
---    Mirrors `wow_basketball_certified_model_artifact()`: the certification
---    must name the artifact version that is actually active and promoted, and
---    must carry a calibrator version. capability_status alone is not enough.
+--    Mirrors `public.wow_basketball_certified_model_artifact('NBA')`: the
+--    certification must name the artifact version that is actually active and
+--    promoted. capability_status alone is not enough. calibrator_version is
+--    reported but deliberately NOT required -- the governed function does not
+--    test it, and adding it here would be a stricter verdict than the database
+--    records.
 -- ---------------------------------------------------------------------------
 select
     'NBA' as sport,
@@ -103,15 +123,13 @@ select
     c.settled_rows,
     (
         c.capability_status = 'CERTIFIED'
-        and c.model_artifact_version is not null
-        and c.calibrator_version is not null
         and exists (
             select 1
               from public.wow_basketball_team_event_model_artifacts a
-             where a.sport = 'NBA'
-               and a.active
-               and a.promoted
+             where a.sport = c.sport
                and a.model_artifact_version = c.model_artifact_version
+               and a.promoted
+               and a.active
         )
     ) as model_certified
   from public.wow_basketball_team_event_certification c
@@ -120,13 +138,15 @@ select
 -- ---------------------------------------------------------------------------
 -- 3. NCAAF: the artifact row carries its own publication gate.
 --
---    Mirrors `wow_ncaaf_certified_model_artifact()`. The table's check
---    constraint ties probability_publishable to promotion, a certified
---    lifecycle and a fitted calibrator; this query re-states the whole
---    predicate so a row edited around the constraint still cannot certify.
+--    Mirrors `public.wow_ncaaf_certified_model_artifact(feature_schema_version)`,
+--    including its champion-first ordering. The table's check constraint ties
+--    probability_publishable to promotion, a certified lifecycle and a fitted
+--    calibrator; this query re-states the whole predicate so a row edited around
+--    the constraint still cannot certify.
 -- ---------------------------------------------------------------------------
 select
     'NCAAF' as sport,
+    a.feature_schema_version,
     a.artifact_id,
     a.lifecycle_state,
     a.probability_publishable,
@@ -142,5 +162,6 @@ select
     ) as model_certified
   from public.wow_ncaaf_fitted_model_artifacts a
  where a.active
- order by a.created_at desc
+ order by case when a.lifecycle_state = 'CHAMPION' then 0 else 1 end,
+          a.created_at desc
  limit 1;
