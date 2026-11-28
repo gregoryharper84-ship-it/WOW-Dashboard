@@ -111,14 +111,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head", default="HEAD", help="head ref to merge")
     args = parser.parse_args(argv)
 
-    resolved = _git("rev-parse", "--verify", "--quiet", args.base, check=False)
-    oid = resolved.stdout.strip()
-    # An all-zero object id is resolved by ``rev-parse --verify`` even though no
-    # such object exists, and ``merge-tree`` then treats it as an empty tree and
-    # reports a clean merge. Reject it here so an unresolved base can never look
-    # like a passing check. The empty-output case is a ref that resolved to
-    # nothing, which is equally unusable.
-    if resolved.returncode or not oid or set(oid) == {"0"}:
+    # ``^{commit}`` makes git reject anything that is not an existing commit, so
+    # the all-zero object id that ``rev-parse`` otherwise resolves -- and that
+    # ``merge-tree`` silently treats as an empty tree -- is rejected before the
+    # merge rather than reported as clean.
+    if _git(
+        "rev-parse", "--verify", "--quiet", f"{args.base}^{{commit}}", check=False
+    ).returncode:
         print(
             f"::error::base ref {args.base} is not available; fetch it before running this check",
             file=sys.stderr,

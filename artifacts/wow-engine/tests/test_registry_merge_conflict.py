@@ -188,24 +188,27 @@ def test_conflicting_rows_in_a_real_repository_are_detected(conflicting_registry
     ]
 
 
-def test_all_zero_base_sha_is_rejected_instead_of_reported_clean(
-    conflicting_registry_repo,
+@pytest.mark.parametrize(
+    "base", ["0" * 40, "refs/heads/not-fetched"], ids=["null-oid", "missing-ref"]
+)
+def test_unresolved_base_is_rejected_instead_of_reported_clean(
+    conflicting_registry_repo, base
 ):
-    """An all-zero base resolves in rev-parse but names no object.
+    """Neither unresolved base may reach the merge and report a clean result.
 
-    ``git merge-tree`` then treats it as an empty tree and reports a clean
-    merge, so the guard has to reject it before merging; otherwise an
-    unresolved base would look exactly like a passing check.
+    The null object id is the dangerous one: ``rev-parse --verify`` resolves it
+    and ``merge-tree`` treats it as an empty tree, so a guard that only reads
+    the exit status reports no conflict against a base that does conflict.
     """
     repo, script = conflicting_registry_repo
 
     proc = subprocess.run(
-        (sys.executable, str(script), "--base", "0" * 40, "--head", "HEAD"),
+        (sys.executable, str(script), "--base", base, "--head", "HEAD"),
         cwd=repo,
         capture_output=True,
         text=True,
     )
 
     assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert proc.stdout == ""
     assert "is not available" in proc.stderr
-    assert "no registry conflict" not in proc.stdout
