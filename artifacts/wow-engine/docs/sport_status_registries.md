@@ -40,9 +40,10 @@ approximate; they are not dispositions and must not be treated as outcomes.
 | `NFL_EVENT_PREGAME_STATIONARY_DECAY_V1` | `v17/nfl_ml_challenger_v2.py` |
 | `NFL_EVENT_PROBABILITY` | `nfl_event_model_contract.py` |
 | `NFL_FITTED_MODEL_PATH_PROVEN` | `v17/nfl_team_event_specialist.py` |
-| `NFL_FORWARD_CALIBRATION_HEALTH_V2` | `v17/nfl_daily_stage_receipts.py` |
+| `NFL_FORWARD_CALIBRATION_HEALTH_V2` | `v17/nfl_forward_shadow.py` |
+| `NFL_FORWARD_CALIBRATION_HEALTH_V3` | `v17/nfl_daily_stage_receipts.py` |
 | `NFL_FORWARD_SHADOW_GRADE_V1` | `v17/nfl_exact_version_evidence_replay.py` |
-| `NFL_FORWARD_SHADOW_GRADE_V2` | `v17/nfl_forward_shadow.py` |
+| `NFL_FORWARD_SHADOW_GRADE_V2` | `v17/nfl_daily_stage_receipts.py` |
 | `NFL_FULL_GAME_HOME_AWAY` | `v17/nfl_daily_stage_receipts.py` |
 | `NFL_GSIS_GAMEBOOK` | `v17/nfl_atd_gamebook_evidence.py` |
 | `NFL_ML_REMOVE_CUMULATIVE_PRIOR_GAMES_V1` | `v17/nfl_ml_prior_games_ablation.py` |
