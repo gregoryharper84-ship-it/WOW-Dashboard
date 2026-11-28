@@ -1,6 +1,8 @@
 # Exact-head CI requeue after merging #2512 provenance tip.
 from datetime import datetime, timezone
+import json
 from pathlib import Path
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 import v17.basketball_model_maintenance as maintenance
+from basketball_certification_write import BasketballCertificationWriteError
 
 
 def test_default_maintenance_live_fetch_persists_but_explicit_replay_cannot_borrow_later_snapshot(monkeypatch):
@@ -567,24 +570,30 @@ def test_failed_calibration_builder_persists_typed_nonpromotable_shadow(monkeypa
         reason_code: str = "OK"
 
     writes = {}
+    rows = {}
     class FakeTable:
         def __init__(self, name):
             """Initialize recorded DDL statements and the synthetic failure trigger."""
             self.name = name
+            self.mode = "write"
         def insert(self, row):
             writes[self.name] = row
             return self
         def upsert(self, row, **_kwargs):
             writes[self.name] = row
+            rows[self.name] = dict(row)
             return self
         def select(self, *_args, **_kwargs):
+            self.mode = "select"
             return self
         def eq(self, *_args):
             return self
         def limit(self, *_args):
             return self
         def execute(self):
-            """Record DDL and raise only the configured synthetic failure."""
+            """Record DDL and return the row this fake was asked to persist."""
+            if self.mode == "select" and self.name in rows:
+                return SimpleNamespace(data=[rows[self.name]])
             return SimpleNamespace(data=[])
 
     class FakeDb:
@@ -1208,13 +1217,19 @@ def _run_fit_with_registration(monkeypatch, sport, registered, *, read_error=Fal
         reason_code: str = "OK"
 
     writes, upserts, reads = {}, [], []
+    rows = {}
+    # Only the forward-candidate probe counts as a registration read; the
+    # post-write read-back selects different fields.
+    FREEZE_FIELDS = "capability_status,model_artifact_version"
 
     class FakeTable:
         def __init__(self, name):
             self.name = name
             self.mode = None
-        def select(self, *_args, **_kwargs):
+            self.fields = None
+        def select(self, fields=None, *_args, **_kwargs):
             self.mode = "select"
+            self.fields = fields
             return self
         def eq(self, *_args):
             return self
@@ -1225,12 +1240,16 @@ def _run_fit_with_registration(monkeypatch, sport, registered, *, read_error=Fal
             return self
         def upsert(self, row, **_kwargs):
             upserts.append((self.name, row))
+            rows[self.name] = dict(row)
             return self
         def execute(self):
             if self.mode == "select" and self.name == "wow_basketball_team_event_certification":
-                reads.append(self.name)
+                if self.fields == FREEZE_FIELDS:
+                    reads.append(self.name)
                 if read_error:
                     raise RuntimeError("registration read denied")
+                if self.name in rows:
+                    return SimpleNamespace(data=[rows[self.name]])
                 return SimpleNamespace(data=[] if registered is None else [registered])
             return SimpleNamespace(data=[])
 
@@ -1316,3 +1335,130 @@ def test_nba_registration_read_failure_fails_closed_before_any_write(monkeypatch
     assert result is None
     assert isinstance(error, RuntimeError)
     assert writes == {} and upserts == []
+
+class _ProviderError(Exception):
+    """Minimal stand-in for postgrest.exceptions.APIError."""
+
+    def __init__(self, payload):
+        super().__init__("provider rejected the write")
+        self.message = payload
+
+
+def test_blocked_row_carries_provider_error_fields(monkeypatch):
+    def fail_replay(*_args, **_kwargs):
+        raise _ProviderError(
+            {
+                "code": "PGRST204",
+                "message": "Could not find the 'sport' column in the schema cache",
+                "details": "Searched the cached schema for the column.",
+                "hint": "Reload the PostgREST schema cache.",
+            }
+        )
+
+    monkeypatch.setattr(maintenance, "hydrate", lambda *args, **kwargs: {"sport": "NBA"})
+    monkeypatch.setattr(maintenance, "run_training_replay", fail_replay)
+
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",), seasons=(2026,)
+    )
+    row = result["rows"][0]
+
+    assert result["status"] == "BLOCKED"
+    assert row["code"] == "BASKETBALL_MODEL_MAINTENANCE_FAILED"
+    assert row["error_type"] == "_ProviderError"
+    assert row["error_details"] == {
+        "code": "PGRST204",
+        "message": "Could not find the 'sport' column in the schema cache",
+        "details": "Searched the cached schema for the column.",
+        "hint": "Reload the PostgREST schema cache.",
+    }
+    assert row["probability_publishable"] is False
+    assert row["can_execute"] is False
+
+
+def _ci_blocked_projection(payload):
+    """Run the workflow's own blocked-row projection against a fake payload."""
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (
+        repo_root / ".github" / "workflows" / "wow-v17-basketball-model-maintenance.yml"
+    ).read_text(encoding="utf-8")
+    marker = workflow.index("blocked_rows = [")
+    start = workflow.rindex("\n", 0, marker) + 1
+    block = workflow[start:workflow.index("basketball = payload", start)]
+    scope = {"json": json, "payload": payload}
+    with pytest.raises(RuntimeError) as raised:
+        exec(compile(textwrap.dedent(block), "<workflow>", "exec"), scope)
+    prefix, _, body = str(raised.value).partition(":")
+    assert prefix == "BASKETBALL_MAINTENANCE_BLOCKED"
+    return json.loads(body)
+
+
+def test_ci_blocked_projection_carries_provider_error_fields():
+    payload = {
+        "status": "BLOCKED",
+        "rows": [
+            {
+                "sport": "NBA",
+                "status": "BLOCKED",
+                "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED",
+                "error_type": "APIError",
+                "error_details": {
+                    "code": "PGRST204",
+                    "message": "schema cache miss",
+                    "details": "column not found",
+                    "hint": "reload the cache",
+                },
+            }
+        ],
+    }
+
+    projected = _ci_blocked_projection(payload)
+    row = projected["blocked_rows"][0]
+
+    assert projected["status"] == "BLOCKED"
+    assert row["sport"] == "NBA"
+    assert row["code"] == "BASKETBALL_MODEL_MAINTENANCE_FAILED"
+    assert row["error_type"] == "APIError"
+    assert row["error_code"] == "PGRST204"
+    assert row["error_message"] == "schema cache miss"
+    assert row["error_details"] == "column not found"
+    assert row["error_hint"] == "reload the cache"
+
+
+def test_ci_blocked_projection_tolerates_rows_without_provider_details():
+    payload = {
+        "status": "BLOCKED",
+        "rows": [{"sport": "WNBA", "status": "BLOCKED", "code": "WNBA_CORPUS_EMPTY"}],
+    }
+
+    row = _ci_blocked_projection(payload)["blocked_rows"][0]
+
+    assert row["code"] == "WNBA_CORPUS_EMPTY"
+    assert row["error_code"] is None
+    assert row["error_message"] is None
+    assert row["error_details"] is None
+    assert row["error_hint"] is None
+
+
+def test_certification_write_failure_uses_its_own_governed_code(monkeypatch):
+    def fail_replay(*_args, **_kwargs):
+        raise BasketballCertificationWriteError(
+            "BASKETBALL_CERTIFICATION_WRITE_NOT_OBSERVED sport=NBA "
+            "expected=v2 observed=v1 capability_status=SHADOW "
+            "reason_code=CERTIFICATION_REPLAY_REQUIRED"
+        )
+
+    monkeypatch.setattr(maintenance, "hydrate", lambda *args, **kwargs: {"sport": "NBA"})
+    monkeypatch.setattr(maintenance, "run_training_replay", fail_replay)
+
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",), seasons=(2026,)
+    )
+    row = result["rows"][0]
+
+    assert result["status"] == "BLOCKED"
+    assert row["code"] == "BASKETBALL_CERTIFICATION_WRITE_NOT_OBSERVED"
+    assert row["error_type"] == "BasketballCertificationWriteError"
+    assert "observed=v1" in row["error_details"]["message"]
+    assert row["promotion_attempted"] is False
+    assert row["can_execute"] is False

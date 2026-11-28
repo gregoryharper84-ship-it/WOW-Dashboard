@@ -33,6 +33,7 @@ from basketball_event_hydration_runtime import (
 from basketball_training_replay import (
     run_training_replay, verify_training_provenance, verify_training_freshness,
 )
+from basketball_certification_write import BasketballCertificationWriteError
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_model_development_manifest import development_lane
 
@@ -57,11 +58,42 @@ def default_seasons(
     return tuple(range(current - 3, current + 1))
 
 
+_PROVIDER_ERROR_FIELDS = ("code", "message", "details", "hint")
+
+
+def _exception_details(exc: Exception) -> dict[str, str]:
+    """Carry the provider's own error fields so a blocked row names its cause.
+
+    A PostgREST ``APIError`` exposes a dict on ``.message``; other exceptions
+    only carry a string.  Nothing here is trusted as proof of success -- it is
+    diagnostic detail attached to an already-failed, fail-closed row.
+    """
+    details: dict[str, str] = {}
+    payload = getattr(exc, "message", None)
+    if isinstance(payload, Mapping):
+        for field in _PROVIDER_ERROR_FIELDS:
+            value = payload.get(field)
+            if value not in (None, ""):
+                details[field] = str(value)[:500]
+    # Attribute fallbacks cover provider errors that expose .code/.details/.hint
+    # directly.  Free-text exception messages are deliberately excluded: a
+    # connection failure can carry a DSN or token, and this detail is returned
+    # in the HTTP result.  Governed errors pass their own safe message instead.
+    for field in ("code", "details", "hint"):
+        if field in details:
+            continue
+        value = getattr(exc, field, None)
+        if value not in (None, ""):
+            details[field] = str(value)[:500]
+    return details
+
+
 def _blocked(
     sport: str,
     code: str,
     *,
     error_type: str | None = None,
+    error_details: Mapping[str, str] | None = None,
     hydration_blocker: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a typed maintenance hold without granting model or execution authority."""
@@ -77,6 +109,8 @@ def _blocked(
     }
     if error_type:
         payload["error_type"] = error_type
+    if error_details:
+        payload["error_details"] = dict(error_details)
     if hydration_blocker:
         payload["hydration_blocker"] = hydration_blocker
     return payload
@@ -645,12 +679,25 @@ def run_basketball_model_maintenance(
                 "can_execute": False,
             }
             results.append(row)
+        except BasketballCertificationWriteError as exc:
+            results.append(
+                _blocked(
+                    sport,
+                    exc.code,
+                    error_type=type(exc).__name__,
+                    # This message is built by our own verifier (versions and
+                    # row status only); it never carries provider secrets.
+                    error_details={"code": exc.code, "message": str(exc)[:500]},
+                    hydration_blocker=hydration_blocker,
+                )
+            )
         except RuntimeError as exc:
             results.append(
                 _blocked(
                     sport,
                     _public_failure_code(exc, "BASKETBALL_TRAINING_REPLAY_BLOCKED"),
                     error_type=type(exc).__name__,
+                    error_details=_exception_details(exc),
                     hydration_blocker=hydration_blocker,
                 )
             )
@@ -660,6 +707,7 @@ def run_basketball_model_maintenance(
                     sport,
                     "BASKETBALL_MODEL_MAINTENANCE_FAILED",
                     error_type=type(exc).__name__,
+                    error_details=_exception_details(exc),
                     hydration_blocker=hydration_blocker,
                 )
             )

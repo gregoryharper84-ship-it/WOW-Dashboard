@@ -5,8 +5,10 @@ model using only pregame team performance/rest features. Market prices are not
 features. Calibration reuses V17 phase_b_platt with chronological folds.
 
 This pipeline never changes can_execute and never auto-promotes an artifact.
-A successful run may advance certification state to SHADOW/CERTIFIED evidence,
-but promoted/active remain false until an explicit certification replay promotes.
+A run persists SHADOW certification evidence at most: a decision of CERTIFIED is
+downgraded to SHADOW with reason CERTIFICATION_REPLAY_REQUIRED, because a fit
+cannot certify itself. promoted/active stay false, and a separate explicit
+certification replay must promote and certify the artifact.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ from basketball_team_event_specialist import (
     _sigmoid,
 )
 from calibration import phase_b_platt
+from basketball_certification_write import verify_certification_write
 from v17.basketball_team_event_calibration_artifact import (
     BasketballCalibrationArtifactError,
     build_shadow_binary_calibration_artifact,
@@ -358,6 +361,18 @@ def fit_and_persist(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, on_conflict="sport").execute()
 
+    # A PostgREST write can return without the row changing.  Re-read it before
+    # reporting success so a silent no-op cannot look like persisted evidence.
+    # A frozen forward candidate is the exception: no upsert was attempted, so
+    # the row must still name the registered version and calibrator.
+    verify_certification_write(
+        client,
+        sport=sport,
+        model_artifact_version=frozen_candidate_version or model_version,
+        calibrator_version=None if frozen_candidate_version else calibrator_version,
+        unchanged=frozen_candidate_version is not None,
+    )
+
     return {
         "sport": sport, "corpus_rows": len(games), "feature_rows": len(features),
         "model_artifact_version": model_version, "calibrator_version": calibrator_version,
@@ -375,6 +390,7 @@ def fit_and_persist(
         "calibration_holdout_overlap_rows": 0,
         "untouched_holdout_evidence": holdout_evidence,
         "persisted_status": persisted_status,
+        "certification_write_verified": True,
         "registered_candidate_frozen": frozen_candidate_version is not None,
         "registered_candidate_version": frozen_candidate_version or model_version,
         "provenance_complete": bool(provenance_complete),
