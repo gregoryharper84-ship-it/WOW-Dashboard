@@ -28,6 +28,11 @@ PAGE_SIZE = 1000
 NCAAF_PERSISTED_PAGE_SIZE = 200
 NCAAF_PERSISTED_READ_TIMEOUT_RETRIES = 2
 NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS = 0.25
+# A keyset page normally advances one cursor value. A run of rows sharing one
+# cursor value can fill a page, so that cursor retries with a wider page until
+# it clears. The cap bounds that escalation; beyond it the read fails closed
+# instead of looping or silently skipping rows.
+KEYSET_PAGE_ESCALATION_MAX = 5000
 SUPPORTED_REPLAY_SPORTS = ("NFL", "NBA", "WNBA", "NCAAF")
 NCAAF_PERSISTED_FEATURE_MODEL_FAMILY = "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2"
 NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION = "NCAAF_DYNAMIC_TEAM_STATE_FEATURES_V2"
@@ -376,23 +381,88 @@ def _execute_read_with_retry(build_query: Any, *, retries: int = 0) -> Any:
             sleep(NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS * attempt)
 
 
-def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str, read_timeout_retries: int = 0, page_size: int | None = None) -> list[dict[str, Any]]:
+def _paged_select(
+    client: Any,
+    table: str,
+    fields: str,
+    *,
+    filters: Sequence[tuple[str, str, Any]] = (),
+    order: str,
+    read_timeout_retries: int = 0,
+    page_size: int | None = None,
+    keyset_column: str | None = None,
+    identity_column: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read a table in bounded pages, by OFFSET or by forward-only keyset.
+
+    ``keyset_column`` replaces OFFSET paging with a ``>=`` cursor on the ordered
+    column. An OFFSET page must walk and fetch every row it skips, so its cost
+    grows with depth: once a ledger is large enough, deep pages are cancelled by
+    Postgres' statement_timeout (SQLSTATE 57014). A keyset page is bounded by the
+    page itself at any depth and still follows the same ordered index.
+
+    The cursor column need not be unique. When a page ends inside a run of rows
+    sharing one cursor value, the next page restarts that run, so a selected
+    unique ``identity_column`` drops the repeats: every matching row is returned
+    exactly once, in ``order`` order. A run wider than the page retries that one
+    cursor with a doubled page, bounded by KEYSET_PAGE_ESCALATION_MAX.
+    """
     rows: list[dict[str, Any]] = []
     page_size = max(1, int(PAGE_SIZE if page_size is None else page_size))
+    effective_page_size = page_size
     offset = 0
+    cursor: Any = None
+    seen_identities: set[str] = set()
     while True:
         def build_query() -> Any:
             query = client.table(table).select(fields)
             for method, column, value in filters:
                 query = getattr(query, method)(column, value)
-            return query.order(order).range(offset, offset + page_size - 1)
+            query = query.order(order)
+            if keyset_column is None:
+                return query.range(offset, offset + page_size - 1)
+            if cursor is not None:
+                query = query.gte(keyset_column, cursor)
+            return query.limit(effective_page_size)
 
         response = _execute_read_with_retry(build_query, retries=read_timeout_retries)
-        batch = response.data or []
-        rows.extend(dict(row) for row in batch)
-        if len(batch) < page_size:
+        batch = list(response.data or [])
+        for row in batch:
+            if identity_column is not None:
+                identity = row.get(identity_column)
+                if identity is None:
+                    raise SpreadChallengerUnavailable(
+                        "SPREAD_REPLAY_PAGE_IDENTITY_MISSING",
+                        f"{table} page row is missing its {identity_column} identity",
+                    )
+                key = str(identity)
+                if key in seen_identities:
+                    continue
+                seen_identities.add(key)
+            rows.append(dict(row))
+        if len(batch) < effective_page_size:
             return rows
-        offset += page_size
+        if keyset_column is None:
+            offset += page_size
+            continue
+        next_cursor = batch[-1].get(keyset_column)
+        if next_cursor is None:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PAGE_CURSOR_MISSING",
+                f"{table} page is missing its {keyset_column} cursor value",
+            )
+        if next_cursor == cursor:
+            # One cursor value filled the whole page (a duplicate-event run).
+            effective_page_size *= 2
+            if effective_page_size > KEYSET_PAGE_ESCALATION_MAX:
+                raise SpreadChallengerUnavailable(
+                    "SPREAD_REPLAY_PAGE_CURSOR_STALLED",
+                    f"{table} cannot page past {keyset_column}={next_cursor!r} within "
+                    f"{KEYSET_PAGE_ESCALATION_MAX} rows",
+                )
+            continue
+        cursor = next_cursor
+        effective_page_size = page_size
 
 
 def _load_ncaaf_game_rows(client: Any) -> list[dict[str, Any]]:
@@ -417,11 +487,18 @@ def _load_ncaaf_persisted_game_rows(client: Any) -> list[dict[str, Any]]:
 
 
 def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
-    """Load immutable dynamic-team-state rows using their unique event identity."""
+    """Load immutable dynamic-team-state rows using their unique event identity.
+
+    This ledger grows by re-ingest, not by settled games, so an OFFSET page deep
+    into it exceeds Postgres' statement_timeout and the warm retry only re-reads
+    the same cancelled page (SQLSTATE 57014). The read now advances by
+    ``official_event_id`` keyset instead, and ``training_row_id`` keeps each row
+    unique across the duplicate-event runs a page boundary can split.
+    """
     return _paged_select(
         client,
         "wow_d1_training_rows",
-        "official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
+        "training_row_id,official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
         filters=(
             ("eq", "sport", "NCAAF"),
             ("eq", "model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY),
@@ -430,6 +507,8 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
         order="official_event_id",
         read_timeout_retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
         page_size=NCAAF_PERSISTED_PAGE_SIZE,
+        keyset_column="official_event_id",
+        identity_column="training_row_id",
     )
 
 
