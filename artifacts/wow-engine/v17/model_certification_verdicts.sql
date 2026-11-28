@@ -54,21 +54,31 @@
 --    verdict would read as UNVERIFIED forever. NFL publication authority is the
 --    certified-artifact RPC, not this column.
 --
---    Omitted deliberately: `wow_v17_refresh_nfl_event_capability()` additionally
---    requires an active PASS calibrator row. That predicate reads
---    wow_calibrators.sport / market_family / model_family / validation_status /
---    health_status, none of which is defined by any create table or alter table
---    in this repository (schema.sql's calibrator block predates them and is
---    truncated mid-constraint). Referencing them here would risk SQLSTATE 42703,
---    so this query does not: a true verdict below is necessary but not
---    sufficient, and the calibrator half must be read from
---    `wow_v17_refresh_nfl_event_capability()`.
+--    The calibrator half of the gate is NOT re-derived here. It reads the
+--    governed `wow_runtime_capabilities` row that
+--    `wow_v17_refresh_nfl_event_capability()` maintains, and requires
+--    evidence.calibrator_ready to be present. If that row, or that key, is
+--    missing the whole query returns NO ROW -- UNVERIFIED -- so an omitted
+--    check can never masquerade as `model_certified = false`. The calibrator
+--    predicate itself lives in wow_calibrators.sport / market_family /
+--    validation_status / health_status, none of which any create table or
+--    alter table in this repository defines (schema.sql's calibrator block
+--    predates them and is truncated mid-constraint); reading the capability
+--    row avoids re-deriving a gate whose inputs are not in this repo.
 --
 --    The ledger's graded_n is a global snapshot, so a passing ledger alone must
 --    not authorize a champion that lacks its own grades: the cohort CTE recounts
 --    distinct official_event_id rows for the exact selected model version.
 -- ---------------------------------------------------------------------------
-with artifact as (
+with capability as (
+    select c.capability_status,
+           (c.evidence ->> 'calibrator_ready')::boolean as calibrator_ready,
+           c.updated_at as capability_updated_at
+      from public.wow_runtime_capabilities c
+     where c.capability_key = 'NFL_EVENT_PROBABILITY'
+       and c.evidence ->> 'calibrator_ready' is not null
+),
+artifact as (
     select public.wow_nfl_event_certified_model_artifact('NFL_EVENT_PREGAME_PRIOR_V1') as state
 ),
 champion as (
@@ -83,6 +93,9 @@ cohort as (
 )
 select
     'NFL' as sport,
+    cap.capability_status,
+    cap.calibrator_ready,
+    cap.capability_updated_at,
     h.status,
     h.certification_recommendation,
     h.graded_n as ledger_graded_n,
@@ -90,7 +103,9 @@ select
     h.minimum_forward_required,
     h.blockers,
     (
-        h.status = 'PASS'
+        cap.capability_status = 'AVAILABLE'
+        and cap.calibrator_ready
+        and h.status = 'PASS'
         and h.certification_recommendation = 'FORWARD_EVIDENCE_PASS'
         and h.blockers = '[]'::jsonb
         and h.graded_n >= h.minimum_forward_required
@@ -99,6 +114,7 @@ select
         and exists (select 1 from champion where certified)
     ) as model_certified
   from public.wow_nfl_forward_calibration_health h
+ cross join capability cap
  cross join cohort
  order by h.generated_at desc
  limit 1;
