@@ -608,7 +608,7 @@ Recover only through authenticated protected-main workflow execution.
 | `GEMINI_MODEL_INVALID` | QA reviewer / model selection | CONFIGURATION | Expected allowlisted model ID, never secret | Remove explicit stale model variable or bind reviewed stable model |
 | `REVIEWER_PREFLIGHT_CREDENTIAL_MISSING` | QA environment / preflight | PROVIDER_CREDENTIAL | Credential present/missing boolean only | Restore existing scoped QA provider credential |
 | `REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED` | QA provider / metadata GET | PROVIDER_CONFIGURATION | Model identity and `generateContent` supported boolean only | Verify project entitlement and exact supported method |
-| `PROVIDER_MODEL_UNAVAILABLE` | QA provider / review | PROVIDER_CONFIGURATION | Structured Google NOT_FOUND for API version/method; no response text or keys | Use owner-approved model selection and a fresh independent exact-head review |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider / review or credential-scoped model availability | PROVIDER_CONFIGURATION | Structured Google NOT_FOUND for API version/method, or the reviewed exact model ID absent from the credential-scoped model catalog; no response text or keys | Use owner-approved model selection and a fresh independent exact-head review; during model discovery try the next approved credential-listed model within the same provider and, after bounded exhaustion, retain the existing authenticated owner fallback |
 | `HTTP_404` | QA provider / review or preflight | DIAGNOSE | Fixed allowlisted endpoint label and HTTP status only | Attribute endpoint/model/credential; do not infer model retirement or semantic REJECT |
 | `REVIEWER_CLI_ARGUMENT_INVALID` | QA workflow / preflight entrypoint | CONFIGURATION | Argument shape only | Invoke `--preflight` or normal review through trusted workflow |
 
@@ -626,13 +626,14 @@ anchored (including end of string), and the reviewer logs selected/unavailable
 model IDs only, never prompts, API keys, raw response data, or URLs. At most
 three approved candidates are attempted, only after typed
 `PROVIDER_MODEL_UNAVAILABLE`; a substantive REJECT/malformed answer is terminal.
+That code is registered once, in the reviewer provider compatibility table above;
+this table deliberately carries no second row for it.
 
 | Typed code | Owner / stage | Recovery class | Bounded safe context | Required next action |
 | --- | --- | --- | --- | --- |
 | `REVIEW_MODEL_CATALOG_INVALID` | QA provider selection / GET models | FAIL_CLOSED | Provider label and invalid shape only | Repair provider response contract; do not guess from static models |
 | `REVIEW_MODEL_CATALOG_PAGINATION_REQUIRED` | QA provider selection / GET models | FAIL_CLOSED | Provider label and nonempty next-page boolean only | Add governed bounded pagination before using incomplete catalog |
 | `REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL` | QA owner-only preflight | PROVIDER_CONFIGURATION | Provider/model readiness labels only | Verify existing credential entitlement or approved model availability |
-| `PROVIDER_MODEL_UNAVAILABLE` | QA provider model availability | PROVIDER_CONFIGURATION | Reviewed exact model ID only | Try next approved credential-listed model within same provider; after bounded exhaustion retain existing authenticated owner fallback |
 | `GEMINI_MODEL_INVALID` / `CLAUDE_MODEL_UNAPPROVED` | QA reviewer / configured model | FAIL_CLOSED | Sanitized model pattern failure only | Correct explicitly unapproved variable via governed trust-root change |
 
 The optional `WOW_QA_GEMINI_MODEL`/`WOW_QA_CLAUDE_MODEL` preference

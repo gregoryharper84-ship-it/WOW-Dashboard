@@ -132,6 +132,25 @@ def test_failure_tables_do_not_duplicate_codes():
             seen[code] = sport
 
 
+def test_every_documented_code_has_exactly_one_row():
+    """One row per code across the whole document, hand-written tables included.
+
+    `test_failure_tables_do_not_duplicate_codes` walks only the generated sport
+    blocks, so a row pasted into a hand-written table is checked by nothing: the
+    generator rewrites only its own marked blocks, and no per-row guard compares
+    two rows for the same code. The two then drift apart in recovery class or
+    next action while both stay green, and a reader has no way to tell which one
+    is authoritative. Treat the document as the registry it claims to be.
+    """
+    rows = {}
+    for number, line in enumerate(FAILURE_DOC.read_text(encoding="utf-8").splitlines(), 1):
+        match = re.match(r"^\| `([A-Za-z0-9_:<>]+)` \|", line)
+        if match:
+            rows.setdefault(match.group(1), []).append(number)
+    duplicated = {code: lines for code, lines in rows.items() if len(lines) > 1}
+    assert duplicated == {}, f"documented twice: {duplicated}"
+
+
 def test_every_status_is_documented_and_non_authoritative():
     for sport in SPORTS:
         statuses, _labels = _status_section(sport)
