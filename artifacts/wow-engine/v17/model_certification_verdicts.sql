@@ -225,7 +225,18 @@ select
 --    records.
 --
 --    No certification row means no verdict was ever recorded: UNVERIFIED /
---    NO_CERTIFICATION_RECORD, not MODEL_HOLD.
+--    MODEL_UNAVAILABLE, the registry's own default for an absent capability --
+--    not MODEL_HOLD. A row that is not CERTIFIED reports the reason_code the
+--    registry recorded for it (CERTIFICATION_REPLAY_REQUIRED,
+--    MODEL_CALIBRATION_UNAVAILABLE, MODEL_VALIDATION_FAILED, ...) rather than
+--    restating capability_status, which is already a detail column.
+--
+--    capability_status = 'CERTIFIED' is not produced by the current pipeline:
+--    basketball_specialist_pipeline persists SHADOW whenever the decision is
+--    CERTIFIED, recording CERTIFICATION_REPLAY_REQUIRED as the reason. So NBA
+--    MODEL_CERTIFIED is unreachable through the pipeline today and can only
+--    appear via a manual promotion -- which is exactly the case the
+--    live-artifact check below exists to catch.
 -- ---------------------------------------------------------------------------
 with cert as (
     select c.sport,
@@ -253,10 +264,13 @@ judged as (
                when cert.capability_status = 'CERTIFIED' and cert.live_artifact then 'MODEL_CERTIFIED'
                else 'MODEL_HOLD'
            end as verdict,
+           -- `is distinct from` also covers the absent row: a left join leaves
+           -- capability_status null, which must read MODEL_UNAVAILABLE instead
+           -- of falling through to the live-artifact branch.
            case
-               when cert.sport is null then 'NO_CERTIFICATION_RECORD'
-               when cert.capability_status <> 'CERTIFIED' then 'CAPABILITY_NOT_CERTIFIED'
-               when not cert.live_artifact then 'NO_LIVE_ARTIFACT'
+               when cert.capability_status is distinct from 'CERTIFIED'
+                 then coalesce(nullif(cert.registry_reason_code, ''), 'MODEL_UNAVAILABLE')
+               when not cert.live_artifact then 'CERTIFICATION_REPLAY_REQUIRED'
                else 'CERTIFIED_ARTIFACT_PUBLISHABLE'
            end as reason_code
       from (select 1) anchor
@@ -289,12 +303,18 @@ select
 --    calibrator; this query re-states the whole predicate so a row edited around
 --    the constraint still cannot certify.
 --
---    An empty registry and a registry with no active artifact are different
---    gaps in the evidence, so they get different reason codes:
---      total_rows = 0              -> UNVERIFIED / NO_ARTIFACT_RECORDED
---      total_rows > 0, none active -> UNVERIFIED / NO_ACTIVE_ARTIFACT
---      active artifact fails       -> MODEL_HOLD / ACTIVE_ARTIFACT_NOT_PUBLISHABLE
---      active artifact passes      -> MODEL_CERTIFIED
+--    Reason codes are the NCAAF provider's own, so this report and the
+--    runtime name the same gap:
+--      no resolvable certified artifact    -> NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND
+--      active but not a certified lifecycle -> NCAAF_BUNDLE_NOT_CERTIFIED
+--      certified but not publishable       -> NCAAF_ARTIFACT_NOT_PUBLISHABLE
+--      no fitted calibrator                -> NCAAF_CERTIFIED_CALIBRATOR_NOT_FOUND
+--    An empty registry and a registry with no active artifact share the first
+--    code because the governed RPC returns exactly one code for both. They are
+--    not merged: registry_empty is the field that separates them, true only
+--    when the table has no rows at all, so a reader never has to infer the gap
+--    from a raw count. artifact_id is null in both cases and does not tell
+--    them apart.
 --
 --    picked.certified is a three-valued AND, so it is only ever used to pick
 --    the verdict; model_certified is derived from the verdict itself. A NULL
@@ -327,6 +347,7 @@ picked as (
            p.probability_publishable,
            p.calibrator_version,
            p.calibration_training_n,
+           p.promoted,
            (
                p.probability_publishable
                and p.promoted
@@ -352,11 +373,23 @@ judged as (
                when picked.certified then 'MODEL_CERTIFIED'
                else 'MODEL_HOLD'
            end as verdict,
+           -- One branch per governed gap, in the RPC's own priority: the
+           -- artifact must exist, be active and be promoted before lifecycle,
+           -- publication or calibration can be named as the cause. An empty
+           -- registry reaches the first branch with artifact_id null.
            case
-               when counts.total_rows = 0 then 'NO_ARTIFACT_RECORDED'
-               when picked.artifact_id is null then 'NO_ACTIVE_ARTIFACT'
+               when picked.artifact_id is null or picked.promoted is not true
+                 then 'NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'
                when picked.certified then 'CERTIFIED_ARTIFACT_PUBLISHABLE'
-               else 'ACTIVE_ARTIFACT_NOT_PUBLISHABLE'
+               when picked.lifecycle_state is null
+                 or picked.lifecycle_state not in ('PROSPECTIVE_CERTIFIED', 'CHAMPION')
+                 then 'NCAAF_BUNDLE_NOT_CERTIFIED'
+               when picked.probability_publishable is not true then 'NCAAF_ARTIFACT_NOT_PUBLISHABLE'
+               when picked.calibrator_version is null
+                 or picked.calibration_training_n is null
+                 or picked.calibration_training_n <= 0
+                 then 'NCAAF_CERTIFIED_CALIBRATOR_NOT_FOUND'
+               else 'NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'
            end as reason_code
       from counts
       left join picked on true
@@ -371,6 +404,7 @@ select
         else false
     end as model_certified,
     judged.total_rows,
+    (judged.total_rows = 0) as registry_empty,
     judged.feature_schema_version,
     judged.artifact_id,
     judged.lifecycle_state,

@@ -421,6 +421,43 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
             expr.index("'DO_NOT_CERTIFY_YET'"),
         )
 
+    def test_nba_and_ncaaf_reason_codes_are_governed(self):
+        """Both must name the gap the governed source names, not a local synonym."""
+        governed = {
+            "NBA": {
+                "MODEL_UNAVAILABLE",              # certification table default
+                "CERTIFICATION_REPLAY_REQUIRED",  # persisted when CERTIFIED is not live
+                "CERTIFIED_ARTIFACT_PUBLISHABLE",  # report-local success label
+            },
+            "NCAAF": {
+                "NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",  # wow_ncaaf_certified_model_artifact
+                "NCAAF_BUNDLE_NOT_CERTIFIED",                # ncaaf_fitted_provider
+                "NCAAF_ARTIFACT_NOT_PUBLISHABLE",            # ncaaf_fitted_provider
+                "NCAAF_CERTIFIED_CALIBRATOR_NOT_FOUND",      # ncaaf_runtime_contract
+                "CERTIFIED_ARTIFACT_PUBLISHABLE",            # report-local success label
+            },
+        }
+        for sport, allowed in governed.items():
+            expr = verdict_expression(query_for(sport), "reason_code")
+            emitted = set(re.findall(r"(?:then|else)\s+'([A-Z][A-Z0-9_]+)'", expr))
+            with self.subTest(sport=sport):
+                self.assertTrue(emitted)
+                self.assertEqual(emitted - allowed, set())
+
+        # NBA delegates the non-CERTIFIED reason to the row the registry wrote.
+        self.assertIn("registry_reason_code", verdict_expression(query_for("NBA"), "reason_code").lower())
+
+        for retired in (
+            "NO_CERTIFICATION_RECORD",
+            "CAPABILITY_NOT_CERTIFIED",
+            "NO_LIVE_ARTIFACT",
+            "NO_ARTIFACT_RECORDED",
+            "NO_ACTIVE_ARTIFACT",
+            "ACTIVE_ARTIFACT_NOT_PUBLISHABLE",
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, SQL_PATH.read_text())
+
     def test_reason_codes_cover_every_unverified_branch(self):
         """Each branch that can only be reached by absent evidence keeps its name."""
         expectations = {
@@ -429,8 +466,8 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
                 "NFL_EVENT_CALIBRATOR_UNAVAILABLE",
                 "NFL_FORWARD_CERTIFICATION_UNPROVEN",
             ),
-            "NBA": ("NO_CERTIFICATION_RECORD",),
-            "NCAAF": ("NO_ARTIFACT_RECORDED", "NO_ACTIVE_ARTIFACT"),
+            "NBA": ("MODEL_UNAVAILABLE",),
+            "NCAAF": ("NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",),
         }
         for sport, codes in expectations.items():
             lowered = query_for(sport).lower()
@@ -514,20 +551,49 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
         ):
             self.assertIn(term, ncaaf_gates)
 
+    def test_ncaaf_picked_exposes_every_column_the_case_reads(self):
+        """A reference to an unprojected CTE column is SQLSTATE 42703 at runtime.
+
+        `certified` uses p.promoted internally; that does not make
+        picked.promoted available to the outer SELECT.
+        """
+        stmt = query_for("NCAAF")
+        picked = re.search(r"picked as \((.*?)\n\)", stmt, re.S).group(1)
+        # Drop parenthesised expressions: the AND that builds `certified` reads
+        # columns the outer query cannot see.
+        plain = picked.split("from ranked p")[0]
+        while True:  # strip innermost first: the certified AND nests a list
+            stripped = re.sub(r"\([^()]*\)", "", plain)
+            if stripped == plain:
+                break
+            plain = stripped
+        for column in sorted(set(re.findall(r"picked\.(\w+)", stmt))):
+            with self.subTest(column=column):
+                self.assertRegex(plain, rf"\bp\.{column}\b|\bas {column}\b")
+
     def test_ncaaf_always_returns_a_row_and_names_the_missing_case(self):
-        """An empty registry and a registry with no active artifact are different gaps."""
+        """Empty registry and no active artifact stay distinct under one governed code.
+
+        The governed RPC returns a single code for "no certified artifact"; the
+        two gaps remain separate tests here, and total_rows vs artifact_id still
+        say which one it is.
+        """
         ncaaf = query_for("NCAAF")
         lowered = ncaaf.lower()
         self.assertIn("left join", lowered)  # survives an empty table
-        self.assertIn("total_rows", lowered)
-        for token in (
-            "'unverified'",
-            "'no_artifact_recorded'",
-            "'no_active_artifact'",
-            "'model_certified'",
-            "'model_hold'",
-        ):
+        # Both absence gaps share one governed code and one branch; registry_empty
+        # is what separates them.
+        self.assertRegex(
+            lowered,
+            r"when\s+picked\.artifact_id\s+is\s+null\s+or\s+picked\.promoted\s+is\s+not\s+true"
+            r"\s+then\s+'ncaaf_certified_model_artifact_not_found'",
+        )
+        for token in ("'unverified'", "'model_certified'", "'model_hold'", "total_rows", "artifact_id"):
             self.assertIn(token, lowered)
+        # Both absence gaps share the governed code, so the row must say which
+        # one it is without the reader inferring from a raw count.
+        final = lowered[lowered.rindex("\nselect") :]
+        self.assertIn("(judged.total_rows = 0) as registry_empty", final)
         # The boolean is keyed to the verdict, so a held row can never be null
         # even when picked.certified evaluates to NULL.
         certified = verdict_expression(ncaaf).lower()
