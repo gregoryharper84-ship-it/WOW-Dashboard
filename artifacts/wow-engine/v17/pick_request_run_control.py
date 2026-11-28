@@ -33,6 +33,8 @@ CONTROL_VERSION = "V17_PICK_REQUEST_RUN_CONTROL_V1"
 IDENTITY_VERSION = "V2_SEMANTIC_UTC"
 _STATE_KEY = "wow_pick_request_run_control_installed"
 _TERMINAL_RUN_PREFIXES = ("STOPPED_", "CLOSED")
+RUN_CLOSED_ROW_TERMINAL = "RUN_CLOSED_BEFORE_TERMINAL"
+CLOSE_ROWS_RPC = "wow_v17_close_pick_request_run_rows"
 
 _ORIGINAL_BEGIN = state.PickRequestStateStore.begin
 _ORIGINAL_FINALIZE = state.PickRequestStateStore.finalize
@@ -227,9 +229,22 @@ def _closure_safe_finalize(
         restored["updated_at"] = state._now()
         restored["can_execute"] = False
         self.db.table(state.RUN_TABLE).upsert(restored, on_conflict="run_id").execute()
-        manifest["run_status"] = restored["run_status"]
-        manifest["closed_at"] = restored.get("closed_at")
-        manifest["closure_code"] = restored.get("closure_code")
+        # The database fence keeps closure holds terminal; recount from committed
+        # rows and report committed state rather than this worker's snapshot.
+        reconciliation = _reconcile_closed_run_rows(
+            self.db, ctx.run_id, hold_pending=not bool(run.get("reopen_allowed"))
+        )
+        if reconciliation.get("status") == "RECONCILED":
+            for key in _MANIFEST_COUNT_KEYS:
+                manifest[key] = reconciliation[key]
+            for record in self._load_all(ctx.run_id):
+                row_key = str(record.get("row_key") or "")
+                if record.get("terminal_code") == RUN_CLOSED_ROW_TERMINAL and row_key in ctx.rows:
+                    ctx.rows[row_key].update(record)
+        manifest["run_status"] = str(run["closure_code"])
+        manifest["closed_at"] = run.get("closed_at")
+        manifest["closure_code"] = run.get("closure_code")
+        manifest["row_closure_reconciliation"] = reconciliation
     manifest["can_execute"] = False
     return manifest
 
@@ -368,12 +383,16 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
             },
         )
     if _is_closed(run):
+        # Repeat close is the retry path for an uncertain row reconciliation.
         return {
             "request_id": request_id,
             "run_status": run.get("run_status"),
             "already_closed": True,
             "closure_code": run.get("closure_code"),
             "closed_at": run.get("closed_at"),
+            "row_closure_reconciliation": _reconcile_closed_run_rows(
+                db, str(run["run_id"]), hold_pending=not bool(run.get("reopen_allowed"))
+            ),
             "can_execute": False,
         }
     closed_at = state._now()
@@ -392,6 +411,9 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
         }
     )
     db.table(state.RUN_TABLE).upsert(updated, on_conflict="run_id").execute()
+    reconciliation = _reconcile_closed_run_rows(
+        db, str(run["run_id"]), hold_pending=not updated["reopen_allowed"]
+    )
     return {
         "request_id": request_id,
         "run_id": run.get("run_id"),
@@ -399,8 +421,55 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
         "closure_code": updated["closure_code"],
         "closed_at": closed_at,
         "reopen_allowed": updated["reopen_allowed"],
+        "rows_held_at_closure": int(reconciliation.get("rows_held_at_closure") or 0),
+        "row_closure_reconciliation": reconciliation,
         "can_execute": False,
     }
+
+
+_MANIFEST_COUNT_KEYS = (
+    "total_rows",
+    "completed_rows",
+    "held_rows",
+    "rejected_rows",
+    "pending_rows",
+    "unresolved_rows",
+)
+
+
+def _reconcile_closed_run_rows(db: Any, run_id: str, *, hold_pending: bool) -> dict[str, Any]:
+    """Hold still-PENDING rows and recount the run inside one database transaction.
+
+    The RPC re-checks each row under its row lock, so a row a worker terminated
+    first is never overwritten, and it recounts from committed rows. It is
+    idempotent: an uncertain result is resolved by calling close_run again.
+    """
+    try:
+        result = db.rpc(
+            CLOSE_ROWS_RPC,
+            {"p_run_id": run_id, "p_hold_pending": hold_pending},
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 - typed, value-free uncertain state
+        return {
+            "status": "UNCERTAIN",
+            "code": "RUN_CLOSURE_ROW_RECONCILIATION_UNCERTAIN",
+            "error_type": type(exc).__name__,
+            "retry": "REPEAT_CLOSE_RUN_SAME_REQUEST_ID",
+            "can_execute": False,
+        }
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict) or not data.get("status"):
+        return {
+            "status": "UNCERTAIN",
+            "code": "RUN_CLOSURE_ROW_RECONCILIATION_INVALID_RESPONSE",
+            "retry": "REPEAT_CLOSE_RUN_SAME_REQUEST_ID",
+            "can_execute": False,
+        }
+    out = dict(data)
+    out["can_execute"] = False
+    return out
 
 
 def _seed_manifest(db: Any, request: ResumablePickRunRequest) -> None:
