@@ -1,6 +1,6 @@
 # PM-2026-11-28-001 — Multi-sport live canary reports stale static fixtures instead of acquired pregame rows
 
-- status: MERGED_PENDING_DEPLOY
+- status: VERIFIED_CLOSED
 - severity: P1
 - domain: V17 multi-sport prop live canary / pregame evidence acquisition
 - team_contract_version: "1.0"
@@ -13,7 +13,8 @@
 - risk_class: R1
 - protected_contracts_touched: []
 - created_utc: 2026-11-28T03:40:23Z
-- updated_utc: 2026-11-28T04:14:00Z
+- updated_utc: 2026-11-28T04:40:27Z
+- closed_utc: 2026-11-28T04:40:27Z
 - runtime_generation: V17_ACTIVE
 - terminal_authority: V17_TERMINAL_REDUCER
 - can_execute: false
@@ -95,9 +96,21 @@ runtime deploy artifact; the dispatched run 46106105938 on merge commit
 `PRODUCTION_VERIFIED` is not claimed because no `deployed_commit` or
 `deployment_id` exists for a CI-only fix.
 
+## Reporter Closure
+
+Status: `FIXED_VERIFIED` at 2026-11-28T04:40:27Z. Evidence: PR #2907 merged
+to protected `main` as `cf2823027f6074d3074318ae34aba1e0612dd549`, placing this
+team-governed record on `main`; the ledger validates there (7 postmortems,
+7 fixes, 2 team-governed records). Repair merge `d1458c3173587cf6bac77e13819a5c3491c80a95`;
+runs 46106105938 and 46106101546 both succeeded with the live canary and stress
+steps executed. Release `NOT_APPLICABLE`; no runtime deploy exists.
+
+Preventive control: new incident records must be created through
+`nightly_incident_records create-postmortem` so `team_contract_version` is set;
+the CLI refuses triage/handoff for legacy-shaped records and cannot close them.
+
 ## Closure Criteria
 
-Merged and verified through a dispatched run on the merge commit, with
-`release.status=NOT_APPLICABLE` recorded. Only the Reporter `FIXED_VERIFIED`
-receipt remains before `VERIFIED_CLOSED`; that receipt is deliberately not
-recorded here.
+Satisfied. Root cause confirmed, acceptance criteria met, independent review and
+QA PASS recorded, release `NOT_APPLICABLE` recorded, and the Reporter
+`FIXED_VERIFIED` receipt recorded. Final state: `VERIFIED_CLOSED`.
