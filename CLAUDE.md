@@ -1,5 +1,11 @@
 # WOW Dashboard — Engineering Contract
 
+## Operating mission — DEBUG. DISSOLVE. DEPLOY.
+
+For all Engineering & Closure work, follow the [WOW Engineering Mission Doctrine](docs/wow/engineering/WOW_ENGINEERING_MISSION_DOCTRINE.md): **debug** the reproducible root cause, **dissolve** recurring defects and unnecessary blockers without weakening controls, then **deploy** only through authorized release with independent production verification. Engineering repairs; AMRT restores; WOW Betting Intelligence validates model capability; SIRT independently verifies. A PR, green CI, or healthy endpoint is not verified production recovery.
+
+This mission adds no betting execution or sporting-probability authority and does not override the authority order or binding invariants below.
+
 ## 0. Current authority and phase — 2026-09-02
 
 This repository implements the active WOW V17 governed generation. V17 was
