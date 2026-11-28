@@ -329,7 +329,15 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
             except Exception as exc:  # noqa: BLE001
                 research = {"status":"FAILED","code":f"NATIVE_RESEARCH_HOOK_{type(exc).__name__.upper()}",
                             "evidence_only":True,"can_execute":False}
-            return {**result,"forward_evidence":forward,"native_research":research}
+            # PitchAPI authenticated league-discovery canary (issue #2880). Evidence
+            # only: never raises, never persists payloads, never clears stale blockers.
+            try:
+                from v17.pitchapi_client import soccer_pitchapi_probe_after_forward
+                pitchapi = soccer_pitchapi_probe_after_forward(forward)
+            except Exception:  # noqa: BLE001 - never expose exception class/message to callers
+                pitchapi = {"status":"FAILED","code":"PITCHAPI_HOOK_FAILED",
+                            "evidence_only":True,"persisted":False,"can_execute":False}
+            return {**result,"forward_evidence":forward,"native_research":research,"pitchapi":pitchapi}
 
     if "/internal/v17/tennis-model-maintenance" not in routes:
         @app.post("/internal/v17/tennis-model-maintenance",dependencies=[dependency],operation_id="runWowV17TennisModelMaintenance")

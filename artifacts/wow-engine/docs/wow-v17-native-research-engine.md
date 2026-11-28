@@ -84,6 +84,21 @@ Migration `migrations/20261126_v17_native_research_engine.sql` (rollback alongsi
 `wow_nre_search()` (full-text + structured filters) and `wow_nre_claim_task()` (single-writer lease).
 RLS on; `service_role` only. Until the migration is applied, the hook reports `NRE_DB_42P01` per task.
 
+## PitchAPI transport (issue #2880)
+
+Authenticated soccer research adapter: `v17/pitchapi_client.py`.
+
+- Pinned HTTPS origin `https://api.pitchapi.dev`, exact `GET /v1/leagues` (no trailing slash),
+  `X-API-KEY` + `User-Agent: wow-engine/1.0`, 15s timeout, redirects refused, bounded body,
+  schema validation, typed 403/429 (Retry-After), no paid retries.
+- Soccer maintenance attaches an evidence-only `pitchapi` receipt after forward evidence /
+  native research. The canary reports timestamp, HTTP status, byte count, SHA-256, league
+  count, request id (when present), and credential class (`TEST`/`LIVE`) only — never the key.
+- Optional evidence-only OpenFootball score crosswalk for one current-season league. A
+  `CONSISTENT` result does not authorize storage/training or clear the stale-results blocker.
+- Does not persist provider payloads, clear `SOCCER_SOURCE_RESULTS_STALE`, authorize storage /
+  training, or change production models. Upstream rights remain `PENDING_INDEPENDENT_REVIEW`.
+
 ## Next capabilities
 
 RSS and sitemap acquisition, GDELT and Crossref for current-season sports, NFL injury-report and NBA lineup
