@@ -81,6 +81,15 @@ jobs:
             echo "Source run ${SOURCE_RUN_ID} is a ${source_event} run; discovery is skipped by design and persistence is not applicable." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # A completed workflow_run can have green verification but a SKIPPED
+          # discovery job when the exact-head deploy admission failed closed.
+          # Only an authenticated GitHub job conclusion (not overall success)
+          # proves that no artifact was ever expected for this source run.
+          discovery_conclusion=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100" --jq '.jobs | map(select(.name == "Nightly all-sport discovery and governed specialist handoff")) | if length == 1 then .[0].conclusion // "" else "" end')
+          if [ "$discovery_conclusion" = "skipped" ]; then
+            echo "Source run ${SOURCE_RUN_ID} has an authenticated skipped discovery job; no persistence artifact was required." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           echo "No recoverable Scout discovery artifact exists for source run ${SOURCE_RUN_ID} (event '${source_event:-unknown}'); persistence failed closed rather than reporting success without fabricating a run." >> "$GITHUB_STEP_SUMMARY"
           exit 1
       - name: Download recoverable Scout handoff artifact

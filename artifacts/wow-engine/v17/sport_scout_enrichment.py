@@ -15,6 +15,7 @@ from typing import Any
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
     from v17.matchup_discovery import discover_matchup
+    from v17.context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact, candidate_event_start
     from v17.news_event_research_handoff import reconcile_news_handoff
     from v17.news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
     from v17.news_reviewed_fact_producer import attach_reviewed_facts_bundle
@@ -24,6 +25,7 @@ try:  # package import under pytest/backend runtime
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
     from matchup_discovery import discover_matchup
+    from context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact, candidate_event_start
     from news_event_research_handoff import reconcile_news_handoff
     from news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
     from news_reviewed_fact_producer import attach_reviewed_facts_bundle
@@ -336,12 +338,7 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
                 "provider_event_source": row.get("provider_event_source"),
                 "official_event_identity_verified": row.get("official_event_identity_verified"),
                 "canonical_identity_status": row.get("canonical_identity_status"),
-                "event_start_utc": (
-                    row.get("canonical_identity_event_start_utc")
-                    or row.get("event_start_utc")
-                    or row.get("commence_time")
-                    or (row.get("event_request") or {}).get("event_start_time_utc")
-                ),
+                "event_start_utc": candidate_event_start(row),
             },
             facts if isinstance(facts, list) else [],
             source_receipt_sha256=(
@@ -362,8 +359,98 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
                 if isinstance(stamp, str) and (latest is None or stamp > latest):
                     latest = stamp
             enriched["news_latest_verified_at_utc"] = latest
+    # Read-only, event-wide fail-closed handoff. This does not rescore or
+    # change the controlling specialist / V17 terminal authority.
+    enriched["context_change_impact"] = assess_context_change_impact(
+        enriched, enriched.get("news_research_handoff")
+    )
+    if enriched["context_change_impact"]["research_invalidation_requested"]:
+        enriched["research_recommendation_status"] = (
+            enriched["context_change_impact"]["impact_status"]
+        )
     enriched["can_execute"] = False
     return enriched
+
+
+def _verified_event_key(row: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Exactly bind peers by sport, event ID and timezone-aware start time."""
+    sport = str(row.get("sport_key") or row.get("sport") or "").strip()
+    event_id = str(row.get("official_event_id") or "").strip()
+    raw = candidate_event_start(row)
+    if not sport or not event_id or not isinstance(raw, str):
+        return None
+    try:
+        at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if at.utcoffset() is None:
+            return None
+        return (sport, event_id, at.astimezone(timezone.utc).isoformat())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _propagate_peer_context_holds(handoff: dict[str, Any]) -> int:
+    """Conservatively quarantine every peer role/market for the same event.
+
+    Material research evidence on one starter/bench/specialist must not leave
+    same-event opponent/team/player candidates appearing unaffected. This is a
+    research publication HOLD only. News assertions cannot validate model use.
+    """
+    lanes = ("team_event_candidates", "prop_candidates")
+    affected: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for lane in lanes:
+        for row in handoff.get(lane) or []:
+            key = _verified_event_key(row)
+            impact = row.get("context_change_impact")
+            if (key is None or not isinstance(impact, dict)
+                    or impact.get("impact_status") not in {
+                        "CONTEXT_STALE_RECALC_REQUIRED",
+                        "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+                    } or impact.get("research_invalidation_requested") is not True):
+                continue
+            evidence = affected.setdefault(key, {"sources": set(), "subjects": set()})
+            receipt = impact.get("trigger_research_receipt_sha256")
+            if isinstance(receipt, str) and len(receipt) == 64:
+                evidence["sources"].add(receipt)
+            for subject in impact.get("source_subject_ids") or []:
+                if isinstance(subject, str) and subject:
+                    evidence["subjects"].add(subject)
+    propagated = 0
+    for lane in lanes:
+        updated = []
+        for row in handoff.get(lane) or []:
+            key = _verified_event_key(row)
+            peer = affected.get(key) if key is not None else None
+            impact = row.get("context_change_impact")
+            if (peer is None or not isinstance(impact, dict)
+                    or impact.get("research_invalidation_requested") is True):
+                updated.append(row)
+                continue
+            clone = dict(row)
+            peer_impact = dict(impact)
+            peer_impact.update({
+                "impact_status": "CONTEXT_STALE_RECALC_REQUIRED",
+                "research_invalidation_requested": True,
+                "research_rescore_requested": False,
+                "fitted_specialist_rescore_verified": False,
+                "terminal_invalidation_enforced_by_this_module": False,
+                "model_probability_created": False,
+                "prediction_authority": False,
+                "position_scope": ALL_POSITION_SCOPE,
+                "no_position_exclusions": True,
+                "market_scope_policy": "EVENT_WIDE_CONSERVATIVE_FAIL_CLOSED",
+                "affected_market_families": list(ALL_MARKET_FAMILIES),
+                "source_subject_ids": sorted(peer["subjects"]),
+                "event_peer_research_receipt_sha256": sorted(peer["sources"]),
+                "propagated_from_event_peer": True,
+                "can_execute": False,
+            })
+            clone["context_change_impact"] = peer_impact
+            clone["research_recommendation_status"] = "CONTEXT_STALE_RECALC_REQUIRED"
+            clone["can_execute"] = False
+            updated.append(clone)
+            propagated += 1
+        handoff[lane] = updated
+    return propagated
 
 
 def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
@@ -385,6 +472,7 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         )
     handoff["team_event_candidates"] = [enrich(row, "TEAM_EVENT") for row in handoff.get("team_event_candidates", []) or [] if isinstance(row, dict)]
     handoff["prop_candidates"] = [enrich(row, "PROP") for row in handoff.get("prop_candidates", []) or [] if isinstance(row, dict)]
+    peer_holds = _propagate_peer_context_holds(handoff)
     out["model_handoff"] = handoff
     # Count source-screened evidence only; a requested feature is not proof
     # that current evidence exists or any fitted specialist consumed it.
@@ -413,6 +501,27 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
         "prediction_authority": False,
         "can_execute": False,
     }
+    # Visibility across both lanes; requested rescores are NOT verified
+    # specialist consumption or certified probability updates.
+    context_statuses: dict[str, int] = {}
+    context_stale_rows = 0
+    for lane_key in ("team_event_candidates", "prop_candidates"):
+        for candidate in handoff.get(lane_key, []) or []:
+            impact = candidate.get("context_change_impact") or {}
+            status = str(impact.get("impact_status") or "CONTEXT_AUDIT_MISSING")
+            context_statuses[status] = context_statuses.get(status, 0) + 1
+            context_stale_rows += bool(impact.get("research_invalidation_requested"))
+    out["context_impact_summary"] = {
+        "schema_version": "wow.v17.context_impact_coverage.v1",
+        "impact_status_counts": context_statuses,
+        "rows_research_invalidation_requested": context_stale_rows,
+        "same_event_peer_rows_quarantined": peer_holds,
+        "all_position_roles_scoped": True,
+        "all_applicable_market_families_scoped": True,
+        "fitted_specialist_rescore_verified": False,
+        "terminal_enforcement_verified": False,
+        "can_execute": False,
+    }
     out["sport_scout_registry"] = registry_payload()
     out["research_worker_registry"] = {
         "worker_ids": list(SUPPORTED_RESEARCH_WORKERS),
@@ -432,10 +541,8 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     })
     out["governance"] = governance
     out["can_execute"] = False
-    # Attempt news-triggered fitted rescores only after research reconciliation.
-    # Default scorer binding is absent → MODEL_UNAVAILABLE typed receipt, never
-    # a synthetic probability. Callers may inject a real score_fn in tests or
-    # production runners.
+    # Preserve main's authenticated/reconciled-news dispatch before final
+    # Scout research promotion; missing fitted bindings remain typed HOLDs.
     out = dispatch_news_rescores_for_handoff(out)
     out["can_execute"] = False
     return promote_handoff(out)

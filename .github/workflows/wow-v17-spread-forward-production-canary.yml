@@ -65,6 +65,7 @@ jobs:
               with urllib.request.urlopen(request, timeout=20) as response: return json.load(response)["value"]
 
           warm_deadline = time.monotonic() + 240.0
+          last_observed = None
           while True:
               warm_request = urllib.request.Request(
                   warm_endpoint,
@@ -84,6 +85,10 @@ jobs:
               if warm_status == "READY":
                   print(json.dumps({"status":"READY","code":warm.get("code"),"attempt":warm.get("attempt"),"cache_status":warm.get("cache_status"),"can_execute":False}, sort_keys=True))
                   break
+              observed = (warm_status, warm.get("code"), warm.get("attempt"), warm.get("error_code"))
+              if observed != last_observed:
+                  print(json.dumps({"status":warm_status,"code":warm.get("code"),"attempt":warm.get("attempt"),"max_attempts":warm.get("max_attempts"),"error_type":warm.get("error_type"),"error_code":warm.get("error_code"),"transient":warm.get("transient"),"can_execute":False}, sort_keys=True))
+                  last_observed = observed
               if warm_status == "FAILED":
                   raise RuntimeError(
                       f"SPREAD_FORWARD_WARM_FAILED:{warm.get('code')}:{warm.get('error_type')}:{warm.get('error_code')}"
@@ -91,6 +96,8 @@ jobs:
               if time.monotonic() >= warm_deadline:
                   raise RuntimeError(
                       f"SPREAD_FORWARD_WARM_NOT_READY_AFTER_BOUNDED_WAIT:{warm_status}:{warm.get('code')}"
+                      f":{warm.get('error_type')}:{warm.get('error_code')}"
+                      f":attempt={warm.get('attempt')}/{warm.get('max_attempts')}"
                   )
               time.sleep(10.0)
 

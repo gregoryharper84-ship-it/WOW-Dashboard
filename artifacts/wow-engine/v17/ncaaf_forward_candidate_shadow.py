@@ -135,7 +135,9 @@ def score_forward_shadow(
         hp, ap, won = row.get("home_points"), row.get("away_points"), row.get("home_won")
         _require(type(hp) is int and type(ap) is int and hp != ap and type(won) is bool
                  and won == (hp > ap), "NCAAF_SHADOW_HISTORY_OUTCOME_INCONSISTENT")
-        used.append((eid,when.isoformat(),sourced.isoformat(),h,a,hp,ap))
+        # Content only: re-acquiring the same result moves its retrieval
+        # timestamp (checked as-of above) but is not new history.
+        used.append((eid,when.isoformat(),h,a,hp,ap))
         if h in prior:
             prior[h].append((when, hp > ap, hp - ap))
         if a in prior:
@@ -160,6 +162,7 @@ def score_forward_shadow(
         "model_artifact_version": candidate["model_artifact_version"], "model_artifact_checksum": candidate["artifact_checksum"],
         "candidate_id": candidate.get("candidate_id"), "source_history_digest": _digest(sorted(used)),
         "historical_home_games":len(prior[home]), "historical_away_games":len(prior[away]),
+        "features": {name: float(values[name]) for name in FEATURES},
         "research_probability_home":round(prob, 9), "research_probability_away":round(1-prob, 9),
         "calibrator_method": "IDENTITY_RAW_PROBABILITY_V1", "calibrated_lower_bound":None,
         "blocking_reason":"INDEPENDENT_CERTIFICATION_AND_PREGAME_SOURCE_ACCEPTANCE_REQUIRED",

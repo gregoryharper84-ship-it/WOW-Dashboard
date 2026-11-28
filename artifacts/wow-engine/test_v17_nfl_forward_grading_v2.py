@@ -204,7 +204,7 @@ def _db(with_v2=True, v2_verified=None):
     return _DB(rows)
 
 
-def test_run_grades_v2_without_touching_v1_ledger_health_or_publication():
+def test_run_grades_v2_without_touching_v1_ledger_or_publication():
     db = _db()
     result = shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {"status": "COMPLETED"})
     v2 = result["forward_grading_v2"]
@@ -215,12 +215,15 @@ def test_run_grades_v2_without_touching_v1_ledger_health_or_publication():
     assert {r["schema_version"] for r in inserted} == {"NFL_FORWARD_SHADOW_GRADE_V2"}
     assert {r["selection_policy"] for r in inserted} == {"LATEST_VALID_PREKICKOFF_V2"}
     assert {r["official_event_id"] for r in inserted} == {"2026_10_LAC_BAL", "2026_11_IND_HOU"}
-    # V1 historical ledger and the persisted health receipt are unchanged.
+    # V1 historical ledger is unchanged. The persisted health receipt is the
+    # V2-cohort V3 scorecard (owner decision 2026-11-24); the fake verified
+    # view is empty here, so the receipt is non-PASS.
     assert "wow_nfl_forward_shadow_grades" not in db.inserts
     assert len(db.health) == 1 and db.health[0]["graded_n"] == 0
-    assert db.health[0]["schema_version"] == "NFL_FORWARD_CALIBRATION_HEALTH_V2"
+    assert db.health[0]["schema_version"] == "NFL_FORWARD_CALIBRATION_HEALTH_V3"
+    assert db.health[0]["status"] == "INSUFFICIENT_FORWARD_EVIDENCE"
     assert result["selection_policy"] == "LATEST_PUBLISHABLE_PREKICKOFF_V1"
-    assert v2["certification_admission_source"] is False
+    assert v2["certification_admission_source"] is True
     assert v2["probability_publishable"] is False
     assert result["can_execute"] is False and v2["can_execute"] is False
     assert result["automatic_certification"] is False and result["automatic_promotion"] is False
@@ -234,12 +237,15 @@ def test_rerun_never_duplicates_v2_grades():
     assert len(db.rows["wow_nfl_forward_shadow_grades_v2"]) == 2
 
 
-def test_missing_v2_migration_fails_typed_and_keeps_v1_receipt():
+def test_missing_v2_migration_fails_typed_and_persists_non_pass_receipt():
     db = _db(with_v2=False)
     result = shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {"status": "COMPLETED"})
     assert result["forward_grading_v2"] == {
         "status": "FAILED", "reason_code": "NFL_FORWARD_V2_RUNTIMEERROR", "can_execute": False}
     assert len(db.health) == 1
+    assert db.health[0]["schema_version"] == "NFL_FORWARD_CALIBRATION_HEALTH_V3"
+    assert db.health[0]["status"] == "INSUFFICIENT_FORWARD_EVIDENCE"
+    assert db.health[0]["blockers"] == ["NFL_FORWARD_V2_RUNTIMEERROR"]
 
 
 def test_v2_verified_rows_with_wrong_schema_fail_closed():

@@ -357,6 +357,9 @@ def acquire_nfl_forward_evidence_batch(
             "sport": SPORT,
             "player": candidate["player"],
             "stat_type": candidate["stat_type"],
+            "line": None,
+            "direction": "MORE",
+            "opponent": candidate["opponent"],
             "source_type": SOURCE_TYPE,
             "source_snapshot_id": None,
             "write_status": "PREWRITE_PENDING",
@@ -400,6 +403,7 @@ def acquire_nfl_forward_evidence_batch(
                 "WOW_AUTONOMOUS_DISCOVERY_LINE": now.isoformat(),
             }
             line = _candidate_line(evidence.game_log, str(candidate["stat_type"]))
+            receipt["line"] = line
             row = PickRequestRow(
                 row_key=(
                     f"nfl-forward:{candidate['canonical_event_id']}:{candidate['player']}:"

@@ -50,6 +50,7 @@ class FakeApi:
     def __init__(self, *, global_agents=None, pr_agents=None, global_next=None,
                  pr_next=None, issue_data=None, stale_pr_read=None,
                  malformed_pr_read=None, post_result=None, post_error=None,
+                 moved_branch_read=None,
                  fail_ledger_write=False):
         self.calls = []
         self.comments = []
@@ -61,6 +62,7 @@ class FakeApi:
         self.issue_data = issue_data or issue()
         self.stale_pr_read = stale_pr_read
         self.malformed_pr_read = malformed_pr_read
+        self.moved_branch_read = moved_branch_read
         self.pr_reads = 0
         self.post_result = post_result
         self.post_error = post_error
@@ -72,7 +74,10 @@ class FakeApi:
             self.pr_reads += 1
             if self.pr_reads == self.malformed_pr_read:
                 return []
-            return pr(sha="b" * 40) if self.pr_reads == self.stale_pr_read else pr()
+            response = pr(sha="b" * 40) if self.pr_reads == self.stale_pr_read else pr()
+            if self.pr_reads == self.moved_branch_read:
+                response["head"]["ref"] = "fix/moved"
+            return response
         if "/issues/comments/" in url and kwargs.get("method") == "PATCH":
             self.comments[0]["body"] = kwargs["body"]["body"]
             return self.comments[0]
@@ -230,6 +235,16 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, "CURSOR_STALE_PR_HEAD")
         self.assertEqual(api.cursor_posts, [])
 
+    def test_branch_moved_after_reservation_never_posts_and_preserves_hold(self):
+        api = FakeApi(moved_branch_read=3)
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_RESERVATION_BRANCH_MISMATCH")
+        self.assertEqual(api.cursor_posts, [])
+        reservation = remote.reservations(api.comments)[0][1]
+        self.assertEqual(reservation["branch"], "fix/daily")
+        self.assertTrue(reservation["hold"])
+
     def test_malformed_pr_recheck_fails_typed_before_lease_or_create(self):
         api = FakeApi(malformed_pr_read=2)
         with self.assertRaises(mod.HandoffBlocked) as cm:
@@ -273,6 +288,7 @@ class HandoffTests(unittest.TestCase):
         })
         self.assertEqual(result["writer_lease_comment_id"], 55)
         self.assertEqual(result["writer_lease_status"], "CURSOR_AGENT_ENQUEUED")
+        self.assertEqual(remote.reservations(api.comments)[0][1]["branch"], "fix/daily")
         self.assertEqual(len(api.cursor_posts), 1)
         self.assertLess(
             next(i for i, (url, kwargs) in enumerate(api.calls)

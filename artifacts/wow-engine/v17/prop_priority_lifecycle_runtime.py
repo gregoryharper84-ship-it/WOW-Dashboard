@@ -15,6 +15,7 @@ sporting probabilities. ``can_execute`` is false unconditionally.
 from __future__ import annotations
 
 from collections import defaultdict
+import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping
@@ -43,7 +44,13 @@ from v17.prop_production_registration import (
     PropProductionRegistrationAuditRequest,
     run_prop_production_registration_audit,
 )
-from v17.prop_universal_forward_evidence import build_forward_evidence_inventory
+from v17.prop_universal_forward_evidence import (
+    COLLECTOR_GENERIC,
+    _collector_for,
+    build_forward_evidence_inventory,
+    route_key,
+    run_generic_forward_route,
+)
 
 CAN_EXECUTE = False
 PROVIDER = "WOW_PROP_FITTED_MODEL_V1"
@@ -52,6 +59,10 @@ LEGACY_FORWARD_ROUTE = ("MLB", "PITCHER_STRIKEOUTS")
 PAGE_SIZE = 1000
 OUTCOME_CHUNK_SIZE = 150
 COUNTING_BASIS = "UNIQUE_EVENT_PLAYER_STAT_LINE_THESIS"
+# Pregame scoring of already persisted snapshots (DB-first, no acquisition).
+# Bounded so the hourly audit stays inside the caller's 120 s deadline.
+PREGAME_SCORING_MAX_SNAPSHOTS = 8
+PREGAME_SCORING_DEADLINE_SECONDS = 45.0
 
 
 class PriorityPropSettlementRequest(BaseModel):
@@ -264,10 +275,125 @@ def _settlement_inventory_result(tokens: list[str]) -> dict[str, Any]:
     }
 
 
-def run_priority_durable_audit(req: PriorityPropDurableAuditRequest, *, db: Any) -> dict[str, Any]:
+def _captured_theses_for_active_artifact(db: Any, sport: str, stat_type: str, now: datetime
+                                         ) -> frozenset[tuple[str, str, str, str]]:
+    """Upcoming theses already captured in both directions by the route's active artifact."""
+    active = db.table("wow_prop_fitted_model_artifacts").select("model_artifact_version") \
+        .eq("sport", sport).eq("stat_type", stat_type).eq("active", True).execute().data or []
+    versions = {str(row["model_artifact_version"]) for row in active if row.get("model_artifact_version")}
+    if not versions:
+        return frozenset()
+    rows = _paginate(
+        lambda: db.table("wow_predictions")
+        .select("event_id,player,stat_type,line,direction,model_artifact_version")
+        .eq("sport", sport)
+        .eq("stat_type", stat_type)
+        .eq("model_provider_identity", PROVIDER)
+        .eq("evidence_source_kind", FORWARD_EVIDENCE_KIND)
+        .gt("event_start_time", now.isoformat())
+    )
+    directions: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
+    for row in rows:
+        key = _thesis_key(row)
+        if key is not None and str(row.get("model_artifact_version")) in versions:
+            directions[key].add(str(row.get("direction") or "").upper())
+    return frozenset(key for key, seen in directions.items() if {"MORE", "LESS"} <= seen)
+
+
+def run_pregame_forward_scoring(
+    db: Any,
+    market_api: Any,
+    tokens: list[str],
+    *,
+    now: datetime,
+    max_snapshots: int = PREGAME_SCORING_MAX_SNAPSHOTS,
+    deadline_seconds: float = PREGAME_SCORING_DEADLINE_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Score persisted pregame snapshots with the route's existing fitted scorer.
+
+    The hourly lane seeds snapshots but nothing scored them pregame, so the
+    immutable forward cohort could not grow. This runs only the generic
+    exact-route scorer over snapshots already in the database (no acquisition),
+    persists immutable IMMUTABLE_PREGAME_SETTLED predictions, and never fits,
+    calibrates, certifies, promotes, publishes or executes.
+    """
+    started = clock()
+    routes: list[dict[str, Any]] = []
+    generic: list[tuple[str, frozenset]] = []
+    for token in tokens:
+        sport, stat_type = token.split(":", 1)
+        collector, _status, blocker = _collector_for(route_key(sport, stat_type))
+        if collector != COLLECTOR_GENERIC:
+            routes.append({"route": token, "status": "SKIPPED_NOT_GENERIC_COLLECTOR",
+                           "collector": collector, "blocker": blocker, "can_execute": False})
+            continue
+        try:
+            skip = _captured_theses_for_active_artifact(db, sport, stat_type, now)
+        except Exception:  # noqa: BLE001 - lookup failure only costs a rescore (upsert dedupes)
+            skip = frozenset()
+        generic.append((token, skip))
+    # Least-covered route first, so a slow scorer cannot starve the other routes.
+    generic.sort(key=lambda item: (len(item[1]), item[0]))
+
+    def over_budget() -> bool:
+        return clock() - started > deadline_seconds
+
+    for token, skip in generic:
+        sport, stat_type = token.split(":", 1)
+        if over_budget():
+            routes.append({"route": token, "status": "DEFERRED_DEADLINE",
+                           "skipped_captured_for_active_artifact": len(skip), "can_execute": False})
+            continue
+        try:
+            out = run_generic_forward_route(sport=sport, stat_type=stat_type, max_snapshots=max_snapshots,
+                                            db=db, market_api=market_api, now=now, skip_theses=skip,
+                                            should_stop=over_budget)
+        except Exception as exc:  # noqa: BLE001 - one route never blocks another
+            routes.append({"route": token, "status": "FAILED", "error_type": type(exc).__name__,
+                           "can_execute": False})
+            continue
+        held_codes: dict[str, int] = defaultdict(int)
+        for row in out.get("rows") or []:
+            if str(row.get("status", "")).startswith("HELD"):
+                detail = row.get("detail") if isinstance(row.get("detail"), Mapping) else {}
+                held_codes[str(detail.get("code") or row.get("status"))] += 1
+        routes.append({
+            "route": token,
+            "status": out.get("status"),
+            "skipped_captured_for_active_artifact": len(skip),
+            "snapshots_considered": out.get("snapshots_considered"),
+            "captured_forward_predictions": out.get("captured_forward_predictions"),
+            "skipped_already_captured": out.get("skipped_already_captured"),
+            "held": out.get("held"),
+            "held_by_code": dict(held_codes),
+            "row_reconciliation": out.get("row_reconciliation"),
+            "can_execute": False,
+        })
+    return {
+        "routes": routes,
+        "captured_forward_predictions": sum(int(r.get("captured_forward_predictions") or 0) for r in routes),
+        "max_snapshots_per_route": max_snapshots,
+        "elapsed_seconds": round(clock() - started, 3),
+        "acquisition_performed": False,
+        "calibration_or_certification_performed": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+def run_priority_durable_audit(req: PriorityPropDurableAuditRequest, *, db: Any,
+                               market_api: Any = None, now: datetime | None = None) -> dict[str, Any]:
     captured_at = datetime.now(timezone.utc).isoformat()
     cycle_id = str(uuid4())
     tokens = lifecycle_base._requested_tokens(req.routes)
+    scoring_stage = None
+    if market_api is not None:
+        scoring_stage = lifecycle_base._safe_stage(
+            "PREGAME_FORWARD_SCORING",
+            lambda: run_pregame_forward_scoring(db, market_api, tokens,
+                                                now=now or datetime.now(timezone.utc)),
+        )
 
     forward_stage = lifecycle_base._safe_stage(
         "DURABLE_FORWARD_EVIDENCE_AUDIT",
@@ -325,6 +451,10 @@ def run_priority_durable_audit(req: PriorityPropDurableAuditRequest, *, db: Any)
     result["operator_summary"] = summarize_prop_routes(
         result["dashboard"], requested_routes=tokens, stage_statuses=stage_statuses,
     )
+    if scoring_stage is not None:
+        result["pregame_forward_scoring"] = scoring_stage
+        if scoring_stage["status"] != "PASS":
+            failed.append(scoring_stage["stage"])
     result["failed_stages"] = failed
     result["run_status"] = "COMPLETED" if not failed else "COMPLETED_WITH_STAGE_BLOCKERS"
     result["health_persistence"] = lifecycle_base.persist_lifecycle_health(
@@ -344,6 +474,7 @@ def install_priority_prop_lifecycle_runtime(
     *,
     auth_dependency: Any,
     db_client_fn: Callable[[], Any],
+    market_api: Any = None,
 ) -> None:
     automation_auth = scout_route_auth_dependency(auth_dependency)
 
@@ -370,7 +501,7 @@ def install_priority_prop_lifecycle_runtime(
             operation_id="runWowV17PriorityPropDurableAudit",
         )
         def priority_prop_durable_audit(req: PriorityPropDurableAuditRequest):
-            return run_priority_durable_audit(req, db=db_client_fn())
+            return run_priority_durable_audit(req, db=db_client_fn(), market_api=market_api)
 
 
 __all__ = [

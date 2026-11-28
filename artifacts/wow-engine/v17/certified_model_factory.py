@@ -203,4 +203,52 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
     return _receipt(s, m, sha, status="HOLD", code=code, native_status=native_status, evidence=evidence)
 
 
-__all__ = ["CAN_EXECUTE", "PROBABILITY_PUBLISHABLE", "SUPPORTED_RECIPES", "prepare_candidate_evidence"]
+RESEARCH_HANDOFF_SCHEMA = "WOW_NRE_FACTORY_HANDOFF_V1"
+_HANDOFF_FIELDS = ("task_id", "finding_id", "sport", "league", "season", "blocker_code", "source_id",
+                   "freshness", "conflict_status", "rights_id", "rights")
+_PROBABILITY_KEY = re.compile(r"probab|calibrat|confidence|edge$|odds|prediction$|win_pct", re.I)
+
+
+def _probability_keys(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any((_PROBABILITY_KEY.search(str(k)) and k != "prediction_authority") or _probability_keys(v)
+                   for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_probability_keys(v) for v in value)
+    return False
+
+
+def receive_research_handoff(handoff: Mapping[str, Any]) -> dict[str, Any]:
+    """Accept Native Research evidence for a future factory build. Never fits or certifies.
+
+    A verified, rights-clear source is queued for independent source review;
+    anything else is held with the exact reason. The fitted model, replay,
+    calibration and certification paths are unchanged.
+    """
+    def out(status: str, code: str | None = None) -> dict[str, Any]:
+        return {"schema_version": "WOW_FACTORY_RESEARCH_HANDOFF_RECEIPT_V1", "factory_version": FACTORY_VERSION,
+                "status": status, "code": code, "finding_id": handoff.get("finding_id") if isinstance(handoff, Mapping) else None,
+                "factory_action": "NONE_NO_FIT_NO_REPLAY_NO_CALIBRATION", "certification_performed": False,
+                "probability_publishable": PROBABILITY_PUBLISHABLE, "automatic_promotion": False,
+                "can_execute": CAN_EXECUTE}
+
+    if not isinstance(handoff, Mapping) or handoff.get("schema_version") != RESEARCH_HANDOFF_SCHEMA:
+        return out("REJECTED", "FACTORY_HANDOFF_SCHEMA_INVALID")
+    if any(handoff.get(k) in (None, "") for k in _HANDOFF_FIELDS) or not isinstance(handoff.get("rights"), Mapping):
+        return out("REJECTED", "FACTORY_HANDOFF_FIELDS_MISSING")
+    if (handoff.get("can_execute") is not False or handoff.get("prediction_authority") is not False
+            or handoff.get("evidence_only") is not True or handoff.get("production_use_authorized") is not False):
+        return out("REJECTED", "FACTORY_HANDOFF_AUTHORITY_INVALID")
+    if _probability_keys(handoff):
+        return out("REJECTED", "FACTORY_HANDOFF_PROBABILITY_FORBIDDEN")
+    if handoff["freshness"] != "FRESH" or handoff["conflict_status"] != "CONSISTENT":
+        return out("HELD", "FACTORY_HANDOFF_EVIDENCE_NOT_VERIFIED")
+    rights = handoff["rights"]
+    if (rights.get("model_training_permitted") != "YES" or rights.get("unresolved_upstream_rights")
+            or rights.get("commercial_restrictions")):
+        return out("HELD", "FACTORY_HANDOFF_SOURCE_RIGHTS_REVIEW_REQUIRED")
+    return out("QUEUED_FOR_INDEPENDENT_SOURCE_REVIEW")
+
+
+__all__ = ["CAN_EXECUTE", "PROBABILITY_PUBLISHABLE", "SUPPORTED_RECIPES", "prepare_candidate_evidence",
+           "receive_research_handoff"]
