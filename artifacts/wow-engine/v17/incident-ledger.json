@@ -308,7 +308,44 @@
         "release_note": "GitHub confirms PR #2565 merged at 2026-11-10T18:39:12Z; current production deployment and independent acceptance are not yet verified."
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-11-28-001",
+      "title": "Multi-sport live canary reports stale static fixtures instead of acquired pregame rows",
+      "severity": "P1",
+      "domain": "V17 multi-sport prop live canary / pregame evidence acquisition",
+      "state": "MERGED_PENDING_DEPLOY",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-11-28-001__multisport-canary-stale-static-fixtures.md",
+      "engineering_fix_ids": [
+        "FIX-2026-11-28-001"
+      ],
+      "created_utc": "2026-11-28T03:40:23Z",
+      "updated_utc": "2026-11-28T04:14:00Z",
+      "primary_subsystem": "V17_MULTISPORT_PROP_LIVE_CANARY",
+      "workflow_stage": "RELEASE_OBSERVABILITY",
+      "current_owner": "RELEASE_OBSERVABILITY_AGENT",
+      "risk_class": "R1",
+      "root_cause": "The canary only knew the hardcoded CONFIGS fixtures and had no adapter to the governed pregame producers or bundle handoff, so it could not report live eligibility from real rows.",
+      "root_cause_confidence": "HIGH",
+      "engineering_fixes": {
+        "FIX-2026-11-28-001": {
+          "title": "Feed the multi-sport live canary from acquired pregame rows",
+          "risk": "R1",
+          "state": "MERGED_PENDING_DEPLOY",
+          "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-11-28-001__feed-canary-from-acquired-pregame-rows.md",
+          "created_utc": "2026-11-28T03:40:23Z",
+          "updated_utc": "2026-11-28T04:14:00Z",
+          "implementation_owner": "ENGINEERING_AGENT",
+          "pull_request": 2904,
+          "pr_head_sha": "a825e6391b6d9b935f1bc5a3f81de63f35faecc8",
+          "merge_commit": "d1458c3173587cf6bac77e13819a5c3491c80a95",
+          "verification_run": 46106105938,
+          "push_run": 46106101546,
+          "rollback": "Revert merge commit d1458c3173587cf6bac77e13819a5c3491c80a95.",
+          "release_note": "PR #2904 merged 2026-11-28T04:07:59Z; dispatched run 46106105938 and merge-triggered push run 46106101546 both completed success. No runtime deployment is involved; Reporter/governance closure remains open."
+        }
+      }
     }
   ],
-  "updated_utc": "2026-11-10T18:39:12Z"
+  "updated_utc": "2026-11-28T04:14:00Z"
 }
