@@ -62,6 +62,11 @@ IMPLEMENTABLE_REPRODUCTION_STATUSES = {
     "INTERMITTENT",
     "ENVIRONMENT_SPECIFIC",
 }
+CLOSURE_OPEN_CLAIM_RE = re.compile(
+    r"(?:(?:the\s+)?(?:reporter(?:/governance)?|governance)\s+)?closure\s+"
+    r"(?:remains?\s+open|is\s+(?:still\s+)?open)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -145,6 +150,19 @@ def _architect_is_required(row: dict[str, Any]) -> bool:
     return architect_required(
         subsystem=row.get("primary_subsystem", "UNKNOWN"),
         protected_contracts=row.get("protected_contracts_touched", []),
+    )
+
+
+def release_note_claims_open_closure(note: Any) -> bool:
+    """True when a fix release note still says the Reporter/governance closure is open."""
+    return isinstance(note, str) and CLOSURE_OPEN_CLAIM_RE.search(note) is not None
+
+
+def resolve_closure_release_note(note: str, closed_utc: str) -> str:
+    """Replace an open-closure claim with the recorded closure receipt, preserving the rest."""
+    return CLOSURE_OPEN_CLAIM_RE.sub(
+        f"Reporter closure FIXED_VERIFIED recorded {closed_utc}",
+        note,
     )
 
 
@@ -450,22 +468,49 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "REPORTER_CLOSURE":
         raise ValueError("verified closure requires REPORTER_CLOSURE stage")
-    row["reporter_closure"] = {
-        "status": "FIXED_VERIFIED",
-        "evidence": evidence,
-        "closed_utc": _utc_now(),
-    }
-    if preventive_control:
-        row.setdefault("learning", {})["preventive_control"] = preventive_control
-    row["state"] = "VERIFIED_CLOSED"
-    latest_fix = _latest_fix_id(row)
-    if latest_fix:
-        row["engineering_fixes"][latest_fix]["state"] = "VERIFIED_CLOSED"
-        row["engineering_fixes"][latest_fix]["updated_utc"] = _utc_now()
+    receipt = row.get("reporter_closure") or {}
+    already_closed = row.get("state") == "VERIFIED_CLOSED" or receipt.get("status") == "FIXED_VERIFIED"
+    if already_closed and (
+        row.get("state") != "VERIFIED_CLOSED"
+        or receipt.get("status") != "FIXED_VERIFIED"
+        or not receipt.get("closed_utc")
+    ):
+        raise ValueError(
+            "verified closure is already recorded but inconsistent; "
+            "refusing to overwrite the closure receipt"
+        )
+    closed_utc = receipt["closed_utc"] if already_closed else _utc_now()
+    notes_changed = False
+    for fix_id in row.get("engineering_fix_ids", []):
+        fix = (row.get("engineering_fixes") or {}).get(fix_id)
+        if fix and release_note_claims_open_closure(fix.get("release_note")):
+            fix["release_note"] = resolve_closure_release_note(fix["release_note"], closed_utc)
+            notes_changed = True
+    if not already_closed:
+        row["reporter_closure"] = {
+            "status": "FIXED_VERIFIED",
+            "evidence": evidence,
+            "closed_utc": closed_utc,
+        }
+        if preventive_control:
+            row.setdefault("learning", {})["preventive_control"] = preventive_control
+        row["state"] = "VERIFIED_CLOSED"
+        latest_fix = _latest_fix_id(row)
+        if latest_fix:
+            row["engineering_fixes"][latest_fix]["state"] = "VERIFIED_CLOSED"
+            row["engineering_fixes"][latest_fix]["updated_utc"] = closed_utc
+    for fix_id in row.get("engineering_fix_ids", []):
+        fix = (row.get("engineering_fixes") or {}).get(fix_id) or {}
+        if release_note_claims_open_closure(fix.get("release_note")):
+            raise ValueError(
+                f"closure blocked: {fix_id} release_note still claims the closure remains open"
+            )
     errors = validate_team_record(row, enforce_closure=True)
     if errors:
         raise ValueError("closure blocked: " + "; ".join(errors))
-    row["updated_utc"] = _utc_now()
+    if already_closed and not notes_changed:
+        return
+    row["updated_utc"] = _utc_now() if already_closed else closed_utc
     _save_ledger(ledger)
 
 
@@ -500,6 +545,13 @@ def validate() -> None:
             fix_meta = row.get("engineering_fixes", {}).get(fix_id)
             if not fix_meta:
                 raise ValueError(f"missing engineering_fixes metadata for {fix_id}")
+            closed = row.get("state") == "VERIFIED_CLOSED" or (
+                row.get("reporter_closure") or {}
+            ).get("status") == "FIXED_VERIFIED"
+            if closed and release_note_claims_open_closure(fix_meta.get("release_note")):
+                raise ValueError(
+                    f"closed {pm_id} fix {fix_id} release_note still claims the closure remains open"
+                )
             fix_path = ROOT.parent.parent.parent / fix_meta["path"]
             if not fix_path.exists():
                 raise ValueError(f"missing engineering fix file for {fix_id}: {fix_path}")
