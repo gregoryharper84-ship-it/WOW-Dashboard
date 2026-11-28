@@ -21,6 +21,8 @@ BuildClass = Literal["D0", "D1", "A1", "A2"]
 BuildStatus = Literal[
     "CERTIFIED",
     "FORWARD_EVIDENCE_PENDING",
+    # forward evidence passed; the G7 governed catalog row is still absent
+    "GOVERNED_CATALOG_CERTIFICATION_PENDING",
     "CURRENT_DATA_PENDING",
     "EVIDENCE_CORPUS_PENDING",
     "FITTED_SPECIALIST_PENDING",
@@ -43,7 +45,8 @@ class CapabilityBuildPlan:
 
 TEAM_EVENT_BUILD_REGISTRY: dict[str, CapabilityBuildPlan] = {
     "MLB": CapabilityBuildPlan("MLB", "D1", ("A1",), "CERTIFIED", True, False, False, False, False),
-    "NFL": CapabilityBuildPlan("NFL", "D1", ("A1",), "FORWARD_EVIDENCE_PENDING", True, False, False, False, False),
+    # Live state: wow_nfl_forward_calibration_health + wow_runtime_capabilities.
+    "NFL": CapabilityBuildPlan("NFL", "D1", ("A1",), "GOVERNED_CATALOG_CERTIFICATION_PENDING", True, False, False, False, False),
     "NBA": CapabilityBuildPlan("NBA", "D1", ("A1",), "CURRENT_DATA_PENDING", True, False, False, False, False),
     "WNBA": CapabilityBuildPlan("WNBA", "D1", ("A1",), "CURRENT_DATA_PENDING", True, False, False, False, False),
     "NCAAF": CapabilityBuildPlan("NCAAF", "D1", ("A1", "A2"), "EVIDENCE_CORPUS_PENDING", True, False, False, False, False),

@@ -26,16 +26,16 @@ artifact demonstrates.
 
 | Item | Requirement | Current status | Read from |
 |---|---|---|---|
-| Forward cohort | `graded_n >= 100` | **unverified here** — last recorded observation was 95 / 100 (5 short), without a timestamp in this document | `wow_nfl_forward_calibration_health` (`graded_n`, `generated_at`) |
+| Forward cohort | `graded_n >= 100` | **reached** — `graded_n=126`, `minimum_forward_required=100`, `status='PASS'`, `FORWARD_EVIDENCE_PASS`, `blockers=[]`, schema `NFL_FORWARD_CALIBRATION_HEALTH_V3` (2026-11-27 receipt below) | `wow_nfl_forward_calibration_health` (`graded_n`, `generated_at`) |
 | Nov 15 slate | real slate size known before kickoff, every row pregame-publishable | **unverified here** — the slate size and the up-to-107 projection come from a same-day preflight run, not from this document | `wow_nfl_event_predictions` + `POST /internal/v17/nfl-forward-cohort-preflight` |
-| Metric gate | Brier, log loss, ECE, bias, lower-bound gap | not evaluated until `graded_n >= 100` | `calibration_health()` |
+| Metric gate | Brier, log loss, ECE, bias, lower-bound gap | **evaluated and passing on the current cohort** — the latest row is `status='PASS'` with `blockers=[]`; per-metric values live on that row and are deliberately not restated here | `calibration_health()` |
 | Per-row stage proof | exact readback, calibration producer receipt, final refresh | contract present; per-row proof unproven | `v17/nfl_daily_stage_receipts.py` |
-| Fitted artifact | `active`, `promoted`, `calibrator_id`, `certification_id`, `lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')` | unproven | `wow_nfl_event_fitted_model_artifacts` |
-| Calibrator | active + promoted, `validation_status='PASS'`, `health_status='PASS'`, NFL `OUTRIGHT_WINNER` | unproven | `wow_calibrators` |
-| Governed catalog | NFL row `CERTIFIED` + independent verification `PASS` + both hashes | unproven | `wow_team_event_specialist_certifications` |
-| Runtime capability | certified artifact + ready calibrator | `MODEL_UNAVAILABLE` until both exist | `wow_v17_refresh_nfl_event_capability()` |
-| Health probe | live champion loads through `load_champion_model` | `NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN` | `v17/all_sport_capability_readiness.py` |
-| Build classification | — | `FORWARD_EVIDENCE_PENDING` | `v17/capability_build_registry.py` |
+| Fitted artifact | `active`, `promoted`, `calibrator_id`, `certification_id`, `lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')` | **satisfied** — `7fee1209-0bed-4bd0-aa0f-fc7a881eff80` is `active=true`, `promoted=true`, `lifecycle_state='CHAMPION'`, with calibrator and certification ids populated | `wow_nfl_event_fitted_model_artifacts` |
+| Calibrator | active + promoted, `validation_status='PASS'`, `health_status='PASS'`, NFL `OUTRIGHT_WINNER` | **satisfied** — `756379bd-f557-4508-8ecb-91a5d336ec64` is `PLATT_TIME_SPLIT_V1`, active + promoted, `validation_status='PASS'`, `health_status='PASS'` | `wow_calibrators` |
+| Governed catalog | NFL row `CERTIFIED` + independent verification `PASS` + both hashes | **still unproven — G7 open** — no NFL row. The certificate of record is a different object, resolved by `wow_v17_active_team_event_certification` (2026-11-27 receipt) | `wow_team_event_specialist_certifications` (separate artefact) + `wow_v17_active_team_event_certification()` (certificate of record) |
+| Runtime capability | certified artifact + ready calibrator | **`AVAILABLE`** — `terminal_label_if_scored_now='MODEL_QUALIFIED_HOLD'`, `certified_artifact_ready=true`, `calibrator_ready=true`, row updated 2026-11-25T06:23Z. Scores only: `probability_publishable=false`, `can_execute=false` | `wow_runtime_capabilities` (`capability_key='NFL_EVENT_PROBABILITY'`) |
+| Health probe | live champion loads through `load_champion_model` | **not re-verified** — a process-level `load_champion_model` check that writes no row; re-run it to settle `NFL_ACTIVE_PROMOTED_CHAMPION_PROVEN` vs `NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN` | `v17/all_sport_capability_readiness.py` |
+| Build classification | — | `GOVERNED_CATALOG_CERTIFICATION_PENDING` — static planning label; G7 is the open gate | `v17/capability_build_registry.py` |
 
 Any gap is arithmetic, not a reporting artifact: the cohort counts only settled
 games whose immutable pregame prediction was created before kickoff with
@@ -76,6 +76,37 @@ authenticated expected-slate coverage matches, the maximum projected count
 from this snapshot is 107. Certification and publication remain on HOLD;
 do not treat this observation as a live production receipt.
 
+### 2026-11-27 read-only validation receipt — supersedes the 11-11 counts
+
+The same validation project was re-read on 2026-11-27. The 11-11 snapshot above
+stays as history and must not be quoted as current state.
+
+```text
+health row   4a56ba85-b41f-4d86-b716-790a27bf0065
+schema       NFL_FORWARD_CALIBRATION_HEALTH_V3
+graded_n     126        minimum_forward_required 100
+status       PASS       certification_recommendation FORWARD_EVIDENCE_PASS
+blockers     []         generated_at 2026-11-27T21:30:50Z
+```
+
+That row is not a global pass borrowed from another model: the
+`LATEST_VALID_PREKICKOFF_V2` / `NFL_FORWARD_SHADOW_GRADE_V2` cohort in
+`wow_nfl_forward_verified_grades_v2` holds 126 distinct `official_event_id` for
+this artifact and version. Artifact, calibrator and capability values are in the
+table above and are not repeated here.
+
+Two corrections to the 11-11 reading:
+
+1. The lane is not stuck at G5. G5's artifact and calibrator conditions and G6's
+   clearing condition are met; publication is withheld by G7.
+2. An empty `wow_team_event_specialist_certifications` is not evidence about the
+   certificate of record, which resolves through
+   `wow_v17_active_team_event_certification`. Emptiness there means the separate
+   governed-catalog artefact (G7) is absent.
+
+The read-only role cannot read that RPC's payload (`42501 permission denied`), so
+the certificate's returned fields stay unverified and G7 stays open.
+
 ---
 
 ## 2. Gates in order
@@ -83,12 +114,13 @@ do not treat this observation as a live production receipt.
 ### G1 — Forward cohort reaches 100
 
 - **Requires:** enough additional qualifying settled games to bring the live
-  `graded_n` to 100 (last recorded observation: 5 short).
+  `graded_n` to 100. Met at the 2026-11-27 read: `graded_n=126` (see §1).
 - **Enforced by:** `v17/nfl_forward_shadow.py` (`MIN_FORWARD_GRADED`,
   `select_canonical_forward_predictions`, `grade_forward_predictions`).
 - **Clears when:** `graded_n >= 100` in the latest
   `wow_nfl_forward_calibration_health` row.
-- **Blocker today:** `FORWARD_GRADED_N_<n>_LT_100`.
+- **Blocker today:** none — the latest row reports `blockers=[]`. The code still
+  emits `FORWARD_GRADED_N_<n>_LT_100` if a cohort falls short, so re-read the row.
 - **Operational note:** predictions for a slate must exist *before* kickoff.
   The read-only preflight in PR #2599 lists any slate game that cannot count,
   with its reason, hours before the first kickoff. It reports
@@ -202,8 +234,9 @@ exact-version G2 health are demonstrated.
 - **Clears when:** `wow_runtime_capabilities` for `NFL_EVENT_PROBABILITY` reaches
   `status='AVAILABLE'` with `terminal_label_if_scored_now='MODEL_QUALIFIED_HOLD'`
   (never a publication or execution grant).
-- **Until then:** the terminal label is `MODEL_UNAVAILABLE`, and the live
-  readiness probe keeps reporting `NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN`.
+- **Observed 2026-11-25T06:23Z:** the live row already meets this clearing
+  condition (`AVAILABLE`, `MODEL_QUALIFIED_HOLD`). That grants scoring, not
+  publication: `probability_publishable=false`, `can_execute=false`, G7 open.
 
 ### G7 — Governed catalog certification and route replay
 
@@ -248,7 +281,7 @@ From `v17/NFL-CERTIFICATION-AUDIT-2026-09-15.md`, with the current code state:
 | G-NFL-13 probability claim auditor | NOT PROVEN | Exercise the auditor against real NFL output, not only other sports |
 | G-NFL-15 event mutex / final refresh | PARTIAL | The schedule re-query receipt is enforced per row; independent mutex proof for NFL is absent |
 | G-NFL-16 live cross-over smoke | PENDING | Re-verify after the next Render deploy of the current SHA |
-| G-NFL-11/12 forward validation + health | IMPLEMENTED, EVIDENCE PENDING | G1 and G2 above |
+| G-NFL-11/12 forward validation + health | **EVIDENCE PRESENT** — 2026-11-27: `graded_n=126`, `PASS` | Nothing for the cohort itself; G3–G7 remain open |
 
 ---
 
@@ -278,22 +311,41 @@ select graded_n, minimum_forward_required, status,
  order by generated_at desc, health_id desc
  limit 1;
 
--- G4 exact-version cohort
-select model_version, count(distinct official_event_id) as graded_events
-  from public.wow_nfl_forward_shadow_grades
- group by model_version;
+-- G4 exact-version cohort: the view _forward_certification_proven() counts,
+-- not the immutable source ledger.
+select model_version, model_artifact_id,
+       count(distinct official_event_id) as graded_events
+  from public.wow_nfl_forward_verified_grades_v2
+ where selection_policy = 'LATEST_VALID_PREKICKOFF_V2'
+   and schema_version   = 'NFL_FORWARD_SHADOW_GRADE_V2'
+ group by model_version, model_artifact_id;
 
 -- G5
 select artifact_id, active, promoted, lifecycle_state,
        calibrator_id, certification_id, feature_schema_version
   from public.wow_nfl_event_fitted_model_artifacts;
 
--- G6
-select capability_status, evidence
+-- G6 the terminal label lives inside evidence, not in its own column.
+select capability_status,
+       evidence->>'terminal_label_if_scored_now' as terminal_label_if_scored_now,
+       evidence->>'lifecycle_state'              as lifecycle_state,
+       evidence->>'certified_artifact_ready'     as certified_artifact_ready,
+       evidence->>'calibrator_ready'             as calibrator_ready,
+       (evidence->>'probability_publishable')::boolean as probability_publishable,
+       updated_at
   from public.wow_runtime_capabilities
  where capability_key = 'NFL_EVENT_PROBABILITY';
 
--- G7
+-- G7 certificate of record — what the stage-receipt predicate resolves, and
+-- NOT the table below. Needs EXECUTE beyond the plain read-only role (42501);
+-- an unreadable payload is unverified, not absent.
+select *
+  from public.wow_v17_active_team_event_certification(
+         p_sport => 'NFL', p_league_scope => 'NFL'
+       );
+
+-- G7 governed catalog (separate artefact). Expected empty today. Emptiness
+-- here is evidence about the catalog row only — never about the G6 capability.
 select certification_id, certification_status, independent_verification_status,
        probability_publishable, artifact_sha256, calibration_sha256
   from public.wow_team_event_specialist_certifications
