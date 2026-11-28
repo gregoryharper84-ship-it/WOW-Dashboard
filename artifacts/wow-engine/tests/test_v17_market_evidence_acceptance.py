@@ -183,3 +183,59 @@ def test_acceptance_fallback_skips_empty_slate_and_stops_on_first_valid_capture(
     assert report["captured_providers"] == ["RUNDOWN"]
     assert snapshot.acceptance_blockers(report) == []
     assert len(report["acceptance_samples"]) == 2
+
+
+def test_free_core_market_entrypoints_do_not_touch_paid_provider_clients(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    monkeypatch.setenv("RUNDOWN_API_KEY", "fixture-not-a-real-key")
+    monkeypatch.setenv("SHARPAPI_API_KEY", "fixture-not-a-real-key")
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append("paid-provider-call")
+        raise AssertionError("paid provider invoked in FREE_CORE")
+
+    monkeypatch.setattr(snapshot.sources, "fetch", forbidden)
+    monkeypatch.setattr(snapshot.sources, "rundown_sport_id", forbidden)
+    monkeypatch.setattr(snapshot.live, "rundown_market_evidence", forbidden)
+    monkeypatch.setattr(snapshot.live, "sharpapi_market_evidence", forbidden)
+    monkeypatch.setattr(snapshot, "_provider_health_map", forbidden)
+    for provider, capability in (("RUNDOWN", "sports"), ("RUNDOWN", "events"), ("SHARPAPI", "odds")):
+        report = snapshot.probe(provider, capability, sport_key="americanfootball_nfl")
+        assert report["status"] == "BLOCKED"
+        assert report["reason_code"] == snapshot.source_policy.BLOCK_FREE_CORE
+        assert report["paid_provider_network_attempted"] is False
+    for report in (
+        snapshot.collect(["americanfootball_nfl", "basketball_nba", "icehockey_nhl"]),
+        snapshot.collect_acceptance("americanfootball_nfl"),
+        snapshot.collect_acceptance_with_fallback(),
+    ):
+        assert report["status"] == "FREE_CORE_MARKET_OPTIONAL_READY"
+        assert report["paid_provider_network_attempted"] is False
+        assert report["prediction_authority"] is False
+        assert report["can_execute"] is False
+    assert calls == []
+
+
+def test_nightly_workflow_disables_direct_paid_market_diagnostics():
+    from pathlib import Path
+    import yaml
+
+    root = Path(__file__).resolve().parents[3]
+    workflow = yaml.safe_load((root / ".github/workflows/wow-v17-nightly-multiscout.yml").read_text())
+    jobs = workflow["jobs"]
+    for job_id in ("market-evidence-acceptance", "nightly-discovery"):
+        env = jobs[job_id]["env"]
+        assert env["WOW_V17_SOURCE_MODE"] == "FREE_CORE"
+        assert env["WOW_V17_PAID_CALL_BUDGET_PER_SCAN"] == "0"
+        assert env["WOW_V17_PAID_FINAL_REFRESH_RESERVE"] == "0"
+        assert env["WOW_MARKET_EVIDENCE_KILL_SWITCH"] == "true"
+        assert "RUNDOWN_API_KEY" not in env
+        assert "SHARPAPI_API_KEY" not in env
+    steps = jobs["market-evidence-acceptance"]["steps"]
+    commands = "\n".join(step.get("run", "") for step in steps)
+    assert "--probe" not in commands
+    assert "--require-capture" not in commands
+    assert "baseball_mlb" not in commands
+    assert "NOT_ATTEMPTED" in commands
+    assert "paid_provider_network_attempted" in commands
