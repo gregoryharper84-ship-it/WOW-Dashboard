@@ -282,6 +282,22 @@ class RemoteFallbackTests(unittest.TestCase):
                 worker_id="workflow:run:2", branch="fix/cursor",
             )
 
+    def test_persisted_reservation_rejects_unusable_branch_identity(self):
+        """A tampered branch must not survive a ledger re-read."""
+        remote.reserve_cursor(
+            self.api, [], incident="1021", main_sha=MAIN, pr_number=1948,
+            pr_sha="b" * 40, cursor_agent_id="bc-12345678-1234-5678-1234-567812345678",
+            worker_id="workflow:run:1", branch="fix/cursor",
+        )
+        _, row = remote.reservations(self.api.comments)[0]
+        for tampered in ("main", "master", "", "  ", "fix bad", None, 7):
+            with self.subTest(branch=tampered), self.assertRaisesRegex(
+                remote.ProviderUnavailable, "^REMOTE_RESERVATION_INVALID$"
+            ):
+                remote.reservations([{
+                    "id": 55, "body": remote._body({**row, "branch": tampered}),
+                }])
+
     def test_actual_source_pr_requires_exact_repo_sha_and_independent_bot(self):
         self.run_fallback()
         self.api.timeline = [{"source": {"issue": {"pull_request": {

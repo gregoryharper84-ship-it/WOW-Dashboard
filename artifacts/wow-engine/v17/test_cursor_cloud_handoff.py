@@ -464,6 +464,15 @@ class HandoffTests(unittest.TestCase):
         self.assertTrue(cm.exception.details["reconciliation_required"])
         self.assertEqual(cm.exception.details["provider_http_status"], 400)
 
+    def test_failed_cursor_launch_keeps_live_pr_head_branch_on_the_hold(self):
+        """A failed POST must leave a hold the exact-reservation finalizer resolves."""
+        api = FakeApi(post_error=mod.HandoffBlocked("CURSOR_API_HTTP_500"))
+        with self.assertRaises(mod.HandoffBlocked):
+            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        held = json.loads(api.comments[0]["body"].split("\n", 1)[1])
+        self.assertEqual(held["status"], "CURSOR_LAUNCH_RESERVED")
+        self.assertEqual(held["branch"], "fix/daily")
+
 
 if __name__ == "__main__":
     unittest.main()

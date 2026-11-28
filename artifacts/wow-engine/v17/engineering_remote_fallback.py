@@ -90,12 +90,20 @@ def reservations(comments):
                     or not SHA.fullmatch(str(receipt.get("main_sha", "")))
                     or body.split("\n", 1)[0] != f"{MARKER}{receipt['incident_id']} -->"):
                 raise ValueError()
+            branch = receipt.get("branch")
             if provider == "cursor" and (
                 not re.fullmatch(r"[1-9][0-9]*", str(receipt.get("pr_number", "")))
                 or not SHA.fullmatch(str(receipt.get("pr_sha", "")))
                 or not CURSOR_AGENT_ID.fullmatch(str(receipt.get("cursor_agent_id", "")))
                 or (receipt.get("cursor_run_id") is not None
                     and not str(receipt.get("cursor_run_id", "")).strip())
+                # A recorded branch must stay as usable as the writer left it.
+                # A branchless record is still legal here: only the finalizer
+                # knows whether it predates BRANCH_REQUIREMENT_EFFECTIVE_UTC.
+                or ("branch" in receipt
+                    and (not isinstance(branch, str) or not branch
+                         or branch in {"main", "master"}
+                         or any(c.isspace() for c in branch)))
             ):
                 raise ValueError()
             result.append((comment["id"], receipt))
