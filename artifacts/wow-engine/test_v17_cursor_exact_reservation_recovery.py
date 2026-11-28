@@ -593,6 +593,51 @@ def _after_legacy(mutate, **legacy_kwargs):
     return run
 
 
+def test_shared_ledger_reservation_records_branch_and_finalizes_after_window():
+    """The writer and the finalizer must agree on the reservation identity.
+
+    A post-window reservation without `branch` is refused by
+    _verified_reservation as CURSOR_RESERVATION_IDENTITY_INVALID, so the delay
+    between reserve and fail must not cost the hold its branch.
+    """
+    fixture = FailedLaunchFixture()
+
+    class Ledger:
+        def __init__(self):
+            self.comments = []
+
+        def request(self, path, payload=None, method=None):
+            if path == ledger.LEDGER:
+                saved = {"id": FAILED_CID, "body": payload["body"]}
+                self.comments.append(saved)
+                return saved
+            raise AssertionError(path)
+
+    api = Ledger()
+    comment_id, lease = ledger.reserve_cursor(
+        api, [], incident=FAILED_INCIDENT, main_sha=FAILED_MAIN,
+        pr_number=FAILED_PR, pr_sha=FAILED_ORIGINAL_HEAD,
+        cursor_agent_id=FAILED_AGENT, worker_id=FAILED_WORKER,
+        branch="fix/synthetic-101",
+    )
+    assert comment_id == FAILED_CID
+    assert lease["branch"] == "fix/synthetic-101"
+    fixture.comment = {
+        "id": FAILED_CID,
+        "user": {"login": "github-actions[bot]", "id": 41898282},
+        "issue_url": f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/issues/1138",
+        "body": api.comments[0]["body"],
+        # Created after the branch requirement: no legacy fallback may apply.
+        "created_at": "2026-11-01T02:00:00Z",
+        "updated_at": "2026-11-01T02:00:00Z",
+    }
+    result = fixture.prove()
+    assert result["reservation"]["reservation_branch"] == "fix/synthetic-101"
+    assert result["reservation"]["legacy_branchless"] is False
+    assert result["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
+    assert result["can_execute"] is False
+
+
 def test_legacy_branchless_reservation_resolves_branch_from_live_pr_and_keeps_ancestry():
     fixture = FailedLaunchFixture()
     _legacy(fixture)

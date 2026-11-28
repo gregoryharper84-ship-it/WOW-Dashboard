@@ -457,6 +457,7 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 | `CURSOR_SHARED_WRITER_LEASE_ACTIVE`, `CURSOR_SHARED_WRITER_LEASE_INVALID`, `CURSOR_SHARED_WRITER_LEASE_UNAVAILABLE` | shared #1138 writer lease | Existing remote/local writer, malformed reservation, or unavailable lease ledger; no Cursor create |
 | `CURSOR_SHARED_WRITER_LEASE_INVENTORY_UNVERIFIED`, `CURSOR_SHARED_WRITER_LEASE_INVENTORY_TRUNCATED` | shared #1138 writer lease | Ledger pagination or response is incomplete; admission fails closed |
 | `CURSOR_SHARED_WRITER_LEASE_RECEIPT_UNVERIFIED` | shared #1138 writer lease | Cursor run receipt could not be bound to the persisted hold; hold remains active |
+| `CURSOR_RESERVATION_BRANCH_INVALID` | shared #1138 writer reservation | A Cursor reservation would be written without a usable live PR head branch (missing, empty, protected `main`/`master`, or non-string); the exact-reservation finalizer can never resolve such a reservation, so no ledger write and no Cursor create occur |
 | `CURSOR_FORK_HEAD_UNSUPPORTED` | GitHub PR head ownership | Head branch resides outside canonical repository |
 | `CURSOR_UNSAFE_TARGET_BRANCH`, `CURSOR_UNEXPECTED_BASE_BRANCH` | PR branch / base guard | Attempt would write main/master/empty head or operate against non-main base |
 | `CURSOR_GITHUB_AUTH_MISSING`, `CURSOR_GITHUB_PR_HTTP_<status>` | GitHub PR evidence | Missing GitHub credential or PR REST error; no authoritative head validation |
