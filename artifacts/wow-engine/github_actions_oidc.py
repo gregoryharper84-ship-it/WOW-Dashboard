@@ -233,6 +233,17 @@ def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
     return "GITHUB_ACTIONS_OIDC"
 
 
+def _publish_bearer_class(request: Any, bearer_class: str | None) -> None:
+    """Publish the authoritative bearer class for request-scoped telemetry.
+
+    Attribution only: this never authorizes, and its absence must not change
+    the request outcome. ``request`` is None when tests invoke the dependency
+    directly with an Authorization header only.
+    """
+    if request is not None:
+        request.state.wow_auth_bearer_class = bearer_class
+
+
 def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
     """Return a FastAPI dependency preserving the caller's existing auth seam.
 
@@ -267,9 +278,11 @@ def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
             except HTTPException as exc:
                 prior_error = exc
         try:
-            authorize_action_key_or_multiscout_oidc(authorization)
+            bearer_class = authorize_action_key_or_multiscout_oidc(authorization)
+            _publish_bearer_class(request, bearer_class)
             return
         except GitHubOIDCValidationError as exc:
+            _publish_bearer_class(request, "UNAUTHORIZED")
             if prior_error is not None:
                 raise prior_error
             raise HTTPException(

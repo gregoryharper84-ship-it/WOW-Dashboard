@@ -20,6 +20,7 @@ from v17.nhl_source_reingest import (
     default_season_id,
     nhl_source_rights_approved,
     run_nhl_source_reingest,
+    source_rights_provenance,
 )
 from v17 import nhl_fitted_specialist as fitted
 from v17.nhl_fitted_specialist import (
@@ -56,13 +57,19 @@ def certification_training_season_ids(
     return tuple(_season_id_for_start_year(year) for year in years)
 
 
-def _blocked(code: str, **extra: Any) -> dict[str, Any]:
+def _blocked(
+    code: str,
+    *,
+    rights_approved: bool | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
     payload = {
         "status": "BLOCKED",
         "code": code,
         "g1a_ready": False,
         "g1b_ready": False,
         "corpus_rebuild_ready": False,
+        "source_rights": source_rights_provenance(rights_approved),
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": PROBABILITY_PUBLISHABLE,
@@ -440,6 +447,7 @@ def run_nhl_g1_corpus_rebuild(
     if not dry_run and not nhl_source_rights_approved(rights_approved):
         return _blocked(
             "NHL_SOURCE_RIGHTS_HOLD",
+            rights_approved=rights_approved,
             detail={
                 "reason": "NHL_SOURCE_RIGHTS_NOT_APPROVED",
                 "dry_run_allowed": True,
@@ -490,6 +498,7 @@ def run_nhl_g1_corpus_rebuild(
         "season_results": season_results,
         "failed_season_n": len(failed),
         "readiness": readiness,
+        "source_rights": source_rights_provenance(rights_approved),
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": PROBABILITY_PUBLISHABLE,

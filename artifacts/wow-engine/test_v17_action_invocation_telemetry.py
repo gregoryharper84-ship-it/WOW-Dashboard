@@ -398,6 +398,11 @@ _REDACTED_RECEIPT_FIELDS = {
     "rows_in": (int, type(None)),
     "duration_ms": (int, float),
     "can_execute": (bool,),
+    # Attribution-only additions: authoritative bearer decision, transport peer
+    # and proxy chain. Each is bounded and none may carry a request body.
+    "auth_bearer_class": (str, type(None)),
+    "client_addr": (str, type(None)),
+    "forwarded_for": (str, type(None)),
 }
 _TIMING_FIELDS = frozenset({"duration_ms"})
 _NUMBER_TOKEN = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)(?!\d)")
@@ -538,6 +543,9 @@ def _redacted_receipt(**overrides):
         "rows_in": None,
         "duration_ms": 0.774,
         "can_execute": False,
+        "auth_bearer_class": None,
+        "client_addr": None,
+        "forwarded_for": None,
     }
     receipt.update(overrides)
     return receipt
