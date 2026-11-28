@@ -20,6 +20,10 @@ from v17.nfl_multiday_acceptance_preflight import (
 
 AUDIENCE = "wow-v17-multiscout"
 MAX_DATE_CALLS = 9
+# DailySnapshotRequest.max_team_events is capped at 12. A 13+ game
+# weekly cohort is supported across date partitions, never by lifting a
+# single Daily request beyond the actual API's validated per-date ceiling.
+MAX_DAILY_TEAM_EVENTS = 12
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,16 @@ def execute_nfl_week_snapshot_preflight(
     if not 1 <= len(dates) <= MAX_DATE_CALLS:
         return hold("NFL_WEEK_DATE_REQUEST_BUDGET_INVALID")
 
+    # Prevalidate every date BEFORE the first scorer POST, otherwise an
+    # unsupported 13-game day could lead to a partial multi-date side effect.
+    if any(
+        not isinstance(batch, Mapping)
+        or not isinstance(batch.get("expected_event_ids"), list)
+        or not 1 <= len(batch["expected_event_ids"]) <= MAX_DAILY_TEAM_EVENTS
+        for batch in dates
+    ):
+        return hold("NFL_WEEK_DAILY_REQUEST_EVENT_LIMIT_EXCEEDED")
+
     snapshots: dict[str, Mapping[str, Any]] = {}
     for batch in dates:
         day = batch["requested_slate_date"]
@@ -72,7 +86,7 @@ def execute_nfl_week_snapshot_preflight(
             "requested_timezone": "America/Chicago",
             "lanes": ["MONEYLINE"],
             "max_props": 0,
-            "max_team_events": 32,
+            "max_team_events": MAX_DAILY_TEAM_EVENTS,
             "response_mode": "FULL",
         }
         # Never retry after an ambiguous request outcome: doing so risks
