@@ -238,7 +238,39 @@ def persist_audit(client: Any, *, prediction_id: str, audit: Mapping[str, Any]) 
     stored = rows[0]
     if not stored.get("arithmetic_audit_id") or stored.get("audit_payload_hash") != payload["audit_payload_hash"]:
         raise RuntimeError("Python arithmetic audit ledger receipt was invalid")
-    return stored
+
+    # An insert acknowledgement is not durability. Read the exact audit row back
+    # by its own identity and hash before any downstream money lane treats the
+    # arithmetic as verified. Prediction persistence is a different proof and
+    # must never substitute for this one.
+    try:
+        reread = (
+            client.table("wow_wolfram_arithmetic_audits")
+            .select(
+                "arithmetic_audit_id,prediction_id,audit_payload_hash,claim_count,verdict"
+            )
+            .eq("arithmetic_audit_id", stored["arithmetic_audit_id"])
+            .limit(2)
+            .execute()
+        ).data
+    except Exception as exc:
+        raise RuntimeError("Python arithmetic audit ledger readback failed") from exc
+    if not isinstance(reread, list) or len(reread) != 1 or not isinstance(reread[0], dict):
+        raise RuntimeError("Python arithmetic audit ledger readback was not unique")
+    durable = reread[0]
+    if (
+        str(durable.get("arithmetic_audit_id")) != str(stored["arithmetic_audit_id"])
+        or str(durable.get("prediction_id")) != str(prediction_id)
+        or str(durable.get("audit_payload_hash")) != str(payload["audit_payload_hash"])
+        or durable.get("claim_count") != payload["claim_count"]
+    ):
+        raise RuntimeError("Python arithmetic audit ledger readback did not match")
+    return {
+        **stored,
+        "ledger_readback": "PASS",
+        "ledger_readback_at": datetime.now(timezone.utc).isoformat(),
+        "can_execute": False,
+    }
 
 
 __all__ = [

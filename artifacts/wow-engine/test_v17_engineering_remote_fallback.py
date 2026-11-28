@@ -218,13 +218,27 @@ class RemoteFallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(remote.ProviderUnavailable, "^REMOTE_RESERVATION_INVALID$"):
             remote.assert_no_remote_writer(self.api.comments)
 
+    def test_invalid_cursor_reservation_branch_never_writes_ledger(self):
+        for branch in (None, "", " ", "main", "master", 1, "fix bad", "fix\nother"):
+            with self.subTest(branch=branch):
+                with self.assertRaisesRegex(remote.ProviderUnavailable, "^CURSOR_RESERVATION_BRANCH_INVALID$"):
+                    remote.reserve_cursor(
+                        self.api, [], incident="1021", main_sha=MAIN, pr_number=1948,
+                        pr_sha="b" * 40, cursor_agent_id="bc-12345678-1234-5678-1234-567812345678",
+                        worker_id="workflow:run:1", branch=branch,
+                    )
+                self.assertEqual(self.api.comments, [])
+
     def test_cursor_reservation_uses_shared_writer_ledger_and_holds_until_review(self):
         agent = "bc-12345678-1234-5678-1234-567812345678"
         comment_id, lease = remote.reserve_cursor(
             self.api, [], incident="1021", main_sha=MAIN, pr_number=1948,
             pr_sha="b" * 40, cursor_agent_id=agent, worker_id="workflow:run:1",
+            branch="fix/cursor",
         )
         self.assertEqual(comment_id, 55)
+        self.assertEqual(lease["branch"], "fix/cursor")
+        self.assertEqual(remote.reservations(self.api.comments)[0][1]["branch"], "fix/cursor")
         self.assertEqual(lease["provider"], "cursor")
         self.assertTrue(lease["hold"])
         with self.assertRaisesRegex(
@@ -237,6 +251,8 @@ class RemoteFallbackTests(unittest.TestCase):
         )
         self.assertEqual(run["status"], "CURSOR_AGENT_ENQUEUED")
         self.assertEqual(run["cursor_run_id"], "cursor-run-1")
+        self.assertEqual(run["branch"], "fix/cursor")
+        self.assertEqual(remote.reservations(self.api.comments)[0][1]["branch"], "fix/cursor")
         self.assertTrue(remote.reservations(self.api.comments)[0][1]["hold"])
         reconciled = remote.reconcile(self.api, self.api.comments, "1021")
         self.assertEqual(reconciled[0]["status"],
@@ -263,7 +279,7 @@ class RemoteFallbackTests(unittest.TestCase):
                 self.api, self.api.comments, incident="1021", main_sha=MAIN,
                 pr_number=1948, pr_sha="c" * 40,
                 cursor_agent_id="bc-87654321-4321-8765-4321-876543218765",
-                worker_id="workflow:run:2",
+                worker_id="workflow:run:2", branch="fix/cursor",
             )
 
     def test_actual_source_pr_requires_exact_repo_sha_and_independent_bot(self):

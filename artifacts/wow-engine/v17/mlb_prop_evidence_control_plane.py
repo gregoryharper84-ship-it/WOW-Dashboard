@@ -70,13 +70,30 @@ def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
     return get
 
 
+# Statuses with which the schedule endpoint declines a date outright, e.g. an
+# out-of-season date it has no slate for. That is an empty slate, not a
+# transport failure, and must not block the caller's acquisition.
+_REFUSED_DATE_STATUSES = frozenset({404, 406})
+
+
+def _date_not_served(exc: Exception) -> bool:
+    """True when the upstream refused this date rather than failed to answer."""
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) in _REFUSED_DATE_STATUSES
+
+
 def _request_schedule(slate_date: str, *, http_get: Callable[..., Any]) -> dict[str, Any]:
     response = http_get(
         f"{MLB_STATS_API_BASE}/schedule",
         params={"sportId": "1", "date": slate_date, "hydrate": "probablePitcher,team,venue"},
         timeout=8.0,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except Exception as exc:
+        if _date_not_served(exc):
+            return {}
+        raise
     payload = response.json()
     if not isinstance(payload, dict):
         raise TypeError("MLB schedule response was not an object")

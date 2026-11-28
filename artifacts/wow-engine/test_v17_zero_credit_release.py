@@ -12,7 +12,7 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 ROOTS = frozenset({"src/trust-root.py"})
 
 
-def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="src/code.py", test_path=None):
+def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="artifacts/wow-engine/learning/README.md", test_path=None):
     files = [path] + ([test_path] if test_path else [])
     checks = [
         {"id": i, "name": name, "head_sha": SHA, "app_id": policy.GITHUB_ACTIONS_APP_ID,
@@ -43,6 +43,39 @@ def qa(ev):
 
 def test_free_mode_procedural_checks_pass_without_semantic_review():
     assert qa(evidence()) == []
+
+
+def test_free_mode_nonallowlisted_code_requires_semantic_review():
+    ev = evidence(path="artifacts/wow-engine/v17/nfl_event_availability_adapter.py")
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
+    ev["files"] = ["artifacts/wow-engine/v17/nba_current_pregame_scorer.py"]
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
+
+
+def test_free_mode_mixed_training_and_protected_source_never_passes():
+    ev = evidence()
+    ev["files"].append(".github/workflows/wow-v17-independent-qa-check.yml")
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
+    ev["files"] = []
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
+
+
+def test_free_mode_exact_training_inventory_only():
+    ev = evidence()
+    assert ev["files"][0] in policy.CLASS_A_EXACT_PATHS
+    assert qa(ev) == []
+
+
+def test_release_rederives_missing_semantic_evidence_even_with_signed_qa():
+    ev = evidence(path="artifacts/wow-engine/v17/nfl_event_availability_adapter.py")
+    ev["check_runs"].append({
+        "id": 88, "name": policy.QA_CHECK, "head_sha": SHA,
+        "app_id": 5245832, "conclusion": "success", "status": "completed",
+    })
+    findings = policy.release_findings(
+        ev, qa_app_id="5245832", release_app_id="5245853", governance_files=ROOTS,
+    )
+    assert "RELEASE_QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
 
 
 def test_free_mode_opt_in_mandatory():
@@ -94,7 +127,14 @@ def test_free_mode_owner_authored_trust_root_still_needs_a_negative_test():
     assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" in qa(ev)
     ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py",
                   test_path="src/test_trust_root_negative.py")
-    assert qa(ev) == []  # no independent-review claim; exact-head regressions remain mandatory
+    # The covering test satisfies this requirement only: a trust root is not a
+    # Class-A path, so independent semantic review still holds (next test).
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" not in qa(ev)
+
+
+def test_free_mode_owner_authored_trust_root_requires_independent_semantic_review():
+    ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py")
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
     ev["check_runs"].pop()
     assert any(x.startswith("QA_EVIDENCE_MISSING:") for x in qa(ev))
 
@@ -127,14 +167,20 @@ def test_release_rejects_qa_from_wrong_app():
     )
 
 
-def test_workflows_keep_paid_review_and_explicit_free_flag():
+def test_workflows_keep_independent_gemini_review_and_explicit_free_flag():
     qa_yaml = (ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text()
     release_yaml = (ROOT / ".github/workflows/wow-v17-release-authority-check.yml").read_text()
     assert "WOW_QA_ZERO_CREDIT_MODE" in qa_yaml
     assert "WOW_QA_ZERO_CREDIT_MODE" in release_yaml
     assert "--zero-credit-policy-enabled" in qa_yaml
     assert "--zero-credit-policy-enabled" in release_yaml
-    assert "uses: ./.github/actions/wow-chatgpt-agent" in qa_yaml
+    assert "wow_v28_gemini_qa_bridge.py review" in qa_yaml
+    assert "wow_v28_gemini_qa_bridge.py attest" in qa_yaml
+    assert "wow_v28_gemini_qa_bridge.py verify" in qa_yaml
+    assert "permission-pull-requests: write" in qa_yaml
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" in qa_yaml
+    assert "WOW_QA_GEMINI_FREE_TIER_CONFIRMED" in qa_yaml
+    assert "uses: ./.github/actions/wow-chatgpt-agent" not in qa_yaml
 
 
 def dispatcher_case(*, zero_credit=True, checks=None, author="copilot-swe-agent[bot]",

@@ -567,7 +567,7 @@ def score_current_event_snapshot(
 
         scorer = infer_raw_probability
     scoring_time = _aware(
-        clock() if clock is not None else datetime.now(timezone.utc),
+        clock() if clock is not None else (now if now is not None else datetime.now(timezone.utc)),
         "now",
     )
     if kickoff <= scoring_time:

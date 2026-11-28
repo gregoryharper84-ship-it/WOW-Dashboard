@@ -114,7 +114,9 @@ def test_nightly_acceptance_waits_for_terminal_queue_reconciliation():
 def test_live_multiscout_waits_for_successful_render_deployment():
     text = WORKFLOW.read_text(encoding="utf-8")
     assert 'workflow_run:' in text
-    assert 'workflows: ["wow-v17-render-production-deploy"]' in text
+    # Both certified deploy writers are admitted; live jobs still require
+    # a successful completed deployment of protected main.
+    assert 'workflows: ["wow-v17-render-production-deploy", "wow-v17-required-checks-deploy"]' in text
     assert "github.event.workflow_run.conclusion == 'success'" in text
     assert "github.event.workflow_run.head_branch == 'main'" in text
     assert "github.event_name == 'schedule'" in text

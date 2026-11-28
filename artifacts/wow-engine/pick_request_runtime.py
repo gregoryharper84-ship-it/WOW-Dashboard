@@ -122,13 +122,43 @@ def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
     evidence = getattr(row, "evidence", None)
     role_status = getattr(evidence, "role_status", None) if evidence is not None else None
     role = role_status if isinstance(role_status, dict) else {}
-    bound_event_id = str(role.get("canonical_event_id") or "").strip()
+    aliases = role.get("provider_event_ids")
+    provider_event_ids = (
+        {
+            str(value).strip()
+            for value in aliases.values()
+            if str(value or "").strip()
+        }
+        if isinstance(aliases, dict)
+        else set()
+    )
+    provider_event_ids.add(str(role.get("provider_event_id") or "").strip())
+    provider_event_ids.discard("")
+
     request_event_id = str(normalized.get("event_id") or "").strip()
+    sport = str(normalized.get("sport") or "").strip().upper()
+    verified_event_id = str(role.get("verified_canonical_event_id") or "").strip()
+
+    # Host orchestration may submit the provider alias (for example an ESPN event
+    # id such as 401873036) instead of the canonical scoring id. Rewrite the alias
+    # only when the hydrated evidence itself proves that alias belongs to the
+    # verified canonical event; any other mismatch still fails closed below.
+    if (
+        sport == "NFL"
+        and verified_event_id
+        and request_event_id
+        and request_event_id != verified_event_id
+        and request_event_id in provider_event_ids
+    ):
+        normalized["event_id"] = verified_event_id
+        normalized["event_id_alias_normalized_from"] = request_event_id
+        request_event_id = verified_event_id
+
+    bound_event_id = str(role.get("canonical_event_id") or "").strip()
     if bound_event_id and bound_event_id != request_event_id:
         raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH")
 
-    if str(normalized.get("sport") or "").strip().upper() == "NFL":
-        aliases = role.get("provider_event_ids")
+    if sport == "NFL":
         espn_alias = (
             str(aliases.get("ESPN") or "").strip()
             if isinstance(aliases, dict)
@@ -139,7 +169,6 @@ def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
             or str(role.get("espn_athlete_id") or "").strip()
             or str(role.get("status") or "").strip().upper() == "ACTIVE_CURRENT_ESPN_ROSTER"
         )
-        verified_event_id = str(role.get("verified_canonical_event_id") or "").strip()
         if provider_backed and not verified_event_id:
             raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_UNVERIFIED")
         if verified_event_id and verified_event_id != request_event_id:

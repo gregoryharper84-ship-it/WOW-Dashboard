@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -449,3 +450,84 @@ def test_full_enrolled_backend_verified_wnba_evidence_preserves_governed_probabi
     assert result["calibrated_probability"] == 0.72
     assert result["calibrated_lower_bound"] == 0.66
     assert result["can_execute"] is False
+
+
+def test_screened_matchup_evidence_is_never_reported_as_consumed():
+    request = _request("WNBA")
+    now = datetime.now(timezone.utc)
+    request.event_start_time_utc = (now + timedelta(days=2)).isoformat()
+    request.sport_specific_evidence = {
+        **request.sport_specific_evidence,
+        "matchup_metric_evidence": {
+            "opponent_adjusted_strength": [{
+                "official_event_id": "event-1",
+                "home_team": "Alpha",
+                "away_team": "Beta",
+                "source_id": "WNBA_ESTABLISHED_STATS_V1",
+                "source_class": "ESTABLISHED_STATS_PROVIDER",
+                "captured_at": (now - timedelta(hours=1)).isoformat(),
+                "confirmed": True,
+                "value": {"net_rating_factor": 1.18},
+            }],
+        },
+    }
+
+    def scorer(*args, **kwargs):
+        package = _valid_package("matchup-audit")
+        package["consumed_feature_ids"] = []
+        package["feature_schema_version"] = "WNBA_TEST_FEATURES_V1"
+        return package
+
+    _register(
+        "WNBA",
+        scorer,
+        required_inputs=("official_event_id",),
+        feature_schema_version="WNBA_TEST_FEATURES_V1",
+    )
+    result = _score(request)
+
+    assert result["matchup_discovery"]["screened_features"] == ["opponent_adjusted_strength"]
+    audit = result["matchup_feature_consumption"]
+    assert audit["controlling_specialist"] == "TEST_WNBA_SPECIALIST"
+    assert audit["screened_features"] == ["opponent_adjusted_strength"]
+    assert audit["consumed_matchup_features"] == []
+    assert audit["specialist_consumption_state"] == "NOT_DECLARED_BY_FITTED_VECTOR"
+    assert audit["prediction_authority"] is False
+    assert audit["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NFL", "NBA", "NCAAF", "NCAAB", "SOCCER", "TENNIS", "PGA"])
+def test_known_new_material_change_downgrades_registered_scorer_publication(sport):
+    # This tests the actual registered scorer return, not merely Scout metadata.
+    _register(sport, lambda *args, **kwargs: _valid_package(sport.lower()))
+    req = _request(sport)
+    req.latest_material_update_timestamp = "2026-09-09T18:00:00Z"
+    scored = _score(req)
+    assert scored["material_context_chronology_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert scored["probability_publishable"] is False
+    assert scored["rank_eligible"] is False
+    assert "CONTEXT_STALE_RECALC_REQUIRED" in scored["publication_blockers"]
+    assert scored["calibrated_probability"] == 0.72
+    assert scored["can_execute"] is False
+
+
+def test_registered_scorer_fresh_timestamp_is_only_chronology_not_consumption_attestation():
+    _register("NBA", lambda *args, **kwargs: _valid_package())
+    req = _request("NBA")
+    req.latest_material_update_timestamp = "2026-09-09T16:00:00Z"
+    scored = _score(req)
+    assert scored["material_context_chronology_status"] == "CHRONOLOGY_OK_CONSUMPTION_NOT_PROVEN"
+    assert scored["probability_publishable"] is True
+    assert scored["rank_eligible"] is True
+    assert scored["can_execute"] is False
+
+
+def test_registered_scorer_invalid_context_timestamp_holds_instead_of_publishing():
+    _register("NBA", lambda *args, **kwargs: _valid_package())
+    req = _request("NBA")
+    req.latest_material_update_timestamp = "invalid"
+    scored = _score(req)
+    assert scored["material_context_chronology_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert scored["probability_publishable"] is False
+    assert scored["rank_eligible"] is False
+    assert scored["can_execute"] is False

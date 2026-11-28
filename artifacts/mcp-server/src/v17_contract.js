@@ -9,6 +9,18 @@ const objectOutputSchema = {
 
 const directionSchema = { type: "string", enum: ["MORE", "LESS"] };
 
+// minLength counts characters, so "   " would pass it; the pattern requires at
+// least one non-whitespace character so a blank-vs-whitespace identity fails at
+// the host edge instead of reaching the backend ledger.
+const nonBlankString = { type: "string", minLength: 1, pattern: "\\S" };
+
+export const RECOMMENDATION_ENVELOPE_IDENTITY_FIELDS = Object.freeze([
+  "research_run_id",
+  "host_identity",
+  "model_identity",
+  "source_type",
+]);
+
 const pickRowSchema = {
   type: "object",
   additionalProperties: false,
@@ -298,8 +310,14 @@ export const V17_TOOLS = [
     inputSchema: {
       type: "object",
       additionalProperties: true,
-      required: ["rows"],
-      properties: { rows: { type: "array", items: { type: "object", additionalProperties: true } } },
+      required: [...RECOMMENDATION_ENVELOPE_IDENTITY_FIELDS, "rows"],
+      properties: {
+        research_run_id: nonBlankString,
+        host_identity: nonBlankString,
+        model_identity: nonBlankString,
+        source_type: nonBlankString,
+        rows: { type: "array", items: { type: "object", additionalProperties: true } },
+      },
     },
   }),
   tool({

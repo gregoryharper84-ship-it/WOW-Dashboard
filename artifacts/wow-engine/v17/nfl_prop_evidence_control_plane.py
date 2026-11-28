@@ -10,13 +10,13 @@ ranking, pricing, or execution authority is created. can_execute=false.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Callable, Mapping
 
 import httpx
 from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17 import memory_admission
@@ -25,6 +25,7 @@ from prop_auto_hydration import PropAutoHydrationError
 from prop_auto_hydration_router import auto_hydrate_prop_evidence
 import nfl_prop_auto_hydration as nfl
 from v17.nfl_prop_event_aware_player_identity import install_nfl_event_aware_player_identity
+from v17.player_availability_gate import evaluate_player_availability
 
 CAN_EXECUTE = False
 ROUTE_PATH = "/internal/v17/nfl-prop-forward-evidence/acquire"
@@ -51,6 +52,15 @@ class NFLForwardEvidenceRequest(BaseModel):
     requested_date: str
     candidate_offset: int = Field(default=0, ge=0, le=4000)
     max_candidates: int = Field(default=32, ge=1, le=64)
+    # Optional deterministic scheduler rotation; existing offset clients
+    # retain their exact historical semantics when this is absent.
+    candidate_rotation: int | None = Field(default=None, ge=0, le=2_147_483_647)
+
+    @model_validator(mode="after")
+    def _exclusive_paging(self) -> "NFLForwardEvidenceRequest":
+        if self.candidate_rotation is not None and self.candidate_offset != 0:
+            raise ValueError("candidate_rotation and candidate_offset are mutually exclusive")
+        return self
 
 
 def _aware(value: Any) -> datetime | None:
@@ -161,17 +171,32 @@ def _roster(team_id: str, *, http_get: Callable[..., Any]) -> list[dict[str, Any
 
 def _discover_candidates(requested_date: str, *, now: datetime, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    # The snapshot identity is event + display name + stat, not ESPN athlete ID.
+    # A roster can repeat a display name with conflicting IDs; silently
+    # processing both would upsert one source_snapshot_id twice and inflate
+    # persisted/receipt counts. Fail closed on that ambiguity.
+    seen: dict[tuple[str, str, str], tuple[str, str, str]] = {}
     for event in _pregame_events(requested_date, now=now, http_get=http_get):
         teams = event["teams"]
         for team in teams:
             opponent = next(item["abbr"] for item in teams if item["abbr"] != team["abbr"])
             for player in _roster(team["team_id"], http_get=http_get):
                 for stat_type in POSITION_STATS[player["position"]]:
-                    identity = (event["canonical_event_id"], str(player["player_id"] or player["player"]), stat_type)
-                    if identity in seen:
+                    identity = (
+                        event["canonical_event_id"], nfl._name_key(player["player"]), stat_type,
+                    )
+                    source_identity = (
+                        team["abbr"], str(player["player_id"] or ""), player["position"],
+                    )
+                    previous = seen.get(identity)
+                    if previous is not None:
+                        if not source_identity[1] or previous != source_identity:
+                            raise nfl.NFLPropHydrationError(
+                                "NFL_PROP_ROSTER_IDENTITY_CONFLICT",
+                                "official roster has ambiguous event/player/stat identity",
+                            )
                         continue
-                    seen.add(identity)
+                    seen[identity] = source_identity
                     candidates.append({
                         **event,
                         **player,
@@ -194,18 +219,45 @@ def _candidate_line(game_log: list[float], stat_type: str) -> float:
     return float(int(float(median(values))) + 0.5)
 
 
-def _existing_snapshot(db: Any, candidate: dict[str, Any]) -> bool:
+def _existing_snapshot(db: Any, candidate: dict[str, Any], *, now: datetime) -> bool:
+    """Only skip a current, officially ready snapshot; stale/blocked evidence must refresh.
+
+    Historical existence alone is not proof of present availability. A prior
+    blocked or stale snapshot cannot permanently starve an exact NFL prop
+    identity from evidence re-acquisition. The scorer's independent pregame
+    gate remains authoritative after a newly captured snapshot.
+    """
     result = (
         db.table("wow_prop_evidence_snapshots")
-        .select("source_snapshot_id")
+        .select("source_snapshot_id,captured_at,hydration_status,blockers,role_status")
         .eq("event_id", str(candidate["canonical_event_id"]))
         .eq("sport", SPORT)
         .eq("player", str(candidate["player"]))
         .eq("stat_type", str(candidate["stat_type"]))
+        .order("captured_at", desc=True)
         .limit(1)
         .execute()
     )
-    return bool(result.data or [])
+    rows = result.data or []
+    if not rows:
+        return False
+    latest = rows[0]
+    if str(latest.get("hydration_status") or "").upper() != "PASS":
+        return False
+    if latest.get("blockers"):
+        return False
+    availability = evaluate_player_availability(latest.get("role_status"))
+    if availability.blocker or availability.requires_revalidation:
+        return False
+    # A stored "fresh" flag is only true at capture time: recheck the source
+    # injury report's own time against the original official age contract.
+    report_at = _aware(availability.captured_at)
+    if report_at is None or report_at > now or now - report_at > nfl.MAX_INJURY_REPORT_AGE:
+        return False
+    captured_at = _aware(latest.get("captured_at"))
+    if captured_at is None or captured_at > now:
+        return False
+    return now - captured_at <= timedelta(minutes=30)
 
 
 def acquire_nfl_forward_evidence_batch(
@@ -214,6 +266,8 @@ def acquire_nfl_forward_evidence_batch(
     db: Any,
     now: datetime | None = None,
     http_get: Callable[..., Any] = httpx.get,
+    priority_targets: tuple[tuple[str, str, str], ...] = (),
+    _discovery_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cached_get = _cached_http_get(http_get)
@@ -222,6 +276,8 @@ def acquire_nfl_forward_evidence_batch(
         "sport": SPORT,
         "requested_date": req.requested_date,
         "candidate_offset": req.candidate_offset,
+        "candidate_rotation": req.candidate_rotation,
+        "rotation_page_n": 0,
         "max_candidates": req.max_candidates,
         "total_candidates": 0,
         "window_candidate_n": 0,
@@ -231,6 +287,9 @@ def acquire_nfl_forward_evidence_batch(
         "persisted": 0,
         "held": 0,
         "snapshot_write_failed": 0,
+        "snapshot_write_succeeded": 0,
+        "explicit_prewrite_exclusions": 0,
+        "receipts": [],
         "next_offset": None,
         "blockers": [],
         "stat_types": list(STAT_TYPES),
@@ -240,14 +299,51 @@ def acquire_nfl_forward_evidence_batch(
         "can_execute": False,
     }
     try:
-        candidates = _discover_candidates(req.requested_date, now=now, http_get=cached_get)
+        # The shared cache is strictly internal to one server-side Daily run;
+        # the authenticated HTTP request never exposes it. This pins all pages
+        # to one authoritative discovery/order, preventing moving-offset
+        # duplicates or silent count drift while sources update mid-run.
+        cache_valid = (
+            _discovery_cache is not None
+            and _discovery_cache.get("requested_date") == req.requested_date
+            and _discovery_cache.get("now") == now.isoformat()
+            and isinstance(_discovery_cache.get("candidates"), tuple)
+        )
+        if cache_valid:
+            candidates = list(_discovery_cache["candidates"])
+        else:
+            candidates = _discover_candidates(req.requested_date, now=now, http_get=cached_get)
+            if priority_targets:
+                wanted = set(priority_targets)
+                candidates.sort(key=lambda candidate: (
+                    0 if (
+                        str(candidate["canonical_event_id"]),
+                        str(candidate["player"]),
+                        str(candidate["stat_type"]),
+                    ) in wanted else 1,
+                ))
+            if _discovery_cache is not None:
+                _discovery_cache.clear()
+                _discovery_cache.update(
+                    requested_date=req.requested_date,
+                    now=now.isoformat(),
+                    candidates=tuple(candidates),
+                )
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
         result["blockers"] = [getattr(exc, "code", f"NFL_PROP_DISCOVERY_FAILED:{type(exc).__name__}")]
         return result
 
     result["total_candidates"] = len(candidates)
-    start = min(req.candidate_offset, len(candidates))
+    page_n = (len(candidates) + req.max_candidates - 1) // req.max_candidates
+    result["rotation_page_n"] = page_n
+    if req.candidate_rotation is None:
+        start = min(req.candidate_offset, len(candidates))
+    else:
+        # Bound every scheduled batch to a real candidate page, including
+        # small slates; no fixed ten-page cap can starve the rest of a slate.
+        start = (req.candidate_rotation % page_n) * req.max_candidates if page_n else 0
+    result["candidate_offset"] = start
     end = min(start + req.max_candidates, len(candidates))
     window = candidates[start:end]
     result["window_candidate_n"] = len(window)
@@ -255,15 +351,35 @@ def acquire_nfl_forward_evidence_batch(
 
     for candidate in window:
         result["attempted"] += 1
+        receipt = {
+            "event_id": candidate["canonical_event_id"],
+            "event_start_time": candidate["event_start_time"],
+            "sport": SPORT,
+            "player": candidate["player"],
+            "stat_type": candidate["stat_type"],
+            "line": None,
+            "direction": "MORE",
+            "opponent": candidate["opponent"],
+            "source_type": SOURCE_TYPE,
+            "source_snapshot_id": None,
+            "write_status": "PREWRITE_PENDING",
+            "terminal_reason": None,
+            "can_execute": False,
+        }
+        result["receipts"].append(receipt)
         try:
-            if _existing_snapshot(db, candidate):
+            if _existing_snapshot(db, candidate, now=now):
                 result["already_captured"] += 1
+                result["explicit_prewrite_exclusions"] += 1
+                receipt["write_status"] = "ALREADY_CAPTURED"
+                receipt["terminal_reason"] = "NFL_EXISTING_SNAPSHOT_ALREADY_CAPTURED"
                 continue
         except Exception as exc:
             result["held"] += 1
-            result["blockers"].append(
-                f"{candidate['player']}:{candidate['stat_type']}:NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}"
-            )
+            result["explicit_prewrite_exclusions"] += 1
+            reason = f" NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}".strip()
+            receipt.update(write_status="PREWRITE_EXCLUDED", terminal_reason=reason)
+            result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{reason}")
             continue
         writing = False
         try:
@@ -280,7 +396,14 @@ def acquire_nfl_forward_evidence_batch(
                 canonical_event_id=str(candidate["canonical_event_id"]),
             )
             evidence = RawPropEvidence.model_validate(raw)
+            # Persist research-line provenance in the already-versioned source
+            # timestamp map; a discovered half-point is never an actual offer.
+            evidence.source_timestamps = {
+                **evidence.source_timestamps,
+                "WOW_AUTONOMOUS_DISCOVERY_LINE": now.isoformat(),
+            }
             line = _candidate_line(evidence.game_log, str(candidate["stat_type"]))
+            receipt["line"] = line
             row = PickRequestRow(
                 row_key=(
                     f"nfl-forward:{candidate['canonical_event_id']}:{candidate['player']}:"
@@ -304,33 +427,45 @@ def acquire_nfl_forward_evidence_batch(
             snapshot["source_snapshot_id"] = snapshot_id
             result["hydrated"] += 1
             writing = True
+            receipt.update(source_snapshot_id=snapshot_id, write_status="SNAPSHOT_WRITE_PENDING")
             db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
             result["persisted"] += 1
+            result["snapshot_write_succeeded"] += 1
+            receipt.update(
+                write_status="SNAPSHOT_WRITE_SUCCEEDED",
+                terminal_reason="PERSISTED_AWAITING_CANONICAL_READBACK",
+            )
         except PropAutoHydrationError as exc:
             result["held"] += 1
+            result["explicit_prewrite_exclusions"] += 1
+            receipt.update(write_status="PREWRITE_EXCLUDED", terminal_reason=exc.code)
             result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{exc.code}")
         except ValueError as exc:
+            reason = " ".join(str(exc).split())[:120] or type(exc).__name__
+            result["held"] += 1
             if writing:
-                # A failure after validation, while writing the snapshot, is a genuine write failure.
-                result["held"] += 1
                 result["snapshot_write_failed"] += 1
-                result["blockers"].append(
-                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
-                )
+                receipt.update(write_status="SNAPSHOT_WRITE_FAILED",
+                               terminal_reason=f"NFL_FORWARD_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}")
             else:
-                # Governed evidence validation (for example L10_GAME_LOG_INCOMPLETE) is a typed
-                # row-scoped HOLD with its reason, not a snapshot write failure. Nothing is
-                # persisted and no probability is produced for the row.
-                reason = " ".join(str(exc).split())[:120] or type(exc).__name__
-                result["held"] += 1
-                result["blockers"].append(
-                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_EVIDENCE_INVALID:{reason}"
-                )
+                result["explicit_prewrite_exclusions"] += 1
+                receipt.update(write_status="PREWRITE_EXCLUDED",
+                               terminal_reason=f"NFL_FORWARD_EVIDENCE_INVALID:{reason}")
+            result["blockers"].append(
+                f"{candidate['player']}:{candidate['stat_type']}:{receipt['terminal_reason']}"
+            )
         except Exception as exc:
             result["held"] += 1
-            result["snapshot_write_failed"] += 1
+            if writing:
+                result["snapshot_write_failed"] += 1
+                receipt.update(write_status="SNAPSHOT_WRITE_FAILED",
+                               terminal_reason=f"NFL_FORWARD_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}")
+            else:
+                result["explicit_prewrite_exclusions"] += 1
+                receipt.update(write_status="PREWRITE_EXCLUDED",
+                               terminal_reason=f"NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}")
             result["blockers"].append(
-                f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
+                f"{candidate['player']}:{candidate['stat_type']}:{receipt['terminal_reason']}"
             )
 
     result["blockers"] = list(dict.fromkeys(result["blockers"]))

@@ -1,6 +1,7 @@
 import {
   BACKEND_DEFAULT,
   CAN_EXECUTE,
+  RECOMMENDATION_ENVELOPE_IDENTITY_FIELDS,
   TERMINAL_AUTHORITY,
   V17_OPERATIONS,
 } from "./v17_contract.js";
@@ -17,6 +18,21 @@ export class V17GatewayError extends Error {
     this.name = "V17GatewayError";
     this.code = code;
     this.details = details;
+  }
+}
+
+// Hosts may skip schema validation, so enforce the same non-blank rule at the
+// gateway: a whitespace-only identity fails closed before any ledger write.
+function assertRecommendationEnvelope(args) {
+  const invalid = RECOMMENDATION_ENVELOPE_IDENTITY_FIELDS.filter(
+    (name) => typeof args?.[name] !== "string" || args[name].trim() === "",
+  );
+  if (invalid.length) {
+    throw new V17GatewayError(
+      "MCP_REQUEST_ENVELOPE_INVALID",
+      `recordWowV17Recommendations requires non-blank ${invalid.join(", ")}; the record call was rejected before any ledger write.`,
+      { invalid_fields: invalid },
+    );
   }
 }
 
@@ -136,6 +152,10 @@ export async function invokeV17Operation(operationName, args = {}, options = {})
   const operation = V17_OPERATIONS[operationName];
   if (!operation) {
     throw new V17GatewayError("MCP_TOOL_NOT_REGISTERED", `Unknown WOW V17 MCP operation: ${operationName}`);
+  }
+
+  if (operationName === "recordWowV17Recommendations") {
+    assertRecommendationEnvelope(args);
   }
 
   const credentialMode = options.backendCredentialMode ?? backendCredentialMode();

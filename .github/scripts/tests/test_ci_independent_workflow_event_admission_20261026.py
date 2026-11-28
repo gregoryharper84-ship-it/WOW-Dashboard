@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 QA = ROOT / "workflows" / "wow-v17-independent-qa-check.yml"
 CERT = ROOT / "workflows" / "wow-v17-existing-pr-governance-review.yml"
 SOURCE = ROOT / "scripts" / "independent_source_review_receipt.py"
