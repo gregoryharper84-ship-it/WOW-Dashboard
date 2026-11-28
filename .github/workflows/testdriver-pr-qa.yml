@@ -1,0 +1,78 @@
+name: testdriver-pr-qa
+# TestDriver (testdriver.ai) AI QA agent for pull requests.
+#
+# Authenticates with a short-lived GitHub OIDC token (testdriverai/action), so no
+# long-lived TD_API_KEY secret is stored in this repository. The action exchanges
+# the OIDC token for the team key bound by the TestDriver GitHub App and exports
+# TD_API_KEY to the later test step.
+#
+# Neutral until the owner activates it: the job is skipped (not red) unless the
+# repository variable TESTDRIVER_ENABLED is "true" AND the TestDriver GitHub App
+# has been authorized for this org in the TestDriver console
+# (https://console.testdriver.ai). Evidence only: a pass is never merge, deploy
+# or probability authority. can_execute=false; no live trading, no market orders.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required: lets the runner mint the OIDC token for TestDriver
+
+concurrency:
+  group: testdriver-pr-qa-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  testdriver:
+    name: TestDriver.ai pull request QA
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && vars.TESTDRIVER_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact pull request head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Require committed TestDriver specs
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          specs=(testdriver/*.testdriver.yaml)
+          if [ "${#specs[@]}" -eq 0 ]; then
+            echo "TESTDRIVER_SPECS_MISSING: no testdriver/*.testdriver.yaml on this head." >&2
+            echo "Generate and commit specs with 'npx testdriverai init' before enabling TESTDRIVER_ENABLED." >&2
+            exit 1
+          fi
+          echo "TestDriver specs on this head: ${#specs[@]}"
+
+      - name: Authenticate to TestDriver (GitHub OIDC)
+        uses: testdriverai/action@331b3ab4bb6b36970890af9f3e105e1ff1cbd2f9 # stable (v1)
+
+      - name: Run TestDriver end-to-end tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes testdriverai@7.11.171 run \
+            --config testdriver.config.yaml \
+            --path './testdriver/*.testdriver.yaml'
+
+      - name: Record TestDriver outcome
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### TestDriver.ai pull request QA"
+            echo ""
+            echo "- head: \`${{ github.event.pull_request.head.sha || github.sha }}\`"
+            echo "- activation variable: \`TESTDRIVER_ENABLED=${{ vars.TESTDRIVER_ENABLED }}\`"
+            echo "- job status: \`${{ job.status }}\`"
+            echo "- evidence only: not merge, deploy or probability authority. \`can_execute=false\`."
+          } >> "$GITHUB_STEP_SUMMARY"
