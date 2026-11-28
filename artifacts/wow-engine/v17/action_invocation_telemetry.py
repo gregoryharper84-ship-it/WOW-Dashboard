@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 from time import perf_counter
@@ -59,6 +60,11 @@ ROUTE_OPERATION_IDS = {
     "/score-team-event-request": "scoreWowTeamEventRequest",
     "/score-team-event": "scoreWowV17TeamEventFromWowHost",
     "/v17/pick-request-runs/resumable": "runWowV17ResumablePickRequest",
+    # Internal governed NHL source routes write append-only source rows and
+    # timeline receipts. They are attributed exactly like public Action routes
+    # so a live rebuild names its caller instead of being untraceable.
+    "/internal/v17/nhl-source-reingest": "runWowV17NhlSourceReingest",
+    "/internal/v17/nhl-g1-corpus-rebuild": "runWowV17NhlG1CorpusRebuild",
 }
 
 _EXPLICIT_CALLER_CLASSES = frozenset({
@@ -156,6 +162,35 @@ def _request_id(headers: Any) -> str | None:
         headers.get("x-wow-request-id") or headers.get("x-request-id") or ""
     ).strip()
     return value[:256] or None
+
+
+def _forwarded_for(headers: Any) -> str | None:
+    """Record the proxy forwarding chain verbatim, bounded; never trusted."""
+    value = str(headers.get("x-forwarded-for") or "").strip()
+    return value[:256] or None
+
+
+def _client_addr(request: Any) -> str | None:
+    """Record the transport peer address when the runtime exposes a real IP."""
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip()
+    if not host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return host[:64]
+
+
+def _auth_bearer_class(request: Any) -> str | None:
+    """Read the authoritative bearer class the auth dependency observed.
+
+    Header heuristics cannot distinguish an Action API key from a GitHub OIDC
+    token that failed verification. The dependency publishes the real decision
+    on request state; telemetry records it without ever authorizing here.
+    """
+    return getattr(getattr(request, "state", None), "wow_auth_bearer_class", None)
 
 
 def _safe_validation_code(data: bytes) -> str | None:
@@ -459,6 +494,9 @@ def install_action_invocation_middleware(
                 "caller_user_agent": str(headers.get("user-agent") or "")[:256] or None,
                 "request_id": _request_id(headers) or path_request_id,
                 "rows_in": _rows_in(headers),
+                "auth_bearer_class": _auth_bearer_class(request),
+                "client_addr": _client_addr(request),
+                "forwarded_for": _forwarded_for(headers),
                 "duration_ms": round(duration_ms, 3),
                 "can_execute": False,
             }

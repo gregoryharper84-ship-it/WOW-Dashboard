@@ -167,6 +167,18 @@ def test_route_dependency_preserves_original_auth_failure_when_oidc_invalid(monk
     assert caught.value.detail == "original-action-auth"
 
 
+def test_route_dependency_returns_scout_route_auth_invalid_without_prior_reject(monkeypatch):
+    def fail(_authorization):
+        raise oidc.GitHubOIDCValidationError("bad")
+
+    monkeypatch.setattr(oidc, "authorize_action_key_or_multiscout_oidc", fail)
+    dep = oidc.scout_route_auth_dependency(None)
+    with pytest.raises(HTTPException) as caught:
+        dep.dependency("Bearer invalid")
+    assert caught.value.status_code == 401
+    assert caught.value.detail == {"code": "SCOUT_ROUTE_AUTH_INVALID", "can_execute": False}
+
+
 def test_secret_sync_workflow_is_protected_main_only_and_never_pr_exposed():
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (repo_root / ".github" / "workflows" / "wow-v17-secret-sync.yml").read_text(

@@ -96,12 +96,19 @@ def _exact_season_id(value: Any) -> int | None:
     return None
 
 
-def _blocked(code: str, *, stage: str, detail: Any = None) -> dict[str, Any]:
+def _blocked(
+    code: str,
+    *,
+    stage: str,
+    detail: Any = None,
+    rights_approved: bool | None = None,
+) -> dict[str, Any]:
     return {
         "status": "BLOCKED",
         "code": code,
         "blocked_stage": stage,
         "detail": detail,
+        "source_rights": source_rights_provenance(rights_approved),
         "provenance_complete": False,
         "automatic_certification": False,
         "automatic_promotion": False,
@@ -248,6 +255,9 @@ def _identity_conflicts(
     return sorted(conflicted)
 
 
+SOURCE_RIGHTS_ENV_VAR = "WOW_NHL_SOURCE_RIGHTS_APPROVED"
+
+
 def nhl_source_rights_approved(explicit: bool | None = None) -> bool:
     """Return whether live NHL source persistence is rights-approved.
 
@@ -258,7 +268,7 @@ def nhl_source_rights_approved(explicit: bool | None = None) -> bool:
         return True
     if explicit is False:
         return False
-    return str(os.getenv("WOW_NHL_SOURCE_RIGHTS_APPROVED", "")).strip().lower() in {
+    return str(os.getenv(SOURCE_RIGHTS_ENV_VAR, "")).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -269,6 +279,32 @@ def nhl_source_rights_approved(explicit: bool | None = None) -> bool:
 def _source_rights_approved(explicit: bool | None) -> bool:
     """Compatibility alias for internal re-ingest call sites."""
     return nhl_source_rights_approved(explicit)
+
+
+def source_rights_provenance(explicit: bool | None = None) -> dict[str, Any]:
+    """Report where live-write source-rights approval came from.
+
+    Approval supplied only by the runtime environment is a deployment setting,
+    not a reviewed repository change, so a successful live write must not be
+    indistinguishable from an explicitly approved one. This never grants
+    approval; it only labels the decision already made by the caller.
+    """
+    approved = nhl_source_rights_approved(explicit)
+    if explicit is True:
+        source = "EXPLICIT_ARGUMENT"
+    elif explicit is False:
+        source = "EXPLICIT_DENIAL"
+    elif approved:
+        source = "ENVIRONMENT_VARIABLE"
+    else:
+        source = "UNSET"
+    return {
+        "approved": approved,
+        "source": source,
+        "env_var": SOURCE_RIGHTS_ENV_VAR,
+        "runtime_only": source == "ENVIRONMENT_VARIABLE",
+        "can_execute": False,
+    }
 
 
 def run_nhl_source_reingest(
@@ -319,6 +355,7 @@ def run_nhl_source_reingest(
         return _blocked(
             "NHL_SOURCE_RIGHTS_HOLD",
             stage="SOURCE_RIGHTS",
+            rights_approved=rights_approved,
             detail={
                 "reason": "NHL_SOURCE_RIGHTS_NOT_APPROVED",
                 "dry_run_allowed": True,
@@ -425,6 +462,7 @@ def run_nhl_source_reingest(
             ),
             "provenance_version": SOURCE_PROVENANCE_VERSION,
             "ingest_code_sha": sha,
+            "source_rights": source_rights_provenance(rights_approved),
             "automatic_certification": False,
             "automatic_promotion": False,
             "probability_publishable": False,
@@ -483,6 +521,7 @@ def run_nhl_source_reingest(
                 "source_event_n": len(rows),
                 "persistence": persistence,
                 "blockers": list(exc.blockers),
+                "source_rights": source_rights_provenance(rights_approved),
                 "provenance_complete": False,
                 "automatic_certification": False,
                 "automatic_promotion": False,
@@ -596,6 +635,7 @@ def run_nhl_source_reingest(
             ),
             "provenance_version": SOURCE_PROVENANCE_VERSION,
             "ingest_code_sha": sha,
+            "source_rights": source_rights_provenance(rights_approved),
             "provenance_complete": complete,
             "blockers": [] if complete else ["NHL_SOURCE_PROVENANCE_INCOMPLETE"],
             "automatic_certification": False,
@@ -634,9 +674,11 @@ __all__ = [
     "DEFAULT_MAX_GAMES",
     "NHLSourceReingestError",
     "SOURCE_PROVENANCE_VERSION",
+    "SOURCE_RIGHTS_ENV_VAR",
     "build_reingest_rows",
     "default_season_id",
     "install_nhl_source_reingest_route",
     "nhl_source_rights_approved",
+    "source_rights_provenance",
     "run_nhl_source_reingest",
 ]
