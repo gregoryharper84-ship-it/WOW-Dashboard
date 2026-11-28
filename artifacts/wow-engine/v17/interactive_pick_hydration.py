@@ -452,6 +452,15 @@ def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequest
     return hydrated
 
 
+def _release_heap_after_request() -> None:
+    # Runtime-only, fail-open reclamation after the response object is built; never touches probability or admission.
+    try:
+        from v17 import memory_admission
+        memory_admission.release_process_memory()
+    except Exception:
+        LOGGER.debug("WOW_V17_INTERACTIVE_HEAP_RELEASE_SKIPPED can_execute=false",exc_info=True)
+
+
 def install_interactive_pick_hydration_wrapper(app: Any, *, market_api: Any) -> bool:
     if getattr(app.state,_STATE_KEY,False): return True
     _install_parallel_research_barrier()
@@ -463,7 +472,11 @@ def install_interactive_pick_hydration_wrapper(app: Any, *, market_api: Any) -> 
         if batch.response_mode=="COMPACT" and _all_rows_started_and_preflight_ready(batch,market_api=market_api):
             LOGGER.warning("WOW_V17_INTERACTIVE_STAGE route=/score-pick-request stage=event-invalidated-fast-path rows_in=%s response_mode=%s can_execute=false",len(batch.rows),batch.response_mode)
             return _event_started_response(batch)
-        prepared=prehydrate_batch(batch,market_api=market_api); return captured_endpoint(prepared,x_wow_model_identity)
+        try:
+            prepared=prehydrate_batch(batch,market_api=market_api); result=captured_endpoint(prepared,x_wow_model_identity)
+        finally:
+            _release_heap_after_request()
+        return result
     app.post("/score-pick-request",dependencies=dependencies,operation_id=operation_id)(score_pick_request_prehydrated); setattr(app.state,_STATE_KEY,True); return True
 
 
