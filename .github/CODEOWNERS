@@ -62,3 +62,5 @@
 # Auto-computed governance trust-root dependencies: owner approval is required.
 /artifacts/wow-engine/github_actions_oidc.py @gregoryharper84-ship-it
 /artifacts/wow-engine/mcp_acceptance_auth.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_pr_keep_current.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/pr_integration_reservation.py @gregoryharper84-ship-it

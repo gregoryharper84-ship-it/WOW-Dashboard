@@ -54,6 +54,18 @@ on:
         description: Domain-scoped implementation lease group.
         required: false
         default: GLOBAL
+      integration_selector:
+        description: >-
+          Merge-starvation selector. off keeps today's routing; report records the
+          reservation receipt; dispatch also targets the reserved PR with the
+          existing exact-head repair inputs. Never merges.
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - report
+          - dispatch
 
 permissions:
   actions: write
@@ -111,6 +123,8 @@ jobs:
       remote_fence: ${{ steps.remote_fence.outcome }}
       target_incident: ${{ steps.route.outputs.target_incident }}
       lease_group: ${{ steps.route.outputs.lease_group }}
+      integration_reservation_status: ${{ steps.integration.outputs.status }}
+      integration_reserved_pull: ${{ steps.integration.outputs.reserved_pull }}
       allow_new_assignment: ${{ steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' }}
 
     steps:
@@ -635,6 +649,103 @@ jobs:
             --route-receipt "$RUNNER_TEMP/provider-route.json" \
             --output "$RUNNER_TEMP/wow-ai-resource-pressure.json"
 
+      # Merge-starvation prevention (#2). Read-only selection of the single pull
+      # request that owns the next integration window.
+      #
+      # Overlap with wow-v17-engineering-pr-keep-current: that lane updates
+      # behind-main PRs with an App token, and an App-token update triggers the
+      # normal PR checks. It only selects open, non-draft PRs authored by the exact
+      # login wow-engineering[bot], so refresh_owner is claimed for that author
+      # alone; every other behind-main author is recorded as having no automatic
+      # refresh owner. A paid provider worker must therefore never be dispatched
+      # merely to get a branch current. Dispatch mode fires only for a real code
+      # repair: a merge conflict, or failing required checks on the current head.
+      # No branch update, no merge, no bypass, and no change to provider routing
+      # gates: a selector failure degrades to today's behaviour instead of blocking
+      # dispatch.
+      - name: Select integration reservation
+        id: integration
+        if: steps.route.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_SELECTOR: ${{ inputs.integration_selector }}
+          RESERVATION_ENABLED: ${{ vars.WOW_INTEGRATION_RESERVATION_ENABLED }}
+          ROUTE_PROVIDER: ${{ steps.route.outputs.provider }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/integration-reservation.json"
+          mode="${INTEGRATION_SELECTOR:-off}"
+          if [ "$mode" = "off" ] && [ "${RESERVATION_ENABLED:-false}" = "true" ]; then
+            mode=report
+          fi
+          echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
+          if [ "$mode" = "off" ]; then
+            python artifacts/wow-engine/v17/pr_integration_reservation.py select \
+              --mode off --output "$receipt"
+          else
+            prs="$RUNNER_TEMP/open-pulls.json"
+            enriched="$RUNNER_TEMP/open-pulls-enriched.json"
+            gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
+              --json number,headRefOid,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,createdAt,baseRefName,author \
+              > "$prs"
+            count=$(jq 'length' "$prs")
+            echo '[]' > "$enriched"
+            index=0
+            while [ "$index" -lt "$count" ]; do
+              item=$(jq -c ".[$index]" "$prs")
+              head=$(jq -r '.headRefOid // empty' <<<"$item")
+              merge_state=$(jq -r '.mergeStateStatus // empty' <<<"$item")
+              # GitHub reports BEHIND lazily; an UNKNOWN/absent merge state is
+              # not evidence that the branch is current, so it stays unattested
+              # and the selector fails closed instead of selecting that pull.
+              case "$merge_state" in
+                BEHIND|DIRTY)
+                  # DIRTY is a real conflict, but its base distance is still read
+                  # so the receipt is truthful; conflict ownership stays with the
+                  # repair path, never with a mechanical update.
+                  behind=null
+                  if [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then
+                    if value=$(gh api "repos/$GITHUB_REPOSITORY/compare/$head...main" \
+                        --jq '.behind_by' 2>/dev/null) \
+                        && [[ "$value" =~ ^[0-9]+$ ]]; then
+                      behind="$value"
+                    fi
+                  fi
+                  ;;
+                CLEAN|BLOCKED|UNSTABLE|DRAFT|HAS_HOOKS)
+                  behind=0
+                  ;;
+                *)
+                  behind=null
+                  ;;
+              esac
+              jq --argjson pull "$item" --argjson behind "$behind" \
+                '. + [$pull + {behind_by: $behind}]' "$enriched" > "$enriched.next"
+              mv "$enriched.next" "$enriched"
+              index=$((index + 1))
+            done
+            python artifacts/wow-engine/v17/pr_integration_reservation.py select \
+              --mode "$mode" \
+              --prs-file "$enriched" \
+              --provider "${ROUTE_PROVIDER:-none}" \
+              --output "$receipt"
+          fi
+          jq -e 'type == "object" and .can_execute == false' "$receipt" >/dev/null
+          {
+            echo "status=$(jq -r '.status' "$receipt")"
+            echo "reserved_pull=$(jq -r '.selected_pull_number // ""' "$receipt")"
+            echo "reserved_head=$(jq -r '.reserved_head_sha // ""' "$receipt")"
+            echo "dispatch_repair=$(jq -r '.dispatch_repair // false' "$receipt")"
+            echo "requires_code_repair=$(jq -r '.requires_code_repair // false' "$receipt")"
+            echo "requires_refresh=$(jq -r '.requires_refresh // false' "$receipt")"
+            echo "requires_fresh_acceptance=$(jq -r '.requires_fresh_acceptance // false' "$receipt")"
+            echo "refresh_owner=$(jq -r '.refresh_owner // ""' "$receipt")"
+            echo "refresh_owner_reason=$(jq -r '.refresh_owner_reason // ""' "$receipt")"
+            echo "starvation_risk=$(jq -r '.starvation_risk | length' "$receipt")"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Fence unresolved remote writers
         id: remote_fence
         if: steps.route.outputs.action != 'NO_ACTION'
@@ -645,7 +756,7 @@ jobs:
 
       - name: Dispatch OpenAI primary worker
         id: dispatch_openai
-        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'openai' && steps.remote_fence.outcome == 'success'
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'openai' && steps.remote_fence.outcome == 'success' && steps.integration.outputs.dispatch_repair != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
@@ -660,7 +771,7 @@ jobs:
 
       - name: Dispatch Anthropic fallback worker
         id: dispatch_anthropic
-        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'anthropic' && steps.remote_fence.outcome == 'success'
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'anthropic' && steps.remote_fence.outcome == 'success' && steps.integration.outputs.dispatch_repair != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           FALLBACK_REASON: ${{ steps.route.outputs.reason }}
@@ -676,6 +787,60 @@ jobs:
             -f parent_run_id="$PARENT_RUN_ID" \
             -f target_incident="$TARGET_INCIDENT" \
             -f lease_group="$LEASE_GROUP"
+
+      # Only fires for a reserved pull that needs a code repair (merge conflict or
+      # failing required checks) in dispatch mode, with routing already on a writing
+      # provider. A behind-main wow-engineering[bot] pull is left to
+      # wow-v17-engineering-pr-keep-current, which updates it with an App token and
+      # triggers normal CI for free; dispatching a worker for that would duplicate
+      # an existing lane. A behind-main pull from any other author has no automatic
+      # refresh owner, so it is reported for a human/recovery decision rather than
+      # silently paid for here. This replaces the generic dispatch for this run, so
+      # no second worker is started; the existing single-writer mutex inside the
+      # worker is unchanged.
+      - name: Dispatch reserved integration repair
+        id: dispatch_repair
+        if: steps.integration.outputs.dispatch_repair == 'true' && steps.route.outputs.action == 'DISPATCH' && steps.remote_fence.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVIDER: ${{ steps.route.outputs.provider }}
+          REPAIR_PR: ${{ steps.integration.outputs.reserved_pull }}
+          REPAIR_HEAD: ${{ steps.integration.outputs.reserved_head }}
+          TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
+          LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
+          PARENT_RUN_ID: ${{ steps.route.outputs.parent_run_id }}
+          REPAIR_REASON: ${{ steps.route.outputs.reason }}
+        run: |
+          set -euo pipefail
+          [[ "$REPAIR_PR" =~ ^[1-9][0-9]*$ ]] || { echo "::error::INTEGRATION_REPAIR_PR_INVALID"; exit 1; }
+          [[ "$REPAIR_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::INTEGRATION_REPAIR_HEAD_INVALID"; exit 1; }
+          case "$PROVIDER" in
+            openai)
+              gh workflow run wow-v17-chatgpt-engineering-worker.yml \
+                --repo "$GITHUB_REPOSITORY" \
+                --ref main \
+                -f repair_pr="$REPAIR_PR" \
+                -f repair_head_sha="$REPAIR_HEAD" \
+                -f target_incident="$TARGET_INCIDENT" \
+                -f lease_group="$LEASE_GROUP"
+              ;;
+            anthropic)
+              gh workflow run wow-v17-claude-engineering-worker.yml \
+                --repo "$GITHUB_REPOSITORY" \
+                --ref main \
+                -f fallback_reason="INTEGRATION_RESERVATION:$REPAIR_REASON" \
+                -f parent_run_id="$PARENT_RUN_ID" \
+                -f repair_pr="$REPAIR_PR" \
+                -f repair_head_sha="$REPAIR_HEAD" \
+                -f target_incident="$TARGET_INCIDENT" \
+                -f lease_group="$LEASE_GROUP"
+              ;;
+            *)
+              echo "::error::INTEGRATION_REPAIR_PROVIDER_UNSUPPORTED"
+              exit 1
+              ;;
+          esac
 
       - name: Dispatch opt-in Gemini headless worker
         id: dispatch_gemini
@@ -747,6 +912,10 @@ jobs:
           OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
           ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
           GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
+          INTEGRATION_RECEIPT: ${{ steps.integration.outputs.receipt }}
+          INTEGRATION_STATUS: ${{ steps.integration.outputs.status }}
+          INTEGRATION_DISPATCH_REPAIR: ${{ steps.integration.outputs.dispatch_repair }}
+          INTEGRATION_REPAIR_OUTCOME: ${{ steps.dispatch_repair.outcome }}
         run: |
           set -euo pipefail
           if [ "$ROUTE_OUTCOME" != "success" ]; then
@@ -793,6 +962,38 @@ jobs:
               ' "$ROUTE_RECEIPT" >/dev/null 2>&1; then
             echo "::error::PROVIDER_ROUTE_RECEIPT_INVALID"
             exit 1
+          fi
+          # The selector is advisory: an absent receipt never blocks provider
+          # routing. A present, enabled receipt must still be governance-clean.
+          if [ -n "${INTEGRATION_STATUS:-}" ] && [ "$INTEGRATION_STATUS" != "DISABLED" ]; then
+            if [ -z "${INTEGRATION_RECEIPT:-}" ] || ! jq -e \
+                --arg status "$INTEGRATION_STATUS" \
+                '
+                  type == "object"
+                  and .status == $status
+                  and ($status == "RESERVED"
+                    or $status == "NO_ELIGIBLE_PULL"
+                    or $status == "BLOCKED_EVIDENCE")
+                  and .can_execute == false
+                  and .terminal_authority == "V17_TERMINAL_REDUCER"
+                  and (.dispatch_repair | type == "boolean")
+                  and (.selected_pull_number == null
+                    or (.selected_pull_number | type == "number"))
+                  and (.requires_code_repair | type == "boolean")
+                  and (.requires_refresh | type == "boolean")
+                  and (.requires_fresh_acceptance | type == "boolean")
+                  and (.refresh_owner == null or (.refresh_owner | type == "string"))
+                  and (.refresh_owner_reason == null
+                    or (.refresh_owner_reason | type == "string"))
+                ' "$INTEGRATION_RECEIPT" >/dev/null 2>&1; then
+              echo "::error::INTEGRATION_RESERVATION_RECEIPT_INVALID"
+              exit 1
+            fi
+            if [ "$INTEGRATION_DISPATCH_REPAIR" = "true" ] \
+                && [ "$INTEGRATION_REPAIR_OUTCOME" != "success" ]; then
+              echo "::error::INTEGRATION_REPAIR_DISPATCH_FAILED"
+              exit 1
+            fi
           fi
           if [ "$ACTION" != "NO_ACTION" ] \
               && [ "$REMOTE_FENCE_OUTCOME" != "success" ]; then
@@ -849,6 +1050,7 @@ jobs:
             ${{ steps.route.outputs.receipt }}
             ${{ runner.temp }}/wow-survival/*.json
             ${{ runner.temp }}/wow-ai-resource-pressure.json
+            ${{ runner.temp }}/integration-reservation.json
           retention-days: 14
 
       - name: Record provider-control summary
@@ -867,6 +1069,14 @@ jobs:
           OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
           ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
           GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
+          INTEGRATION_STATUS: ${{ steps.integration.outputs.status }}
+          INTEGRATION_RESERVED_PULL: ${{ steps.integration.outputs.reserved_pull }}
+          INTEGRATION_REQUIRES_CODE_REPAIR: ${{ steps.integration.outputs.requires_code_repair }}
+          INTEGRATION_REQUIRES_REFRESH: ${{ steps.integration.outputs.requires_refresh }}
+          INTEGRATION_REFRESH_OWNER: ${{ steps.integration.outputs.refresh_owner }}
+          INTEGRATION_REFRESH_OWNER_REASON: ${{ steps.integration.outputs.refresh_owner_reason }}
+          INTEGRATION_DISPATCH_REPAIR: ${{ steps.integration.outputs.dispatch_repair }}
+          INTEGRATION_STARVATION_RISK: ${{ steps.integration.outputs.starvation_risk }}
           RECEIPT_VALIDATION_OUTCOME: ${{ steps.receipt_validation.outcome }}
           RECEIPT_UPLOAD_OUTCOME: ${{ steps.provider_receipt.outcome }}
         run: |
@@ -929,6 +1139,18 @@ jobs:
               echo "- token_metering_status: $(jq -r '.usage_status' "$RUNNER_TEMP/wow-ai-resource-pressure.json")"
               echo "- token_pressure_band: $(jq -r '.pressure_band' "$RUNNER_TEMP/wow-ai-resource-pressure.json")"
               echo "- ai_resource_advisory_only: true"
+            fi
+            if [ -n "${INTEGRATION_STATUS:-}" ] && [ "$INTEGRATION_STATUS" != "DISABLED" ]; then
+              echo "- integration_reservation_status: $INTEGRATION_STATUS"
+              echo "- integration_reserved_pull: ${INTEGRATION_RESERVED_PULL:-NONE}"
+              echo "- integration_requires_code_repair: ${INTEGRATION_REQUIRES_CODE_REPAIR:-false}"
+              echo "- integration_requires_refresh: ${INTEGRATION_REQUIRES_REFRESH:-false}"
+              echo "- integration_refresh_owner: ${INTEGRATION_REFRESH_OWNER:-NONE}"
+              echo "- integration_refresh_owner_reason: ${INTEGRATION_REFRESH_OWNER_REASON:-NONE}"
+              echo "- integration_refresh_is_never_paid_worker_work: true"
+              echo "- integration_dispatch_repair: ${INTEGRATION_DISPATCH_REPAIR:-false}"
+              echo "- integration_starvation_risk: ${INTEGRATION_STARVATION_RISK:-0}"
+              echo "- integration_selector_never_merges: true"
             fi
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
