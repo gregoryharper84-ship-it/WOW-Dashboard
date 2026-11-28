@@ -24,6 +24,18 @@ services:
     # (3 required checks green on the exact main SHA, then LIVE + health).
     autoDeployTrigger: "off"
     envVars:
+      - key: DD_SERVICE
+        value: "wow-governed-probability-engine"
+      - key: DD_ENV
+        value: "production"
+      - key: DD_AGENT_HOST
+        value: "datadog-agent-f7g4"
+      - key: DD_TRACE_AGENT_PORT
+        value: "8126"
+      - key: DD_LOGS_INJECTION
+        value: "true"
+      - key: DD_TRACE_SAMPLE_RATE
+        value: "1.0"
       - key: PYTHON_VERSION
         value: 3.11.11
       - key: SUPABASE_URL
