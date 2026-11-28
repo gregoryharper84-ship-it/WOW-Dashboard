@@ -1054,6 +1054,9 @@ def test_bridge_preserves_fitted_specialist_typed_blockers(monkeypatch):
     monkeypatch.setattr(
         bridges.base_runtime, "_run_mandatory_scout_research", lambda _req: {}
     )
+    monkeypatch.setattr(
+        bridges, "_hydrate_nhl_pregame_action_evidence", lambda _req: None
+    )
     request = SimpleNamespace(
         sport="NHL",
         league="NHL",
@@ -1137,6 +1140,9 @@ def test_score_one_preserves_fitted_http_goalie_stale_hold(monkeypatch):
     # Keep the production scorer entry so HTTPException is raised into _score_one.
     monkeypatch.setitem(
         bridges.MODEL_SCORERS, "NHL", nhl.score_nhl_fitted_team_event
+    )
+    monkeypatch.setattr(
+        bridges, "_hydrate_nhl_pregame_action_evidence", lambda _req: None
     )
     request = SimpleNamespace(
         sport="NHL",
@@ -1369,6 +1375,9 @@ def test_registered_nhl_path_applies_reducer_and_publication_guard(monkeypatch):
     monkeypatch.setattr(
         bridges, "evaluate_team_event_official_publication", _publication
     )
+    monkeypatch.setattr(
+        bridges, "_hydrate_nhl_pregame_action_evidence", lambda _req: None
+    )
 
     request = SimpleNamespace(
         sport="NHL",
@@ -1446,6 +1455,9 @@ def test_registered_nhl_path_preserves_pass_then_denies_official_publication(mon
             "official_publication_allowed": False,
             "blockers": ["OFFICIAL_PUBLICATION_NOT_CERTIFIED"],
         },
+    )
+    monkeypatch.setattr(
+        bridges, "_hydrate_nhl_pregame_action_evidence", lambda _req: None
     )
 
     result = bridges._score_one(
@@ -1601,6 +1613,36 @@ def test_registry_loader_recovers_after_overflowing_newest_metric():
     assert selected.created_at == datetime.fromisoformat(prior["created_at"])
     assert selected.publication_capable is False
     assert selected.research_screen_pass is True
+
+
+def test_loader_prefers_wilson_bound_candidate_over_newer_identity():
+    """Design A Wilson must not be shadowed by a newer identity-only row."""
+    as_of = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
+    identity = _candidate_row()
+    identity["candidate_id"] = "identity-newer"
+    identity["created_at"] = "2026-11-25T16:48:23+00:00"
+    assert identity["calibrator_payload"]["method"] == nhl.IDENTITY_CALIBRATION_METHOD
+
+    wilson = _candidate_row()
+    wilson["candidate_id"] = "4e122428-f64f-4b30-b793-0e8349bbc0f3"
+    wilson["created_at"] = "2026-11-23T16:10:47+00:00"
+    cal = dict(wilson["calibrator_payload"])
+    cal["method"] = nhl.EMPIRICAL_CALIBRATION_METHOD
+    cal["bins"] = [{
+        "calibrated_probability": 0.5,
+        "wilson_lower": 0.4,
+        "wilson_upper": 0.6,
+        "raw_mean": 0.5,
+    }]
+    wilson["calibrator_payload"] = cal
+
+    selected = nhl.load_nhl_fitted_candidate(
+        _DB(candidates=[identity, wilson]), as_of_utc=as_of
+    )
+    assert selected.candidate_id == "4e122428-f64f-4b30-b793-0e8349bbc0f3"
+    assert selected.calibrator["method"] == nhl.EMPIRICAL_CALIBRATION_METHOD
+    assert selected.publication_capable is False
+    assert selected.has_calibrated_bounds is True
 
 
 # --- rest_travel is server-derived from the official timeline (#1952) -------

@@ -230,3 +230,240 @@ def test_malformed_neutral_site_holds(neutral_site):
     assert result["status"] == "HELD"
     assert "NHL_NEUTRAL_SITE_UNVERIFIED" in result["blockers"]
     assert "neutral_site" not in result["sport_specific_evidence"]
+
+
+def test_hydrate_holds_closed_without_server_seams():
+    """Production Action path must not invent trusted providers or injury."""
+    from types import SimpleNamespace
+
+    from v17.nhl_fitted_specialist import NHLFittedSpecialistError
+    from v17.nhl_pregame_evidence_assembler import (
+        hydrate_nhl_team_event_request_evidence,
+        install_nhl_pregame_action_seams,
+        reset_nhl_pregame_action_seams,
+    )
+
+    def _fake_capture(*_a, **_k):
+        return {
+            "gamecenter_source_status": "OFFICIAL_PREGAME_CAPTURED_RESEARCH_ONLY",
+            "source_content_sha256": "a" * 64,
+            "retrieved_at_utc": (NOW - timedelta(minutes=1)).isoformat(),
+            "code": "NHL_GAMECENTER_CAPTURED",
+        }
+
+    identity = _identity()
+    reset_nhl_pregame_action_seams()
+    # Capture only — no trusted providers / attestation / injury seams.
+    install_nhl_pregame_action_seams(capture=_fake_capture, get=_get)
+    try:
+        req = SimpleNamespace(
+            official_event_id=EVENT_ID,
+            home_team="BOS",
+            away_team="NYR",
+            event_start_time_utc=EVENT_START,
+            latest_material_update_timestamp=identity["identity_verified_at"],
+            sport_specific_evidence={
+                "neutral_site": False,
+                "season": "20262027",
+                "identity_provider": identity["identity_provider"],
+                "identity_source": identity["identity_source"],
+                "identity_match_sha256": identity["identity_match_sha256"],
+                "identity_verified_at": identity["identity_verified_at"],
+                # Caller-supplied injury/goalie must not satisfy the server seam.
+                "injury_report": {"source": "CALLER_FORGED"},
+                "goalie_status": "CONFIRMED",
+            },
+        )
+        with pytest.raises(NHLFittedSpecialistError) as caught:
+            hydrate_nhl_team_event_request_evidence(req, as_of_utc=NOW)
+        assert caught.value.code == "MODEL_INPUTS_INSUFFICIENT"
+        assert "NHL_INJURY_REPORT_UNAVAILABLE" in caught.value.blockers
+        assert "NHL_STARTER_SOURCE_NOT_TRUSTED" in caught.value.blockers
+        assert "NHL_STARTING_GOALIE_NOT_CONFIRMED" in caught.value.blockers
+    finally:
+        reset_nhl_pregame_action_seams()
+
+
+def test_hydrate_assigns_assembled_evidence_when_seams_installed():
+    from types import SimpleNamespace
+
+    from v17.nhl_pregame_evidence_assembler import (
+        hydrate_nhl_team_event_request_evidence,
+        install_nhl_pregame_action_seams,
+        reset_nhl_pregame_action_seams,
+    )
+
+    reset_nhl_pregame_action_seams()
+    install_nhl_pregame_action_seams(
+        trusted_providers=TRUSTED,
+        attestation_key=ATTESTATION_KEY,
+        injury_report={"source": "TEST_FIXTURE", "home": [], "away": []},
+        starter_provider_receipts=_attested_receipts(),
+        get=_get,
+    )
+    try:
+        identity = _identity()
+        req = SimpleNamespace(
+            official_event_id=EVENT_ID,
+            home_team="BOS",
+            away_team="NYR",
+            event_start_time_utc=EVENT_START,
+            latest_material_update_timestamp=identity["identity_verified_at"],
+            sport_specific_evidence={
+                "neutral_site": False,
+                "season": "20262027",
+                "identity_provider": identity["identity_provider"],
+                "identity_source": identity["identity_source"],
+                "identity_match_sha256": identity["identity_match_sha256"],
+                "identity_verified_at": identity["identity_verified_at"],
+            },
+        )
+        package = hydrate_nhl_team_event_request_evidence(req, as_of_utc=NOW)
+        assert package["status"] == "ASSEMBLED"
+        assert req.sport_specific_evidence["goalie_status"] == "CONFIRMED"
+        assert req.sport_specific_evidence["injury_report"]["source"] == "TEST_FIXTURE"
+        assert package["probability_publishable"] is False
+        assert package["can_execute"] is False
+    finally:
+        reset_nhl_pregame_action_seams()
+
+
+def test_score_one_holds_when_assembler_has_no_server_seams(monkeypatch):
+    """Registered NHL bridge must invoke assembler before scoring."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    import v17.multisport_team_event_bridges as bridges
+    import v17.team_event_request_runtime as host_routing
+    from v17.nhl_pregame_evidence_assembler import (
+        install_nhl_pregame_action_seams,
+        reset_nhl_pregame_action_seams,
+    )
+
+    def _fake_capture(*_a, **_k):
+        return {
+            "gamecenter_source_status": "OFFICIAL_PREGAME_CAPTURED_RESEARCH_ONLY",
+            "source_content_sha256": "b" * 64,
+            "retrieved_at_utc": (NOW - timedelta(minutes=1)).isoformat(),
+            "code": "NHL_GAMECENTER_CAPTURED",
+        }
+
+    reset_nhl_pregame_action_seams()
+    install_nhl_pregame_action_seams(capture=_fake_capture, get=_get)
+    monkeypatch.setattr(
+        host_routing,
+        "resolve_host_route",
+        lambda *_args: SimpleNamespace(
+            requester_host_identity="test-requester-host",
+            controlling_engine_identity="V17_TEAM_EVENT_BRIDGE",
+            candidate_family="NHL",
+        ),
+    )
+    monkeypatch.setattr(bridges, "_route_contract", lambda _req: SimpleNamespace())
+    monkeypatch.setattr(
+        bridges.base_runtime, "_run_mandatory_scout_research", lambda _req: {}
+    )
+    # Scorer must not be reached when assembler HOLDs.
+    monkeypatch.setitem(
+        bridges.MODEL_SCORERS,
+        "NHL",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("scorer invoked")),
+    )
+    identity = _identity()
+    req = SimpleNamespace(
+        sport="NHL",
+        league="NHL",
+        event_key=f"NHL:{EVENT_ID}",
+        official_event_id=EVENT_ID,
+        home_team="BOS",
+        away_team="NYR",
+        event_start_time_utc=EVENT_START,
+        requester_host_identity="test-requester-host",
+        candidate_family="NHL",
+        latest_material_update_timestamp=identity["identity_verified_at"],
+        sport_specific_evidence={
+            "neutral_site": False,
+            "season": "20262027",
+            "identity_provider": identity["identity_provider"],
+            "identity_source": identity["identity_source"],
+            "identity_match_sha256": identity["identity_match_sha256"],
+            "identity_verified_at": identity["identity_verified_at"],
+        },
+    )
+    try:
+        with pytest.raises(HTTPException) as caught:
+            bridges._score_one("NHL", req, event_api=None)
+        assert caught.value.status_code == 422
+        assert caught.value.detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+        assert "NHL_INJURY_REPORT_UNAVAILABLE" in caught.value.detail["blockers"]
+        assert "NHL_STARTER_SOURCE_NOT_TRUSTED" in caught.value.detail["blockers"]
+        assert caught.value.detail["can_execute"] is False
+    finally:
+        reset_nhl_pregame_action_seams()
+
+
+def test_hydrate_resolves_discovery_canonical_identity_without_schedule_url(monkeypatch):
+    """Discovery stores provider under canonical_identity_source and drops URL."""
+    from types import SimpleNamespace
+
+    from v17.nhl_pregame_evidence_assembler import (
+        hydrate_nhl_team_event_request_evidence,
+        install_nhl_pregame_action_seams,
+        reset_nhl_pregame_action_seams,
+    )
+
+    resolved = _identity()
+    resolve_calls: list[dict] = []
+
+    def _fake_resolve(**kwargs):
+        resolve_calls.append(dict(kwargs))
+        return {
+            "event_id": EVENT_ID,
+            "event_start_time": EVENT_START.isoformat(),
+            "home_team": "BOS",
+            "away_team": "NYR",
+            "identity_provider": resolved["identity_provider"],
+            "identity_source": resolved["identity_source"],
+            "identity_match_sha256": resolved["identity_match_sha256"],
+            "identity_verified_at": resolved["identity_verified_at"],
+            "market_features_used": False,
+            "prediction_authority": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(
+        "v17.nhl_event_identity.resolve_nhl_current_event_identity",
+        _fake_resolve,
+    )
+    reset_nhl_pregame_action_seams()
+    install_nhl_pregame_action_seams(
+        trusted_providers=TRUSTED,
+        attestation_key=ATTESTATION_KEY,
+        injury_report={"source": "TEST_FIXTURE", "home": [], "away": []},
+        starter_provider_receipts=_attested_receipts(),
+        get=_get,
+    )
+    try:
+        req = SimpleNamespace(
+            official_event_id=EVENT_ID,
+            home_team="BOS",
+            away_team="NYR",
+            event_start_time_utc=EVENT_START,
+            sport_specific_evidence={
+                "neutral_site": False,
+                "season": "20262027",
+                # Discovery-shaped fields only — no identity_source URL.
+                "canonical_identity_status": "CANONICAL_RESOLVED",
+                "canonical_identity_source": "NHL_PUBLIC_WEB_API",
+                "canonical_identity_match_sha256": resolved["identity_match_sha256"],
+                "canonical_identity_verified_at": resolved["identity_verified_at"],
+            },
+        )
+        package = hydrate_nhl_team_event_request_evidence(req, as_of_utc=NOW)
+        assert resolve_calls, "server-owned resolver must refresh incomplete discovery receipt"
+        assert package["status"] == "ASSEMBLED"
+        assert req.sport_specific_evidence["goalie_status"] == "CONFIRMED"
+        assert package["can_execute"] is False
+    finally:
+        reset_nhl_pregame_action_seams()
