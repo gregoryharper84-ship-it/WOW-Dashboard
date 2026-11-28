@@ -186,3 +186,26 @@ def test_conflicting_rows_in_a_real_repository_are_detected(conflicting_registry
     assert GUARD.registry_conflicts(paths) == [
         "artifacts/wow-engine/docs/failure_codes.md"
     ]
+
+
+def test_all_zero_base_sha_is_rejected_instead_of_reported_clean(
+    conflicting_registry_repo,
+):
+    """An all-zero base resolves in rev-parse but names no object.
+
+    ``git merge-tree`` then treats it as an empty tree and reports a clean
+    merge, so the guard has to reject it before merging; otherwise an
+    unresolved base would look exactly like a passing check.
+    """
+    repo, script = conflicting_registry_repo
+
+    proc = subprocess.run(
+        (sys.executable, str(script), "--base", "0" * 40, "--head", "HEAD"),
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "is not available" in proc.stderr
+    assert "no registry conflict" not in proc.stdout
