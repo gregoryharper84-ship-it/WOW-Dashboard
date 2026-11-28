@@ -1,5 +1,38 @@
 # WOW V17 unified free-source catalog — source-only integration
 
+
+## 2026-11-20 owner scope: only Paths 1 and 2
+
+**Path 1, PropsMadness:** Use it as a personal, noncommercial, selected-page
+research reference only. The existing public one-page CLI opt-in and manually
+supplied account-view reader are discovery-only. Do not schedule vendor
+requests, retain/copy vendor datasets, hydrate model training, or interpret
+on-screen L10 hit rates as certified probabilities. Access and any use must
+comply with applicable terms. No new vendor rights-acquisition/automated
+ingestion lane is authorized under the current owner scope.
+
+**Path 2, independent sports data:** Reuse the existing allowed-source adapters
+and verify each dataset's independent license, attribution and upstream rights.
+NFL-first sources are `nflverse_historical_adapter.py` and
+`nflverse_dataset_policy_v1.json`. Dataset names from FTN/participation remain
+excluded, and candidate training permissions do not certify a fitted model.
+The new duplicate-outcome guard fails closed if player_stats rows reuse the
+same game / GSIS player / statistic identity, even with contradictory
+values or teams. Reconcile the original source bytes instead of double counting
+training labels; this is an integrity repair, not an increase in data coverage.
+
+**Engineering proof chain:** (1) synthetic negative+valid normalization tests,
+(2) exact-head CI and independent review, (3) authentic source snapshot/rights
+and completeness checks, (4) independent identity + pregame chronology checks,
+(5) shadow replay, then separately governed fitted promotion when warranted.
+No step converts a source observation into a probability or disables the
+V17 terminal reducer; `can_execute=false` remains invariant.
+
+**Status as authored:** Path 1 interface previously merged in PR #2739.
+The NFL duplicate guard is proposed on a feature branch; production source
+rows, model readiness, deployment SHA and qualified picks are not claimed.
+
+
 **Current implementation:** `v17/free_source_catalog.py` and `tests/test_free_source_catalog.py`. Read-only, pure metadata; does not request external data, install a scraper, access a login, write production history, or invoke a betting Action. `can_execute=false`. This is a Class A/B research-inventory improvement, not model certification or an external-source license grant.
 
 ## What already exists (preserve, do not recreate)
@@ -32,3 +65,46 @@ Required evidence before a source may become a fitted challenger input: independ
 Run: `cd artifacts/wow-engine && python -m pytest -q tests/test_free_source_catalog.py`.
 
 **Completion state:** SOURCE_INVENTORY_ADDED; AUTHENTIC_SOURCE_COLLECTION_NOT_CHANGED; PROPSMADNESS_TRAINING_NOT_AUTHORIZED; ODDSPAPI_AUTHENTIC_COVERAGE_NOT_VERIFIED; MODEL_PROBABILITY_UNCHANGED.
+
+## 2026-11-12 historical-odds source triage — reference only
+
+**Mechanism.** A public scraper's code license is not a license for the
+upstream odds database. Cataloguing such a scraper as a production MARKET or
+HISTORY source would conflate technical reachability with legal authorization
+and verified as-of market evidence. This predicts an apparent new data
+dependency with no permitted collection contract, and potential leakage if
+historical closing lines are interpreted as quotes available before a pick.
+
+| Candidate | Relevant sports / useful data | Rights and evidence decision | V17 use |
+|---|---|---|---|
+| [OddsHarvester](https://github.com/jordantete/OddsHarvester) / [OddsPortal terms](https://www.oddsportal.com/terms/) | NFL, NBA, NHL, MLB, soccer, tennis; game-level moneyline/handicap/total and claimed historical quote movement | MIT code only; upstream terms restrict automated scraping, commercial use and substantial database extraction without permission. Odds-history timestamps can be timezone-naive, and historical identity/pagination failures are documented by the project. | REFERENCE_ONLY_NO_ACQUISITION. No browser automation, proxy rotation, collection, storage, training or production wiring. |
+| [nflverse data](https://github.com/nflverse/nflverse-data) | NFL game results, historical closing spreads/totals, partial moneylines | Existing NFL historical close-proxy adapter; the close is generally **not** a verified pre-pick-observed quote. Dataset-specific/upstream licensing still needs independent review (see source-rights receipts). | Existing history / research benchmark. Not pregame CLV or a fitted model probability. |
+| [Football-Data](https://football-data.co.uk/data) | Soccer results and historical bookmaker opening/closing odds | Free files are expressly intended for private individuals, not commercial or data-training products using automated bots/scrapers/AI. | REFERENCE_ONLY_NO_ACQUISITION; no model training or unattended collection. |
+| [The Odds API historical endpoint](https://the-odds-api.com/historical-odds-data/) | Cross-sport timestamped historical markets | Historical endpoints are paid-only; no new spend approved. | Not in the zero-cost acquisition plan; preserve existing current-market fallback only. |
+| Existing [ESPN close research PR #1567](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/1567) | Forward-only NBA/NFL/MLB-style market snapshots, depending on observed sport/book fields | No retrospective pregame backfill; test exact capture/prediction ordering and event identity before CLV claims. PR #1581 owns late-capture/lookahead repair. | Reuse and reconcile the existing measurement lane, not a second collector. |
+
+**Source priority:** (1) review the exact nflverse release/dataset rights
+and continue its existing close-proxy benchmark; (2) verify forward captured
+quote provenance and source terms in the existing measurement lane;
+(3) seek written source permission only if a legally usable multi-sport
+historical archive is demonstrably needed. No purchasing or source access
+is authorized by this table.
+
+**Required acceptance for any historical market dataset:** attributable
+rights; immutable raw source hash; official event/participant identity;
+book/market/period/line/outcome/settlement; timezone-aware UTC kickoff and
+observed_at; distinguish provider_updated_at from first_seen_at;
+require the entry quote's actual first_seen_at no later than the immutable
+prediction timestamp, and independently require the closing quote's first_seen_at
+strictly before kickoff. A closing quote is an evaluation benchmark for CLV,
+not proof that its price was observable when the pick was frozen; keep
+closing-line research separate from pregame inputs. Enforce source-specific
+reconciliation and no missing-event silence. If any of these are absent, retain research-only/unavailable status,
+never infer a fitted probability or claim market-time accuracy.
+
+**Regression:** `tests/test_free_source_catalog.py` pins the two
+reference-only providers outside `MARKET`/`HISTORY`, preserves nflverse
+close-proxy-only status, and proves all candidate routes remain non-executable
+and unlicensed. No existing adapter, calibration, qualifying threshold,
+terminal reducer or production deployment changed.
+

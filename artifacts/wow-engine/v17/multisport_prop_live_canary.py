@@ -15,7 +15,15 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+# Running this file directly puts ``v17/`` (not the engine root) on sys.path.
+# Fixture acquisition imports the governed producers as the ``v17`` package, so
+# make the engine root importable without depending on the caller's cwd.
+_ENGINE_ROOT = str(Path(__file__).resolve().parent.parent)
+if _ENGINE_ROOT not in sys.path:
+    sys.path.append(_ENGINE_ROOT)
 
 ORIGIN = os.environ.get("WOW_SERVICE_URL", "https://wow-governed-probability-engine.onrender.com").rstrip("/")
 AUDIENCE = os.environ.get("WOW_OIDC_AUDIENCE", "wow-v17-multiscout")
@@ -60,6 +68,33 @@ CONFIGS: dict[str, list[dict[str, Any]]] = {
         _row(row_key="wnba-gray-less", event_id="WNBA:1042600202", event_start_time="2026-10-07T23:30:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="LESS", opponent="NYL"),
     ],
 }
+
+
+def future_fixture_sports(
+    now: datetime | None = None,
+    *,
+    configs: dict[str, list[dict[str, Any]]] | None = None,
+) -> tuple[str, ...]:
+    """Select future-dated fixtures; never send historical IDs to production.
+
+    ``configs`` defaults to the historical ``CONFIGS`` shape fixtures. Live runs
+    pass acquired rows instead. A future timestamp does not certify player
+    availability or the offer; the backend still owns exact
+    event/route/settlement/terminal checks.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.utcoffset() is None:
+        raise ValueError("CANARY_CLOCK_MUST_BE_TIMEZONE_AWARE")
+    fixtures = CONFIGS if configs is None else configs
+    selected: list[str] = []
+    for sport, rows in fixtures.items():
+        starts = [
+            datetime.fromisoformat(str(row["event_start_time"]).replace("Z", "+00:00"))
+            for row in rows
+        ]
+        if all(start.utcoffset() is not None and start > now for start in starts):
+            selected.append(sport)
+    return tuple(selected)
 
 
 def _fresh_oidc() -> str:
@@ -194,17 +229,219 @@ def _validate(
     }
 
 
-def _request_for(sport: str, request_id: str) -> dict[str, Any]:
-    return {"request_id": request_id, "response_mode": "COMPACT", "rows": deepcopy(CONFIGS[sport])}
+def _request_for(
+    sport: str,
+    request_id: str,
+    fixtures: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    rows = (CONFIGS if fixtures is None else fixtures)[sport]
+    return {"request_id": request_id, "response_mode": "COMPACT", "rows": deepcopy(rows)}
 
 
-def run_primary() -> list[dict[str, Any]]:
+def _fixture_module() -> Any:
+    """Resolve the acquisition provider; ``None`` keeps live eligibility closed."""
+    try:
+        from v17 import pregame_canary_fixtures as module
+
+        return module
+    except Exception:
+        return None
+
+
+FIXTURE_BUNDLE_VERSION = 1
+
+
+class FixtureBundleError(RuntimeError):
+    """Typed failure for a persisted acquisition bundle that cannot be trusted."""
+
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(code)
+        self.code = code
+        self.detail = detail
+
+
+def _write_fixture_bundle(path: str, report: dict[str, Any]) -> None:
+    """Persist one acquisition report so the live step reuses the same rows."""
+    bundle = {
+        "bundle_version": FIXTURE_BUNDLE_VERSION,
+        "fixture_source": "ACQUIRED",
+        "snapshot_write_mode": report.get("snapshot_write_mode"),
+        "snapshot_writes_suppressed": report.get("snapshot_writes_suppressed"),
+        "acquired_at": datetime.now(timezone.utc).isoformat(),
+        "sports_eligible": list(report.get("sports_eligible") or []),
+        "configs": report.get("configs") or {},
+        "blockers": report.get("blockers") or {},
+        "can_execute": False,
+    }
+    Path(path).write_text(json.dumps(bundle, sort_keys=True), encoding="utf-8")
+
+
+def _read_fixture_bundle(path: str, module: Any) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Load a persisted bundle, re-validating provenance and row shape."""
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_UNREADABLE", type(exc).__name__) from exc
+    try:
+        bundle = json.loads(raw)
+    except ValueError as exc:
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_INVALID_JSON", type(exc).__name__) from exc
+    if not isinstance(bundle, dict):
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_INVALID_SHAPE")
+    if bundle.get("bundle_version") != FIXTURE_BUNDLE_VERSION:
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_VERSION_MISMATCH")
+    if str(bundle.get("fixture_source") or "") != "ACQUIRED":
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_NOT_ACQUIRED")
+    # The no-write guarantee is part of the artifact contract: a bundle that
+    # claims real snapshot writes or execution capability is not consumable.
+    if str(bundle.get("snapshot_write_mode") or "") != "NO_WRITE":
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_WRITE_MODE_NOT_NO_WRITE")
+    if bundle.get("can_execute") is not False:
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_EXECUTION_FLAG_INVALID")
+
+    raw_configs = bundle.get("configs")
+    if not isinstance(raw_configs, dict) or not raw_configs:
+        raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_CONFIGS_INVALID")
+    fields = tuple(module.CANARY_ROW_FIELDS)
+    configs: dict[str, list[dict[str, Any]]] = {}
+    for sport, rows in raw_configs.items():
+        # A sport named in the bundle must survive intact. Dropping a corrupt
+        # sport silently would surface as an empty slate (exit 78) and read as
+        # out-of-season rather than as the damaged artifact it is.
+        if sport not in module.SPORTS:
+            raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_UNKNOWN_SPORT", str(sport))
+        if not isinstance(rows, list):
+            raise FixtureBundleError("CANARY_FIXTURE_BUNDLE_ROWS_INVALID", str(sport))
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != set(fields):
+                continue
+            kept.append({field: row[field] for field in fields})
+        if len(kept) != module.ROWS_PER_SPORT or len(kept) != len(rows):
+            raise FixtureBundleError(
+                "CANARY_FIXTURE_BUNDLE_ROW_SHAPE_INVALID",
+                f"{sport}:{len(kept)}/{len(rows)}",
+            )
+        configs[sport] = kept
+    return configs, bundle
+
+
+def _select_fixtures(fixtures_from: str | None = None) -> dict[str, Any]:
+    """Choose persisted, live-acquired or historical rows; never a silent downgrade."""
+    module = _fixture_module()
+    if module is None:
+        return {"source": "ACQUIRED", "configs": None, "report": {
+            "status": "LIVE_CANARY_ACQUISITION_FAILED",
+            "code": "CANARY_FIXTURE_PROVIDER_UNAVAILABLE",
+        }}
+    if fixtures_from:
+        try:
+            configs, bundle = _read_fixture_bundle(fixtures_from, module)
+        except FixtureBundleError as exc:
+            return {"source": "ACQUIRED", "configs": None, "report": {
+                "status": "LIVE_CANARY_ACQUISITION_FAILED",
+                "code": exc.code,
+                "detail": exc.detail,
+                "path": fixtures_from,
+            }}
+        return {"source": "ACQUIRED", "configs": configs, "report": bundle,
+                "fixture_input": "BUNDLE"}
+    if not module.acquisition_enabled():
+        return {"source": "STATIC", "configs": CONFIGS, "report": None}
+    report = module.acquire_canary_rows()
+    if report.get("status") == "ACQUISITION_FAILED":
+        return {"source": "ACQUIRED", "configs": None, "report": report}
+    return {"source": "ACQUIRED", "configs": report["configs"], "report": report,
+            "fixture_input": "LIVE"}
+
+
+def _option(name: str) -> str | None:
+    """Read ``--name value`` or ``--name=value`` from argv."""
+    argv = sys.argv
+    for index, item in enumerate(argv):
+        if item == name and index + 1 < len(argv):
+            return argv[index + 1]
+        if item.startswith(name + "="):
+            return item.split("=", 1)[1]
+    return None
+
+
+def _check_live_fixtures(emit_path: str | None = None) -> int:
+    """Report live eligibility without authenticating or posting a row."""
+    selection = _select_fixtures()
+    if selection["configs"] is None:
+        print(json.dumps({
+            "status": "LIVE_CANARY_ACQUISITION_FAILED",
+            "fixture_source": "ACQUIRED",
+            "bundle_emitted": False,
+            "detail": selection["report"],
+            "future_fixture_sports": [],
+            "live_coverage_certified": False,
+            "can_execute": False,
+        }))
+        return 75
+    configs, source = selection["configs"], selection["source"]
+    if source == "STATIC":
+        sports = future_fixture_sports()
+        print(json.dumps({
+            "status": "FUTURE_STATIC_FIXTURES_PRESENT" if sports else "LIVE_CANARY_NOT_RUN_STALE_STATIC_FIXTURES",
+            "fixture_source": "STATIC",
+            "bundle_emitted": False,
+            "future_fixture_sports": list(sports),
+            "live_coverage_certified": False,
+            "can_execute": False,
+        }))
+        return 0 if sports else 78
+
+    report = selection["report"]
+    sports = future_fixture_sports(configs=configs)
+    output: dict[str, Any] = {
+        "status": {
+            "ACQUIRED": "FUTURE_ACQUIRED_ROWS_PRESENT",
+            "NO_FUTURE_EVENT": "LIVE_CANARY_NOT_RUN_NO_FUTURE_EVENT",
+        }.get(str(report.get("status")), "LIVE_CANARY_ACQUISITION_FAILED"),
+        "fixture_source": "ACQUIRED",
+        "bundle_emitted": False,
+        "future_fixture_sports": list(sports),
+        "snapshot_write_mode": report.get("snapshot_write_mode"),
+        "snapshot_writes_suppressed": report.get("snapshot_writes_suppressed"),
+        "sports": report.get("sports"),
+        "blockers": report.get("blockers"),
+        "live_coverage_certified": False,
+        "can_execute": False,
+    }
+    code = 0 if sports else 78
+    if output["status"] == "LIVE_CANARY_ACQUISITION_FAILED":
+        code = 75
+    elif emit_path and code == 0:
+        # Persist only rows this run proved eligible. A failed write is a real
+        # acquisition failure, never a silent re-acquire later.
+        try:
+            _write_fixture_bundle(emit_path, report)
+            output.update({"bundle_emitted": True, "bundle_path": emit_path})
+        except OSError as exc:
+            output.update({
+                "status": "LIVE_CANARY_ACQUISITION_FAILED",
+                "code": "CANARY_FIXTURE_BUNDLE_WRITE_FAILED",
+                "detail": type(exc).__name__,
+                "bundle_path": emit_path,
+            })
+            code = 75
+    print(json.dumps(output))
+    return code
+
+
+def run_primary(
+    *,
+    sports: tuple[str, ...],
+    fixtures: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
     outputs = []
-    for sport in ("NFL", "MLB", "WNBA"):
+    for sport in sports:
         request_id = f"{BASE_RUN}-{sport.lower()}-primary"
         outputs.append(
             _validate(
-                _post(_request_for(sport, request_id)),
+                _post(_request_for(sport, request_id, fixtures)),
                 sport=sport,
                 require_publishable=(sport == "MLB"),
             )
@@ -212,9 +449,13 @@ def run_primary() -> list[dict[str, Any]]:
     return outputs
 
 
-def run_stress() -> dict[str, Any]:
+def run_stress(
+    *,
+    sports: tuple[str, ...],
+    fixtures: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     jobs: list[tuple[str, str]] = []
-    for sport in ("NFL", "MLB", "WNBA"):
+    for sport in sports:
         for n in (1, 2):
             jobs.append((sport, f"{BASE_RUN}-{sport.lower()}-stress-{n}"))
     results: list[dict[str, Any]] = []
@@ -222,7 +463,7 @@ def run_stress() -> dict[str, Any]:
         pending = {
             pool.submit(
                 lambda s=sport, rid=request_id: _validate(
-                    _post(_request_for(s, rid)),
+                    _post(_request_for(s, rid, fixtures)),
                     sport=s,
                     require_publishable=(s == "MLB"),
                 ),
@@ -233,11 +474,11 @@ def run_stress() -> dict[str, Any]:
             results.append(future.result())
 
     replay_results = []
-    for sport in ("NFL", "MLB", "WNBA"):
+    for sport in sports:
         rid = f"{BASE_RUN}-{sport.lower()}-stress-1"
         replay_results.append(
             _validate(
-                _post(_request_for(sport, rid)),
+                _post(_request_for(sport, rid, fixtures)),
                 sport=sport,
                 require_publishable=(sport == "MLB"),
             )
@@ -255,8 +496,8 @@ def run_stress() -> dict[str, Any]:
 
 
 def self_test() -> None:
+    """Validate fixture shape, not historical timestamps as live eligibility."""
     assert set(CONFIGS) == {"NFL", "MLB", "WNBA"}
-    now = datetime.now(timezone.utc)
     for sport, rows in CONFIGS.items():
         assert len(rows) == 4, (sport, len(rows))
         assert len({row["row_key"] for row in rows}) == 4
@@ -265,11 +506,15 @@ def self_test() -> None:
         assert all(row["platform"] == "WOW_PRODUCTION_CANARY" for row in rows)
         for row in rows:
             start = datetime.fromisoformat(str(row["event_start_time"]).replace("Z", "+00:00"))
-            if start <= now:
-                raise AssertionError(
-                    f"{sport}:STALE_CANARY_EVENT:{row['event_id']}:{row['event_start_time']}"
-                )
-    print(json.dumps({"status": "SELF_TEST_PASS", "sports": sorted(CONFIGS), "rows": 12, "can_execute": False}))
+            assert start.utcoffset() is not None, (sport, row["event_id"])
+    print(json.dumps({
+        "status": "SELF_TEST_PASS",
+        "sports": sorted(CONFIGS),
+        "rows": 12,
+        "future_fixture_sports": list(future_fixture_sports()),
+        "live_coverage_certified": False,
+        "can_execute": False,
+    }))
 
 
 def main() -> int:
@@ -277,11 +522,65 @@ def main() -> int:
     if mode == "self-test":
         self_test()
         return 0
-    output: dict[str, Any] = {"can_execute": False}
-    if mode in {"primary", "all"}:
-        output["primary"] = run_primary()
-    if mode in {"stress", "all"}:
-        output["stress"] = run_stress()
+    if mode == "check-live-fixtures":
+        return _check_live_fixtures(_option("--emit-fixtures"))
+    if mode not in {"primary", "stress", "all"}:
+        print(json.dumps({"status": "UNKNOWN_CANARY_MODE", "can_execute": False}))
+        return 2
+
+    bundle_input = _option("--fixtures-from")
+    selection = _select_fixtures() if bundle_input is None else _select_fixtures(fixtures_from=bundle_input)
+    if selection["configs"] is None:
+        # Acquisition was requested and could not produce rows. Fail closed at a
+        # distinct code; never retry with historical fixtures.
+        print(json.dumps({
+            "status": "LIVE_CANARY_ACQUISITION_FAILED",
+            "fixture_source": selection["source"],
+            "detail": selection["report"],
+            "future_fixture_sports": [],
+            "live_coverage_certified": False,
+            "can_execute": False,
+        }))
+        return 75
+
+    configs = selection["configs"]
+    source = selection["source"]
+    sports = future_fixture_sports() if source == "STATIC" else future_fixture_sports(configs=configs)
+    if not sports:
+        # Direct CLI calls fail closed instead of silently reporting live success.
+        # The workflow separately records a skipped live step when this occurs.
+        status = (
+            "LIVE_CANARY_NOT_RUN_STALE_STATIC_FIXTURES"
+            if source == "STATIC"
+            else "LIVE_CANARY_NOT_RUN_NO_FUTURE_EVENT"
+        )
+        print(json.dumps({
+            "status": status,
+            "fixture_source": source,
+            "detail": selection["report"],
+            "future_fixture_sports": [],
+            "live_coverage_certified": False,
+            "can_execute": False,
+        }))
+        return 78
+    output: dict[str, Any] = {
+        "can_execute": False,
+        "fixture_source": source,
+        "future_fixture_sports": list(sports),
+        "live_coverage_certified": False,
+    }
+    if selection.get("fixture_input"):
+        output["fixture_input"] = selection["fixture_input"]
+    if source == "STATIC":
+        if mode in {"primary", "all"}:
+            output["primary"] = run_primary(sports=sports)
+        if mode in {"stress", "all"}:
+            output["stress"] = run_stress(sports=sports)
+    else:
+        if mode in {"primary", "all"}:
+            output["primary"] = run_primary(sports=sports, fixtures=configs)
+        if mode in {"stress", "all"}:
+            output["stress"] = run_stress(sports=sports, fixtures=configs)
     print(json.dumps(output, sort_keys=True))
     return 0
 

@@ -1,3 +1,4 @@
+import { apiFetch } from "@/lib/api";
 import { useState, useCallback, useEffect, useRef, Fragment } from "react";
 import {
   TrendingUp, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
@@ -176,7 +177,7 @@ function EvaluatePanel() {
     setLogResult(null);
     try {
       const prob = modelProb.trim() ? parseFloat(modelProb) : null;
-      const res = await fetch("/api/kalshi/evaluate-contract", {
+      const res = await apiFetch("/api/kalshi/evaluate-contract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -204,7 +205,7 @@ function EvaluatePanel() {
     setLogging(true);
     setLogResult(null);
     try {
-      const res = await fetch("/api/kalshi/paper-trade", {
+      const res = await apiFetch("/api/kalshi/paper-trade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -449,7 +450,7 @@ function SettleModal({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/kalshi/settle-result", {
+      const res = await apiFetch("/api/kalshi/settle-result", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -777,7 +778,7 @@ function LedgerPanel() {
     try {
       const params = new URLSearchParams({ limit: "100" });
       if (filter !== "ALL") params.set("settlement_status", filter);
-      const res = await fetch(`/api/kalshi/ledger?${params}`, {
+      const res = await apiFetch(`/api/kalshi/ledger?${params}`, {
         headers: {},
       });
       const data = await res.json();
@@ -806,7 +807,7 @@ function LedgerPanel() {
       await Promise.allSettled(
         batch.map(async (row) => {
           try {
-            const res = await fetch("/api/kalshi/evaluate-contract", {
+            const res = await apiFetch("/api/kalshi/evaluate-contract", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ ticker: row.market_ticker, use_live_book: true }),
@@ -1099,9 +1100,9 @@ function CalibrationPanel() {
     setLoading(true);
     try {
       const [sumRes, settledRes, openRes] = await Promise.all([
-        fetch("/api/kalshi/ledger?summary=true&limit=1", { headers: {} }),
-        fetch("/api/kalshi/ledger?settlement_status=SETTLED&limit=500", { headers: {} }),
-        fetch("/api/kalshi/ledger?settlement_status=OPEN&limit=1", { headers: {} }),
+        apiFetch("/api/kalshi/ledger?summary=true&limit=1", { headers: {} }),
+        apiFetch("/api/kalshi/ledger?settlement_status=SETTLED&limit=500", { headers: {} }),
+        apiFetch("/api/kalshi/ledger?settlement_status=OPEN&limit=1", { headers: {} }),
       ]);
       const sumData = await sumRes.json();
       const settledData = await settledRes.json();

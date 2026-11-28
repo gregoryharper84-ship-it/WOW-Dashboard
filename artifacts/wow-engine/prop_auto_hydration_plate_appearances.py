@@ -15,6 +15,8 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from v17.player_availability_gate import participation_evidence
+
 
 PA_STAT = "PLATE_APPEARANCES"
 
@@ -158,7 +160,7 @@ def _boxscore_batting_order(
     )
 
 
-def _official_batting_slot(
+def _batting_order_state(
     player_id: int,
     *,
     game_pk: int,
@@ -167,9 +169,15 @@ def _official_batting_slot(
     http_get: Callable[..., Any],
     mlb_stats_api_base: str,
     int_value: Callable[..., int],
-) -> int | None:
+) -> tuple[str, int | None]:
+    """Return how the posted batting order treats this hitter.
+
+    A hitter missing from an order that *has* posted is a scratch, not an
+    unposted lineup: the club published participation and excluded him, so the
+    two states must not collapse into the same receipt.
+    """
     if game_pk <= 0:
-        return None
+        return "NOT_POSTED", None
     payload = _boxscore_batting_order(
         game_pk=game_pk,
         request_json=request_json,
@@ -180,10 +188,34 @@ def _official_batting_slot(
     node = teams.get(side.lower()) if isinstance(teams.get(side.lower()), dict) else {}
     batting_order = node.get("battingOrder") if isinstance(node.get("battingOrder"), list) else []
     ids = [int_value(value) for value in batting_order]
+    if not ids:
+        return "NOT_POSTED", None
     try:
-        return ids.index(player_id) + 1
+        return "POSTED", ids.index(player_id) + 1
     except ValueError:
-        return None
+        return "PLAYER_NOT_IN_POSTED_ORDER", None
+
+
+def _official_batting_slot(
+    player_id: int,
+    *,
+    game_pk: int,
+    side: str,
+    request_json: Callable[..., dict[str, Any]],
+    http_get: Callable[..., Any],
+    mlb_stats_api_base: str,
+    int_value: Callable[..., int],
+) -> int | None:
+    _state, slot = _batting_order_state(
+        player_id,
+        game_pk=game_pk,
+        side=side,
+        request_json=request_json,
+        http_get=http_get,
+        mlb_stats_api_base=mlb_stats_api_base,
+        int_value=int_value,
+    )
+    return slot
 
 
 def _official_historical_start(
@@ -362,7 +394,7 @@ def hydrate_mlb_plate_appearance_evidence(
         int_value=int_value,
         error_type=error_type,
     )
-    batting_slot = _official_batting_slot(
+    lineup_state, batting_slot = _batting_order_state(
         player_id,
         game_pk=int_value(schedule.get("official_game_pk")),
         side=str(schedule.get("side") or ""),
@@ -394,7 +426,12 @@ def hydrate_mlb_plate_appearance_evidence(
         )
 
     timestamp = captured_at.isoformat()
-    lineup_confirmed = batting_slot is not None
+    lineup_confirmed = lineup_state == "POSTED" and batting_slot is not None
+    availability_status = {
+        "POSTED": "RETRIEVED",
+        "NOT_POSTED": "OFFICIAL_BATTING_ORDER_NOT_POSTED",
+        "PLAYER_NOT_IN_POSTED_ORDER": "NOT_IN_POSTED_BATTING_ORDER",
+    }[lineup_state]
     selected_seasons = sorted({int(row["season"]) for row in box_score_log}, reverse=True)
     source_timestamps = {
         "MLB_STATS_API_PLAYER_IDENTITY": timestamp,
@@ -414,9 +451,25 @@ def hydrate_mlb_plate_appearance_evidence(
         "game_log": game_log,
         "box_score_log": box_score_log,
         "role_status": {
-            "status": "STARTER_CONFIRMED" if lineup_confirmed else "LINEUP_UNCONFIRMED",
+            "status": (
+                "STARTER_CONFIRMED"
+                if lineup_confirmed
+                else (
+                    "NOT_IN_POSTED_BATTING_ORDER"
+                    if lineup_state == "PLAYER_NOT_IN_POSTED_ORDER"
+                    else "LINEUP_UNCONFIRMED"
+                )
+            ),
             "role": "BATTER",
-            "confirmation_strength": "OFFICIAL_BATTING_ORDER" if lineup_confirmed else "OFFICIAL_SCHEDULE_ONLY",
+            "confirmation_strength": (
+                "OFFICIAL_BATTING_ORDER"
+                if lineup_confirmed
+                else (
+                    "OFFICIAL_BATTING_ORDER_EXCLUDES_PLAYER"
+                    if lineup_state == "PLAYER_NOT_IN_POSTED_ORDER"
+                    else "OFFICIAL_SCHEDULE_ONLY"
+                )
+            ),
             "player_id": player_id,
             "official_name": official_name,
             "team": schedule["team"],
@@ -426,6 +479,20 @@ def hydrate_mlb_plate_appearance_evidence(
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
             "source": "MLB StatsAPI official player/schedule/battingOrder",
+            # A posted official batting order is MLB's pregame participation
+            # fact for a hitter. Before it posts, availability is unverified and
+            # the row is held rather than assumed.
+            "availability": participation_evidence(
+                basis="POSTED_BATTING_ORDER" if lineup_confirmed else None,
+                confirmation="CONFIRMED" if lineup_confirmed else None,
+                source="MLB_STATS_API_OFFICIAL_BATTING_ORDER",
+                captured_at=timestamp,
+                evidence_status=availability_status,
+                fresh=True,
+                athlete_id=player_id,
+                event_id=schedule["official_game_pk"],
+                team=schedule["team"],
+            ),
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {
@@ -438,7 +505,16 @@ def hydrate_mlb_plate_appearance_evidence(
             "batting_slot": batting_slot,
             "team_alignment": schedule["team_alignment"],
             "team_alignment_encoding": "0=AWAY,1=HOME",
-            "lineup_confirmation": "OFFICIAL_BATTING_ORDER" if lineup_confirmed else "UNCONFIRMED_HOLD_AT_MODEL_COVERAGE",
+            "lineup_confirmation": (
+                "OFFICIAL_BATTING_ORDER"
+                if lineup_confirmed
+                else (
+                    "PLAYER_ABSENT_FROM_POSTED_ORDER"
+                    if lineup_state == "PLAYER_NOT_IN_POSTED_ORDER"
+                    else "UNCONFIRMED_HOLD_AT_MODEL_COVERAGE"
+                )
+            ),
+            "lineup_state": lineup_state,
             "history_seasons_queried": seasons_queried,
             "history_seasons_used": selected_seasons,
             "history_selection": "MOST_RECENT_OFFICIAL_STARTS_NO_IMPUTATION",

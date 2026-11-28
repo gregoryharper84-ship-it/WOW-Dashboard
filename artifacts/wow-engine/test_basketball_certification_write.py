@@ -135,5 +135,35 @@ def test_read_transport_failure_propagates_unchanged():
         read_certification_row(client, sport="NBA")
 
 
+def test_frozen_forward_candidate_must_stay_unchanged():
+    registered = "NBA_TEAM_EVENT_LOGISTIC_V1_20261124T133404Z"
+    client = _Client([_row(model_artifact_version=registered)])
+
+    observed = verify_certification_write(
+        client,
+        sport="NBA",
+        model_artifact_version=registered,
+        unchanged=True,
+    )
+    assert observed["model_artifact_version"] == registered
+
+
+def test_frozen_candidate_mismatch_names_the_unchanged_expectation():
+    registered = "NBA_TEAM_EVENT_LOGISTIC_V1_20261124T133404Z"
+    client = _Client([_row(model_artifact_version="NBA_TEAM_EVENT_LOGISTIC_V1_20261128T134626Z")])
+
+    with pytest.raises(BasketballCertificationWriteError) as excinfo:
+        verify_certification_write(
+            client,
+            sport="NBA",
+            model_artifact_version=registered,
+            unchanged=True,
+        )
+
+    message = str(excinfo.value)
+    assert f"unchanged={registered}" in message
+    assert "observed=NBA_TEAM_EVENT_LOGISTIC_V1_20261128T134626Z" in message
+
+
 def test_verifier_never_grants_execution():
     assert CAN_EXECUTE is False

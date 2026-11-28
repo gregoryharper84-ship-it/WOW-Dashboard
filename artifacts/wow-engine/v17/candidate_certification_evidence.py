@@ -98,7 +98,7 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _source_id(manifest: Mapping[str, Any]) -> str:
     nested = manifest.get("source_manifest") if isinstance(manifest.get("source_manifest"), Mapping) else manifest
-    raw = str((nested or {}).get("source") or (nested or {}).get("provider") or "")
+    raw = str((nested or {}).get("source") or (nested or {}).get("source_id") or (nested or {}).get("provider") or "")
     return raw.split(":", 1)[0].strip().upper()
 
 
@@ -159,6 +159,11 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     if str(c.get("sport") or "").upper() == "SOCCER" and str(c.get("model_family") or "").startswith("SOCCER_1X2_MULTINOMIAL_LOGIT_V1_"):
         from v17.soccer_multiclass_certification_evidence import verify_soccer_candidate_certification_evidence
         return verify_soccer_candidate_certification_evidence(db, candidate_id)
+    # NHL regular-season logistic family is not the dynamic-team-state V2 contract.
+    # Sport-owned verifier only; never widen the generic prior-only path silently.
+    if str(c.get("sport") or "").upper() == "NHL" and str(c.get("model_family") or "") == "NHL_REGULAR_SEASON_LOGISTIC_V1":
+        from v17.nhl_certification_evidence import verify_nhl_candidate_certification_evidence
+        return verify_nhl_candidate_certification_evidence(db, candidate_id)
     blockers: list[str] = []
     for flag in ("promoted", "active", "automatic_certification", "automatic_promotion", "probability_publishable"):
         if bool(c.get(flag)):
@@ -238,8 +243,15 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
         if expected_version != str(c["model_artifact_version"]):
             replay_blockers.append("MODEL_ARTIFACT_VERSION_IDENTITY_MISMATCH")
 
-    source_pass = not blockers
-    replay_pass = source_pass and not replay_blockers
+    # Technical source readiness is not independent source-rights acceptance.
+    # Preserve reproducible mathematical replay while independent review is
+    # pending, but never mint a source PASS from a registry lookup alone.
+    source_integrity_pass = not blockers
+    governed_review = str(c.get("source_review_status") or "REQUIRED").strip().upper()
+    if governed_review != "PASS":
+        blockers.append("SOURCE_REVIEW_FAILED" if governed_review == "FAIL" else "SOURCE_REVIEW_REQUIRED")
+    source_pass = source_integrity_pass and governed_review == "PASS"
+    replay_pass = source_integrity_pass and replay is not None and not replay_blockers
     payload = {
         "verifier_version": VERIFIER_VERSION,
         "candidate_identity": _identity(c),
@@ -253,7 +265,7 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     }
     receipt = _persist(db, c, source_pass, replay_pass, payload)
     return {
-        "status": "CERTIFICATION_EVIDENCE_PASS" if replay_pass else "CERTIFICATION_EVIDENCE_FAILED",
+        "status": "CERTIFICATION_EVIDENCE_PASS" if source_pass and replay_pass else "CERTIFICATION_EVIDENCE_FAILED",
         "candidate_id": str(c["candidate_id"]),
         "source_review_status": receipt.get("source_review_status"),
         "replay_status": receipt.get("replay_status"),

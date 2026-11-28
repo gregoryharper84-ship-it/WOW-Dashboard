@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from tempfile import TemporaryDirectory
 from typing import Any, Callable
+import re
+
+from nfl_event_data_p1 import download_asset, schedules_asset
 
 from fastapi import HTTPException
 
@@ -39,6 +43,41 @@ def _utc_instant(value: Any) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+
+
+# Bound the scoring-path recheck by inactivity timeout, total wall clock, and
+# bytes so a trickle/oversized upstream response cannot retain a worker.
+_NFL_REMOTE_RECHECK_TIMEOUT_SECONDS = 12.0
+_NFL_REMOTE_RECHECK_MAX_TOTAL_SECONDS = 12.0
+_NFL_REMOTE_RECHECK_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _remote_nfl_schedule_recheck() -> dict[str, Any]:
+    """Independently refetch the same allowlisted, schema-checked schedule asset.
+
+    Immutable source manifests are deduplicated by content SHA: another fetch
+    of identical bytes does not change the old manifest's fetched_at. This
+    bounded recheck proves a new retrieval without mutating that manifest.
+    It never creates a probability, changes a model input, or writes to DB.
+
+    The download is bounded by both the HTTPX inactivity timeout and a hard
+    wall-clock/byte ceiling so a slow stream fails closed into HOLD.
+    """
+    with TemporaryDirectory(prefix="wow-nfl-final-requery-") as workdir:
+        capture = download_asset(
+            schedules_asset(),
+            workdir,
+            timeout_seconds=_NFL_REMOTE_RECHECK_TIMEOUT_SECONDS,
+            max_total_seconds=_NFL_REMOTE_RECHECK_MAX_TOTAL_SECONDS,
+            max_bytes=_NFL_REMOTE_RECHECK_MAX_BYTES,
+        )
+        return {
+            "source_status": capture.source_status,
+            "content_sha256": capture.content_sha256,
+            "fetched_at": capture.fetched_at,
+            "row_count": capture.row_count,
+            "resolved_url": capture.resolved_url,
+        }
 
 
 def _nfl_final_refresh(
@@ -94,6 +133,50 @@ def _nfl_final_refresh(
         details["refresh_source_snapshot_id"] = latest_id or None
         details["refresh_source_timestamp"] = latest_at.isoformat() if latest_at else None
         details["identity_resolution"] = refreshed.get("identity_resolution")
+
+        # A source replay with the same content hash reuses an immutable source
+        # manifest and thus its original fetched_at. Re-query the upstream
+        # allowlisted source only for this aged-but-identical case. Never use
+        # a later capture to wash away different bytes or missing provenance.
+        if (
+            latest_at is not None
+            and latest_at <= checked_at
+            and checked_at - latest_at > _NFL_SCHEDULE_MAX_AGE
+            and latest_hash
+            and latest_hash == prior_hash
+        ):
+            remote_ok = False
+            remote: dict[str, Any] = {}
+            remote_sha = ""
+            remote_at: datetime | None = None
+            try:
+                remote = _remote_nfl_schedule_recheck()
+                remote_sha = str(remote.get("content_sha256") or "")
+                remote_at = _utc_instant(remote.get("fetched_at"))
+                if (
+                    remote.get("source_status") != "CAPTURED"
+                    or not re.fullmatch(r"[0-9a-f]{64}", remote_sha)
+                    or remote_at is None
+                    or int(remote.get("row_count") or 0) <= 0
+                    or not str(remote.get("resolved_url") or "")
+                ):
+                    raise ValueError("INVALID_REMOTE_SCHEDULE_CAPTURE")
+                remote_ok = True
+            except Exception:
+                reasons.append("FINAL_REFRESH_SOURCE_UNAVAILABLE")
+            # Check time after both successful and failed network reads so a
+            # slow failure that spans kickoff still reports NOT_PREGAME.
+            if now is None:
+                checked_at = datetime.now(timezone.utc)
+                details["checked_at"] = checked_at.isoformat()
+            if remote_ok:
+                latest_hash = remote_sha
+                latest_at = remote_at
+                details["refresh_origin"] = "ALLOWLISTED_REMOTE_SOURCE_RECHECK"
+                details["refresh_source_timestamp"] = remote_at.isoformat()
+                details["remote_refresh_content_sha256"] = remote_sha
+                details["remote_refresh_resolved_url"] = remote["resolved_url"]
+                details["remote_refresh_stored_snapshot"] = False
         if (
             str(refreshed.get("canonical_event_id") or "")
             != str(getattr(req, "official_event_id", "") or "")
@@ -113,6 +196,10 @@ def _nfl_final_refresh(
             or checked_at - latest_at > _NFL_SCHEDULE_MAX_AGE
         ):
             reasons.append("FINAL_REFRESH_SOURCE_STALE_OR_INVALID")
+
+    # A long upstream recheck cannot preserve a pregame verdict past kickoff.
+    if start is not None and start <= checked_at:
+        reasons.append("FINAL_REFRESH_EVENT_NOT_PREGAME")
 
     passed = not reasons
     return {

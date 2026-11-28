@@ -94,6 +94,8 @@ jobs:
       WOW_DRY_RUN_ONLY: "true"
     steps:
       - name: Assert non-execution governance and OIDC context
+        id: gov
+        continue-on-error: true
         shell: bash
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
@@ -102,6 +104,11 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Hydrate first, then regenerate NBA/WNBA challengers
+        id: work
+        continue-on-error: true
+        # Fail closed: never run governed work unless the can_execute/OIDC
+        # governance assertion succeeded.
+        if: steps.gov.outcome == 'success'
         shell: bash
         run: |
           python - <<'PY'
@@ -164,6 +171,51 @@ jobs:
                   ],
               }, sort_keys=True))
           basketball = payload
+          # Keep successful SHADOW model replay distinct from newly acquired
+          # settled game evidence. Summarize only trusted, bounded scalars;
+          # never log raw provider payloads or authentication data.
+          source_summary = {}
+          from datetime import date as _date
+          allowed_states = {
+              "FRESH_ACQUISITION_UPDATED",
+              "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS",
+              "FRESH_ACQUISITION_PARTIAL_SOURCE_BLOCKED_USING_PERSISTED_CORPUS",
+              "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS",
+              "FRESH_ACQUISITION_NOT_VERIFIED",
+          }
+          for row in payload.get("rows", []):
+              if not isinstance(row, dict) or row.get("sport") not in ("NBA", "WNBA"):
+                  continue
+              hydration = row.get("hydration") if isinstance(row.get("hydration"), dict) else {}
+              status = row.get("hydration_status")
+              if not isinstance(status, str) or status not in allowed_states:
+                  status = "FRESH_ACQUISITION_NOT_VERIFIED"
+              latest = hydration.get("latest_game_date_after")
+              try:
+                  if not isinstance(latest, str):
+                      raise ValueError("source date missing")
+                  latest = _date.fromisoformat(latest).isoformat()
+              except ValueError:
+                  latest = None
+              new_count = hydration.get("fresh_acquisition_new_settled_games")
+              if type(new_count) is not int or new_count < 0:
+                  new_count = None
+              source_summary[row["sport"]] = {
+                  "status": status,
+                  "latest_persisted_settlement_date": latest,
+                  "new_settled_games": new_count,
+              }
+
+          # The source receipt must survive a later challenger failure.
+          print(json.dumps({
+              "stage": "BASKETBALL_SOURCE_ACQUISITION_READBACK",
+              "basketball_status": basketball.get("status"),
+              "rows_no_new_settlements": basketball.get("rows_no_new_settlements"),
+              "rows_fresh_acquisition_degraded": basketball.get("rows_fresh_acquisition_degraded"),
+              "rows_fresh_acquisition_unverified": basketball.get("rows_fresh_acquisition_unverified"),
+              "source_summary": source_summary,
+              "can_execute": False,
+          }, sort_keys=True))
 
           challengers = {}
           for sport in ("NBA", "WNBA"):
@@ -181,7 +233,31 @@ jobs:
               "basketball_status": basketball.get("status"),
               "rows_updated": basketball.get("rows_updated"),
               "rows_fresh_acquisition_degraded": basketball.get("rows_fresh_acquisition_degraded"),
+              "rows_no_new_settlements": basketball.get("rows_no_new_settlements"),
+              "rows_fresh_acquisition_unverified": basketball.get("rows_fresh_acquisition_unverified"),
+              "source_summary": source_summary,
               "challenger_statuses": {k:v.get("status") for k,v in challengers.items()},
               "can_execute": False,
           }, sort_keys=True))
           PY
+      - name: Record authentic optional-observer outcome
+        continue-on-error: true
+        shell: bash
+        env:
+          GOV_OUTCOME: ${{ steps.gov.outcome }}
+          WORK_OUTCOME: ${{ steps.work.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Optional main-scoped observer"
+            echo "governance_outcome=$GOV_OUTCOME work_outcome=$WORK_OUTCOME"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOV_OUTCOME" != "success" ]; then
+            echo "BASKETBALL_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::BASKETBALL_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED"
+          elif [ "$WORK_OUTCOME" = "success" ]; then
+            echo "BASKETBALL_MODEL_MAINTENANCE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "BASKETBALL_MODEL_MAINTENANCE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::BASKETBALL_MODEL_MAINTENANCE_INCOMPLETE"
+          fi

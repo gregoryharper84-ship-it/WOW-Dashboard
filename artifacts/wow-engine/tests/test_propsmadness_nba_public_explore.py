@@ -59,6 +59,128 @@ def test_extracts_visible_player_prop_rows_without_adding_false_market_authority
     assert "0.9" not in json.dumps(r)
 
 
+def test_current_nba_threes_public_url_and_strict_player_market_aliases():
+    # Page URL differs from the internal "threes" market key. Both recognized
+    # player-link shapes must remain discovery-only with no training authority.
+    for player_market in ("player-threes", "player-made-threes"):
+        raw = (f'<html><body><a href="/nba?market={player_market}&amp;match=77&amp;player=55">'
+               'A. Player</a><span>Threes 2.5&#183; BOS vs NYK</span>'
+               '<span>L10 AVG 2.2</span></body></html>').encode()
+        result = parse(raw, market="threes")
+        assert result["row_count"] == 1
+        assert result["source_url"] == "https://propsmadness.com/nba/props/made-threes"
+        row = result["rows"][0]
+        assert row["source_page"] == result["source_url"]
+        assert row["stat_type"] == "THREE_POINTERS_MADE"
+        assert row["canonical_player_id"] is None
+        assert row["canonical_event_id"] is None
+        assert row["historical_line_evidence"] is False
+        assert result["historical_training_authorized"] is False
+        assert result["probability_publishable"] is False
+        assert result["can_execute"] is False
+    bad = raw.replace(b"player-made-threes", b"player-unknown")
+    assert parse(bad, market="threes")["row_count"] == 0
+
+
+def test_threes_fetch_targets_actual_public_slug_only_after_robots():
+    paths = []
+    raw = (b'<html><body><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">'
+           b'A. Player</a><span>Threes 2.5&#183; BOS vs NYK</span></body></html>')
+    result = fetch_public_explore_once(
+        "threes", personal_noncommercial_use_confirmed=True,
+        urlopen=opener_with(b"User-agent: *\\nAllow: /\\n", raw, paths),
+    )
+    assert result["row_count"] == 1
+    assert paths == [
+        "https://propsmadness.com/robots.txt",
+        "https://propsmadness.com/nba/props/made-threes",
+    ]
+    assert result["history_materialized"] is False
+    assert result["historical_training_authorized"] is False
+
+
+def test_live_style_table_cells_parse_without_hidden_payload_or_authority():
+    player_row = b"""<tr>
+      <td>1<a aria-hidden="true" href="/nba?market=player-made-threes&amp;match=77&amp;player=55"></a></td>
+      <td><a href="/nba?player=55&amp;market=player-made-threes&amp;match=77">A. Sample</a>
+          <span>BOS vs NYK &#183; G</span></td>
+      <td><img alt="FanDuel" src="/logo.webp"><div>2.5</div><button>O-125</button><button>U-104</button></td>
+      <td>graph</td><td>1/4</td><td>2.2</td><td>B+</td>
+    </tr>"""
+    locked = b"""<tr>
+      <td>2</td><td><a href="/nba?player=66&amp;market=player-made-threes&amp;match=77">B. Sample</a>
+      <span>BOS vs NYK &#183; F</span></td><td>UNLOCK</td><td>graph</td><td>0/0</td><td>-</td>
+    </tr>"""
+    html = b"<html><script>model_probability:0.99</script><table>" + player_row + locked + b"</table></html>"
+    result = parse(html, market="threes")
+    assert result["row_count"] == 1
+    row = result["rows"][0]
+    assert (row["provider_player_id"], row["provider_match_id"]) == ("55", "77")
+    assert row["display_name_unverified"] == "A. Sample"
+    assert row["fixture_text"] == "BOS vs NYK"
+    assert row["line"] == 2.5
+    assert row["over_odds_display"] == -125
+    assert row["under_odds_display"] == -104
+    assert row["l10_avg_display"] == 2.2
+    assert row["source_page"].endswith("/nba/props/made-threes")
+    assert row["model_probability"] is None
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+    with pytest.raises(PublicPageHold, match="PM_PUBLIC_DUPLICATE_PLAYER_EVENT_LINE"):
+        parse(b"<table>" + player_row + player_row + b"</table>", market="threes")
+    wrong = player_row.replace(b"player-made-threes", b"player-rebounds")
+    assert parse(b"<table>" + wrong + b"</table>", market="threes")["row_count"] == 0
+
+
+
+def test_explicitly_hidden_public_tables_and_legacy_rows_remain_unseen():
+    row = (b'<tr><td>1</td><td><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">'
+           b'A. Sample</a><span>BOS vs NYK</span></td><td>2.5</td>'
+           b'<td>graph</td><td>1/4</td><td>2.2</td></tr>')
+    for html in (
+        b"<table hidden>" + row + b"</table>",
+        b'<div style="display: none"><table>' + row + b"</table></div>",
+        b'<section aria-hidden="true"><table>' + row + b"</table></section>",
+        b'<table><tr style="visibility:hidden">' + row.replace(b"<tr>", b"").replace(b"</tr>", b"") + b"</tr></table>",
+        b'<div hidden><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">'
+        b'A. Sample</a><span>Threes 2.5 &#183; BOS vs NYK</span></div>',
+    ):
+        receipt = parse(html, market="threes")
+        assert receipt["row_count"] == 0, html
+        assert receipt["rows"] == []
+        assert receipt["historical_training_authorized"] is False
+        assert receipt["can_execute"] is False
+
+
+
+def test_hidden_nested_cell_content_cannot_replace_visible_line_or_name():
+    html = b"""<table><tr><td>1</td>
+      <td><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">
+        A. Sample<span aria-hidden="true">INVISIBLE</span></a>
+        <span>BOS vs NYK</span></td>
+      <td><span hidden>99.5</span><div>2.5</div></td>
+      <td>graph</td><td>1/4</td><td>2.2</td></tr></table>"""
+    receipt = parse(html, market="threes")
+    assert receipt["row_count"] == 1
+    row = receipt["rows"][0]
+    assert row["display_name_unverified"] == "A. Sample"
+    assert row["line"] == 2.5
+    assert row["model_probability"] is None
+
+
+def test_table_reader_keeps_integer_valued_lines_with_other_valid_lines():
+    def row(player, line):
+        return (f'<tr><td>1</td><td><a href="/nba?market=player-made-threes&amp;match=77&amp;player={player}">'
+                f'P. {player}</a><span>BOS vs NYK</span></td><td>{line}</td>'
+                '<td>graph</td><td>1/4</td><td>2.2</td></tr>').encode()
+    receipt = parse(b'<table>' + row(55, '2') + row(56, '3.5') + b'</table>', market="threes")
+    assert receipt["row_count"] == 2
+    assert sorted(r["line"] for r in receipt["rows"]) == [2.0, 3.5]
+    assert all(r["model_probability"] is None for r in receipt["rows"])
+    assert receipt["probability_publishable"] is False
+
+
 def test_changing_stat_or_third_party_url_is_not_a_valid_prop():
     assert parse(PAGE.replace(b"Points 23.5", b"Rebounds 23.5"))["row_count"] == 1
     assert parse(PAGE.replace(b"market=player-points", b"market=player-rebounds"))["row_count"] == 0

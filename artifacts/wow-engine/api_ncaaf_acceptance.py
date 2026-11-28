@@ -97,10 +97,37 @@ def _spread_forward_warm_error_code(exc: Exception) -> str:
     return type(exc).__name__
 
 
+# The warm-status receipt is what the post-deploy canary polls, so a retry must
+# name its own cause instead of only reporting RETRYING. Only the exception class
+# name and a bounded identifier-shaped code are published; the exception message
+# is never exposed because it can carry connection strings.
+_SPREAD_FORWARD_WARM_ERROR_FIELD_MAX_LEN = 64
+_SPREAD_FORWARD_WARM_ERROR_FIELD_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-"
+)
+
+
+def _spread_forward_warm_error_field(value: object, fallback: str) -> str:
+    """Return a bounded identifier-shaped error field, or ``fallback``."""
+    text = str(value if value is not None else "").strip()
+    if not text or len(text) > _SPREAD_FORWARD_WARM_ERROR_FIELD_MAX_LEN:
+        return fallback
+    if any(character not in _SPREAD_FORWARD_WARM_ERROR_FIELD_CHARS for character in text):
+        return fallback
+    return text
+
+
+# Postgres emits SQLSTATE 57014 (query_canceled/statement_timeout) when the warm
+# loses a startup contention race. It is transient, not a deterministic contract
+# failure, so it may use the existing bounded retry (#2663/#2666). A persistent
+# 57014 still exhausts all attempts and ends FAILED.
+_SPREAD_FORWARD_TRANSIENT_DB_ERROR_CODES = frozenset({"PGRST002", "57014"})
+
+
 def _spread_forward_warm_failure_is_transient(exc: Exception) -> bool:
     return (
         type(exc).__name__ == "ReadTimeout"
-        or _spread_forward_warm_error_code(exc) == "PGRST002"
+        or _spread_forward_warm_error_code(exc) in _SPREAD_FORWARD_TRANSIENT_DB_ERROR_CODES
     )
 
 
@@ -461,6 +488,7 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
     startup_delay_seconds = max(0, min(startup_delay_seconds, 300))
     retry_delays = (0.0, 15.0, 30.0)
     max_attempts = len(retry_delays)
+    retry_attribution: dict = {}
 
     _set_spread_forward_warm_state(
         "DELAYED" if startup_delay_seconds else "PENDING",
@@ -478,12 +506,15 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
 
     for attempt, retry_delay in enumerate(retry_delays, start=1):
         if retry_delay:
+            # The backoff wait re-publishes RETRYING; carry the attributed cause of the
+            # failure that scheduled this retry so a polling canary can name it.
             _set_spread_forward_warm_state(
                 "RETRYING",
                 "SPREAD_FORWARD_CONTEXT_WARM_RETRYING",
                 attempt=attempt,
                 max_attempts=max_attempts,
                 retry_delay_seconds=retry_delay,
+                **retry_attribution,
             )
             await asyncio.sleep(retry_delay)
 
@@ -496,15 +527,24 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
         try:
             receipt = await asyncio.to_thread(warm_ncaaf_forward_context, _db_client())
         except Exception as exc:  # noqa: BLE001
-            error_code = _spread_forward_warm_error_code(exc)
+            # Transience is classified on the raw code, so sanitizing the published
+            # fields below can never change retry behavior.
+            raw_error_code = _spread_forward_warm_error_code(exc)
             transient = _spread_forward_warm_failure_is_transient(exc)
             has_retry = transient and attempt < max_attempts
+            error_type = _spread_forward_warm_error_field(type(exc).__name__, "Exception")
+            error_code = _spread_forward_warm_error_field(raw_error_code, error_type)
+            retry_attribution = {
+                "error_type": error_type,
+                "error_code": error_code,
+                "transient": transient,
+            }
             _set_spread_forward_warm_state(
                 "RETRYING" if has_retry else "FAILED",
                 "SPREAD_FORWARD_CONTEXT_WARM_RETRYING" if has_retry else "SPREAD_FORWARD_CONTEXT_WARM_FAILED",
                 attempt=attempt,
                 max_attempts=max_attempts,
-                error_type=type(exc).__name__,
+                error_type=error_type,
                 error_code=error_code,
                 transient=transient,
             )

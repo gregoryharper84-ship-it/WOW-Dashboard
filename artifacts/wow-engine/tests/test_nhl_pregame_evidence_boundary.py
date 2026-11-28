@@ -1,5 +1,11 @@
 from datetime import datetime, timedelta, timezone
-from v17.nhl_pregame_evidence_boundary import validate_nhl_pregame_evidence, REQUIRED, FULL_GAME_SETTLEMENT
+from v17.nhl_pregame_evidence_boundary import (
+    ACCEPTED_SETTLEMENT_BASES,
+    FULL_GAME_SETTLEMENT,
+    REQUIRED,
+    SETTLEMENT_CONTRACT,
+    validate_nhl_pregame_evidence,
+)
 
 
 NOW = datetime(2026, 10, 31, 17, 0, tzinfo=timezone.utc)
@@ -30,6 +36,7 @@ def trusted_identity():
         "home_team": "BOS", "away_team": "NYR",
         "identity_provider": "NHL_PUBLIC_WEB_API",
         "identity_source": "https://api-web.nhle.com/v1/club-schedule-season/BOS/20262027",
+        "identity_match_sha256": "a" * 64,
         "identity_verified_at": NOW.isoformat(),
         "market_features_used": False,
         "prediction_authority": False,
@@ -41,6 +48,51 @@ def verify(evidence, *, as_of_utc, **kwargs):
     return validate_nhl_pregame_evidence(
         evidence, as_of_utc=as_of_utc, resolved_identity=trusted_identity(), **kwargs
     )
+
+
+def test_declared_outcome_label_and_settlement_contract_are_both_accepted():
+    # The model outcome label and the externally settled market contract name are
+    # different identifiers for the same full-game home/away winner including
+    # overtime and shootout. Both are explicitly declared; neither is guessed.
+    assert FULL_GAME_SETTLEMENT != SETTLEMENT_CONTRACT
+    assert ACCEPTED_SETTLEMENT_BASES == {FULL_GAME_SETTLEMENT, SETTLEMENT_CONTRACT}
+    for basis in (FULL_GAME_SETTLEMENT, SETTLEMENT_CONTRACT):
+        row = valid()
+        row["settlement_basis"] = basis
+        result = verify(row, as_of_utc=NOW)
+        assert result["status"] == "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION", basis
+        assert result["probability_publishable"] is False
+        assert result["can_execute"] is False
+
+
+def test_regulation_three_way_and_unrecognized_settlement_bases_stay_rejected():
+    for basis in (
+        "REGULATION_3_WAY",
+        "REGULATION_TIME_THREE_WAY",
+        "FULL_GAME_INCLUDING_OVERTIME",
+        "",
+        "full_game_moneyline_including_overtime_shootout",
+    ):
+        row = valid()
+        row["settlement_basis"] = basis
+        result = verify(row, as_of_utc=NOW)
+        assert result["status"] == "HELD", basis
+        assert "NHL_SETTLEMENT_BASIS_UNVERIFIED" in result["blockers"], basis
+        assert result["probability_publishable"] is False
+
+
+def test_unhashable_and_nonstring_settlement_bases_hold_without_crash():
+    # Inputs can come from untrusted JSON. Invalid types must never trigger
+    # TypeError during membership of the accepted frozenset.
+    for basis in ([], {}, set(), [SETTLEMENT_CONTRACT], {"basis": SETTLEMENT_CONTRACT}, 0, True, None):
+        row = valid()
+        row["settlement_basis"] = basis
+        result = verify(row, as_of_utc=NOW)
+        assert result["status"] == "HELD", repr(basis)
+        assert "NHL_SETTLEMENT_BASIS_UNVERIFIED" in result["blockers"], repr(basis)
+        assert result["probability_publishable"] is False
+        assert result["rank_eligible"] is False
+        assert result["can_execute"] is False
 
 
 def test_complete_input_is_not_certification():
@@ -218,6 +270,9 @@ def test_resolved_nhl_receipt_must_match_source_event_teams_time_and_provenance(
         ("event_start_time", (NOW + timedelta(hours=4)).isoformat()),
         ("identity_provider", "ESPN_SCOREBOARD"),
         ("identity_source", "https://site.api.espn.com/claims/123"),
+        ("identity_match_sha256", None),
+        ("identity_match_sha256", "b" * 63),
+        ("identity_match_sha256", "Z" * 64),
         ("identity_verified_at", (NOW - timedelta(hours=48)).isoformat()),
         ("prediction_authority", True),
         ("market_features_used", True),

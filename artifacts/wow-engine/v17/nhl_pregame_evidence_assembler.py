@@ -1,0 +1,261 @@
+"""Assemble fail-closed NHL Action pregame evidence for one upcoming game.
+
+Composes existing identity, GameCenter capture, two-provider starter
+confirmation, injury presence, OT/SO settlement vocabulary, and a
+content-addressed source snapshot id. This module:
+
+- never scores or publishes a probability
+- never invents confirmed starters from GameCenter participation
+- never ships a default trusted-provider registry (source-rights decision)
+- never flips ``probability_publishable`` or ``can_execute``
+
+Missing injury reports, missing/invalid dual-provider starter receipts, or a
+failed official snapshot capture produce typed holds. A package that clears
+every assembler gate remains research/Action-input evidence only until
+independent source review and certification register the fitted candidate.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping, Sequence
+
+import requests
+
+from v17.nhl_certified_scoring_adapter import (
+    NHLCertifiedScoringError,
+    resolve_server_confirmed_goalies,
+)
+from v17.nhl_fitted_specialist import (
+    FULL_GAME_SETTLEMENT,
+    SETTLEMENT_CONTRACT,
+)
+from v17.nhl_pregame_gamecenter_capture import capture_nhl_pregame_gamecenter
+from v17.nhl_starter_goalie_confirmation import TrustedProvider
+
+CAN_EXECUTE = False
+PROBABILITY_PUBLISHABLE = False
+DEFAULT_SETTLEMENT_BASIS = SETTLEMENT_CONTRACT
+ACCEPTED_ASSEMBLER_SETTLEMENT = frozenset({FULL_GAME_SETTLEMENT, SETTLEMENT_CONTRACT})
+
+
+def _held(
+    blockers: Sequence[str],
+    *,
+    official_event_id: str | None = None,
+    evidence: Mapping[str, Any] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    codes = sorted({str(code) for code in blockers if str(code).strip()})
+    return {
+        "status": "HELD",
+        "code": codes[0] if len(codes) == 1 else "MODEL_INPUTS_INSUFFICIENT",
+        "blockers": codes,
+        "sport": "NHL",
+        "league": "NHL",
+        "official_event_id": official_event_id,
+        "sport_specific_evidence": dict(evidence or {}),
+        "probability_publishable": PROBABILITY_PUBLISHABLE,
+        "can_execute": CAN_EXECUTE,
+        "derived_server_side": True,
+        "fitted_specialist_invoked": False,
+        "certification_claimed": False,
+        **extra,
+    }
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def assemble_nhl_pregame_action_evidence(
+    *,
+    resolved_identity: Mapping[str, Any],
+    as_of_utc: datetime,
+    starter_provider_receipts: Sequence[Any] | None = None,
+    trusted_providers: Mapping[str, TrustedProvider] | None = None,
+    attestation_key: bytes | None = None,
+    injury_report: Mapping[str, Any] | None = None,
+    settlement_basis: str = DEFAULT_SETTLEMENT_BASIS,
+    get: Callable[..., Any] = requests.get,
+    capture: Callable[..., Mapping[str, Any]] = capture_nhl_pregame_gamecenter,
+) -> dict[str, Any]:
+    """Build one-game Action evidence or return a typed hold package.
+
+    ``trusted_providers`` and ``attestation_key`` must be supplied by the
+    server-owned rights/ops path. With none supplied, starter confirmation
+    holds closed — this assembler does not invent OFFICIAL providers.
+    """
+    if as_of_utc.tzinfo is None:
+        raise ValueError("as_of_utc must be timezone-aware")
+    now = as_of_utc.astimezone(timezone.utc)
+    if not isinstance(resolved_identity, Mapping):
+        return _held(["NHL_CANONICAL_IDENTITY_RECEIPT_MISSING"])
+
+    event_id = str(resolved_identity.get("event_id") or "").strip()
+    home = str(resolved_identity.get("home_team") or "").strip().upper()
+    away = str(resolved_identity.get("away_team") or "").strip().upper()
+    start_raw = resolved_identity.get("event_start_time")
+    try:
+        start = datetime.fromisoformat(str(start_raw or "").replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            raise ValueError("naive")
+        start = start.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return _held(["NHL_EVENT_TIME_INVALID"], official_event_id=event_id or None)
+
+    # Identity verification is stamped at resolve time. Allow a tiny clock skew so
+    # an as_of captured just before resolve does not false-hold the GameCenter gate.
+    try:
+        verified_at = datetime.fromisoformat(
+            str(resolved_identity.get("identity_verified_at") or "").replace("Z", "+00:00")
+        )
+        if verified_at.tzinfo is not None:
+            verified_at = verified_at.astimezone(timezone.utc)
+            skew = (verified_at - now).total_seconds()
+            if 0 < skew <= 2.0:
+                now = verified_at
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+    blockers: list[str] = []
+    if not event_id:
+        blockers.append("NHL_EVENT_IDENTITY_UNVERIFIED")
+    if start <= now:
+        blockers.append("NHL_EVENT_NOT_PREGAME")
+    if not isinstance(settlement_basis, str) or settlement_basis not in ACCEPTED_ASSEMBLER_SETTLEMENT:
+        blockers.append("NHL_SETTLEMENT_BASIS_UNVERIFIED")
+        settlement = DEFAULT_SETTLEMENT_BASIS
+    else:
+        settlement = settlement_basis
+
+    capture_result = capture(
+        event_id,
+        resolved_identity=resolved_identity,
+        as_of_utc=now,
+        get=get,
+    )
+    content_sha = str(capture_result.get("source_content_sha256") or "").strip().lower()
+    retrieved_at = str(capture_result.get("retrieved_at_utc") or "").strip()
+    snapshot_ok = (
+        str(capture_result.get("gamecenter_source_status") or "")
+        == "OFFICIAL_PREGAME_CAPTURED_RESEARCH_ONLY"
+        and len(content_sha) == 64
+        and all(ch in "0123456789abcdef" for ch in content_sha)
+        and bool(retrieved_at)
+    )
+    if not snapshot_ok:
+        blockers.append(
+            str(capture_result.get("code") or "NHL_SOURCE_SNAPSHOT_MISSING")
+        )
+
+    evidence: dict[str, Any] = {
+        "official_event_id": event_id,
+        "home_team": home,
+        "away_team": away,
+        "event_start_time_utc": _iso(start),
+        "settlement_basis": settlement,
+        "season": str(resolved_identity.get("season") or "").strip() or None,
+    }
+    if snapshot_ok:
+        evidence["source_snapshot_id"] = "sha256:" + content_sha
+        evidence["source_snapshot_timestamp"] = retrieved_at
+        evidence["source_content_sha256"] = content_sha
+        evidence["source_provider"] = "NHL_PUBLIC_WEB_API"
+    else:
+        blockers.append("NHL_SOURCE_SNAPSHOT_MISSING")
+
+    neutral_site = resolved_identity.get("neutral_site")
+    if isinstance(neutral_site, bool):
+        evidence["neutral_site"] = neutral_site
+    else:
+        blockers.append("NHL_NEUTRAL_SITE_UNVERIFIED")
+
+    if not isinstance(injury_report, Mapping) or not injury_report:
+        blockers.append("NHL_INJURY_REPORT_UNAVAILABLE")
+    else:
+        evidence["injury_report"] = dict(injury_report)
+
+    starter_blockers: list[str] = []
+    if (
+        not isinstance(trusted_providers, Mapping)
+        or not trusted_providers
+        or attestation_key is None
+        or not isinstance(starter_provider_receipts, (list, tuple))
+        or not starter_provider_receipts
+    ):
+        starter_blockers.append("NHL_STARTER_RECEIPTS_INCOMPLETE")
+        if not isinstance(trusted_providers, Mapping) or not trusted_providers:
+            starter_blockers.append("NHL_STARTER_SOURCE_NOT_TRUSTED")
+    else:
+        try:
+            confirmed = resolve_server_confirmed_goalies(
+                {**evidence, "starter_provider_receipts": starter_provider_receipts},
+                now_utc=now,
+                trusted_providers=trusted_providers,
+                attestation_key=attestation_key,
+            )
+            evidence["goalie_status"] = str(confirmed["goalie_status"])
+            evidence["goalie_identity_snapshot_id"] = str(
+                confirmed["goalie_identity_snapshot_id"]
+            )
+            evidence["goalie_status_observed_at"] = str(confirmed["verified_at"])
+            evidence["home_goalie_id"] = confirmed.get("home_goalie_id")
+            evidence["away_goalie_id"] = confirmed.get("away_goalie_id")
+            evidence["starter_provider_receipts"] = list(starter_provider_receipts)
+            evidence["goalie_confirmation"] = {
+                "derived_server_side": True,
+                "provider_receipts": confirmed.get("provider_receipts"),
+            }
+        except NHLCertifiedScoringError as exc:
+            starter_blockers.extend(exc.blockers)
+            if exc.detail:
+                evidence["starter_hold_detail"] = str(exc.detail)
+
+    blockers.extend(starter_blockers)
+    # GameCenter never confirms starters; keep that explicit when dual receipts absent.
+    if "NHL_STARTING_GOALIE_NOT_CONFIRMED" not in blockers and (
+        "goalie_status" not in evidence
+        or str(evidence.get("goalie_status") or "").upper() != "CONFIRMED"
+    ):
+        if any(
+            code.startswith("NHL_STARTER_") or code == "NHL_STARTING_GOALIE_NOT_CONFIRMED"
+            for code in starter_blockers
+        ):
+            blockers.append("NHL_STARTING_GOALIE_NOT_CONFIRMED")
+
+    unique = sorted(set(blockers))
+    if unique:
+        return _held(
+            unique,
+            official_event_id=event_id or None,
+            evidence=evidence,
+            gamecenter_capture_code=capture_result.get("code"),
+            gamecenter_source_status=capture_result.get("gamecenter_source_status"),
+        )
+
+    return {
+        "status": "ASSEMBLED",
+        "code": "NHL_PREGAME_ACTION_EVIDENCE_ASSEMBLED",
+        "blockers": [],
+        "sport": "NHL",
+        "league": "NHL",
+        "official_event_id": event_id,
+        "sport_specific_evidence": evidence,
+        "probability_publishable": PROBABILITY_PUBLISHABLE,
+        "can_execute": CAN_EXECUTE,
+        "derived_server_side": True,
+        "fitted_specialist_invoked": False,
+        "certification_claimed": False,
+        "gamecenter_source_status": capture_result.get("gamecenter_source_status"),
+        "assembled_at_utc": _iso(now),
+    }
+
+
+__all__ = [
+    "ACCEPTED_ASSEMBLER_SETTLEMENT",
+    "CAN_EXECUTE",
+    "DEFAULT_SETTLEMENT_BASIS",
+    "PROBABILITY_PUBLISHABLE",
+    "TrustedProvider",
+    "assemble_nhl_pregame_action_evidence",
+]

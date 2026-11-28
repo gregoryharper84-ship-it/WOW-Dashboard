@@ -663,32 +663,56 @@ def test_stale_pr_head_aborts_early_without_accepting_existing_artifact(tmp_path
     assert "head_sha=" not in output
 
 
-def test_v4_postmerge_release_verifies_five_pinned_checks_and_exact_main_lineage():
+def test_postmerge_release_uses_owner_ratified_three_check_truth_and_exact_main_lineage():
     text = RELEASE.read_text(encoding="utf-8")
     assert "startsWith(github.event.pull_request.head.ref" not in text
     assert "Resolve exact merged identity" in text
     assert 'git merge-base --is-ancestor "$merge_sha" HEAD' in text
     assert "Verify required exact-head CI" in text
-    assert '"wow-verify|.github/workflows/wow-verify.yml"' in text
-    assert '"wow-engine-verify|.github/workflows/wow-engine-verify.yml"' in text
-    assert "/actions/runs?head_sha=${HEAD_SHA}&per_page=100" in text
-    for exact_name, app_id in (
-        ("WOW required-three regression", 15368),
-        ("WOW governed probability backend", 15368),
-        ("WOW additional required regression", 15368),
+    assert '/actions/runs?head_sha=${HEAD_SHA}&per_page=100' in text
+    expected = text.split("          expected=(\n", 1)[1].split("          )", 1)[0]
+    optional = text.split("          optional_reviews=(\n", 1)[1].split("          )", 1)[0]
+    for exact_name in (
+        "WOW required-three regression",
+        "WOW governed probability backend",
+        "WOW additional required regression",
+    ):
+        assert f'"{exact_name}|15368"' in expected
+    for name, app in (
         ("WOW Independent QA exact-head", 5245832),
         ("WOW Release Authority exact-head", 5245853),
     ):
-        assert f'"{exact_name}|{app_id}"' in text
+        assert f'"{name}|{app}"' in optional
+        assert f'"{name}|{app}"' not in expected
     assert 'select(.name == $name and .head_sha == $sha)' in text
     assert '$check.app.id == $app' in text
     assert '$check.status == "completed"' in text
     assert '$check.conclusion == "success"' in text
     assert "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED" in text
+    assert "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN" not in text
+    assert "protected_three_exact_head_checks: VERIFIED" in text
+    assert "independent_scientific_model_certification: NOT_ESTABLISHED_BY_THIS_RECEIPT" in text
+    assert "v4_exact_head_qa_release_checks: VERIFIED" not in text
     assert "Resolve trusted exact-head governance artifact" not in text
     assert "RELEASE_GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" not in text
-    assert "trusted_handoff_receipt: VERIFIED" not in text
-    assert "v4_exact_head_qa_release_checks: VERIFIED" in text
+
+
+def test_release_verifier_uses_deterministic_live_sha_and_agent_is_advisory():
+    """Paid ChatGPT observation must not own release status; retain App/SIRT gates."""
+    text = RELEASE.read_text(encoding="utf-8")
+    assert "Verify deterministic exact production state" in text
+    assert "DEPLOYED_SHA_DRIFT" in text
+    assert "deployed_sha" in text
+    assert '"status": "PRODUCTION_VERIFIED"' not in text
+    assert "RELEASE_WORKER_SHA_UNVERIFIED" in text
+    assert '"status": "PENDING"' in text
+    assert "steps.deterministic.outputs.result" in text
+    assert "Provider: Deterministic GitHub/Render exact-SHA receipt" in text
+    agent = text.split("- name: Release / Production Verification agent", 1)[1].split(
+        "- name: Publish release verification receipt", 1
+    )[0]
+    assert "continue-on-error: true" in agent
+    assert "wow-chatgpt-agent" in agent
 
 
 def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
@@ -713,3 +737,48 @@ def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
     assert "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" in text
     assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in text
     assert "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH" in text
+
+def test_release_verifier_executes_web_only_hold_and_security_negatives(tmp_path):
+    """An exact web SHA is not a worker deploy or independent acceptance receipt."""
+    release = RELEASE.read_text(encoding="utf-8")
+    step = release.split("      - name: Verify deterministic exact production state\n", 1)[1].split(
+        "      - name: Release / Production Verification agent\n", 1
+    )[0]
+    lines = step.splitlines()
+    begin = next(i for i, line in enumerate(lines) if line.strip() == "python - <<'PY'")
+    end = next(i for i in range(begin + 1, len(lines)) if lines[i].strip() == "PY")
+    script = textwrap.dedent("\n".join(lines[begin + 1:end]))
+
+    main_sha, stale_sha = "a" * 40, "b" * 40
+    cases = (
+        ("web_match", main_sha, False, False, "RELEASE_WORKER_SHA_UNVERIFIED", 0),
+        ("web_drift", stale_sha, False, False, "DEPLOYED_SHA_DRIFT", 0),
+        ("missing_sha", "", False, False, "DEPLOYED_SHA_MISSING", 0),
+        ("health_exec", main_sha, True, False, None, 1),
+        ("gov_publishable", main_sha, False, True, None, 1),
+    )
+    for label, deployed, health_exec, publishable, blocker, expected_exit in cases:
+        working = tmp_path / label
+        evidence = working / "artifacts/wow-engine/v17/.release-evidence"
+        evidence.mkdir(parents=True)
+        (evidence / "health-live.json").write_text(json.dumps({
+            "status": "ok", "can_execute": health_exec,
+        }))
+        (evidence / "governance.json").write_text(json.dumps({
+            "can_execute": False, "probability_publishable": publishable,
+            "deployed_sha": deployed,
+        }))
+        (evidence / "main-sha.txt").write_text(main_sha)
+        receipt = working / "result.json"
+        completed = subprocess.run(
+            [sys.executable, "-c", script], cwd=working,
+            env={**os.environ, "MERGE_SHA": "c" * 40, "RESULT_PATH": str(receipt)},
+            text=True, capture_output=True, check=False,
+        )
+        assert (completed.returncode != 0) == bool(expected_exit), label
+        if not expected_exit:
+            payload = json.loads(receipt.read_text())
+            assert payload["status"] == "PENDING", label
+            assert payload["blocker"] == blocker, label
+            assert payload["can_execute"] is False, label
+

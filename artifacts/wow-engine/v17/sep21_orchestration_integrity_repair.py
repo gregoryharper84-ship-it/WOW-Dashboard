@@ -16,6 +16,12 @@ _DAILY_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 
+def force_daily_prop_acquisition() -> bool:
+    """Read the trusted server orchestration flag, never client-provided input."""
+    context = _DAILY_CONTEXT.get()
+    return bool(context is not None and context.get("force_current_acquisition"))
+
+
 def install_daily_current_acquisition_repair() -> bool:
     """Acquire now, then separately account for existing canonical slate rows.
 
@@ -47,13 +53,11 @@ def install_daily_current_acquisition_repair() -> bool:
     def current_manifest(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         context = _DAILY_CONTEXT.get()
         if context is not None and context.get("force_current_acquisition"):
-            calls = int(context.get("manifest_calls") or 0)
-            context["manifest_calls"] = calls + 1
-            if calls == 0:
-                # Force the existing governed producer once even when same-slate
-                # canonical rows already exist. The second read returns the full
-                # cross-sport canonical slate; nothing is silently discarded.
-                return []
+            context["manifest_calls"] = int(context.get("manifest_calls") or 0) + 1
+        # Preserve current canonical rows on the first read so the producer can
+        # prioritize exact stale identities. Daily explicitly reads the trusted
+        # context flag and still acquires once; it no longer needs to pretend
+        # the first canonical read was empty. The second read verifies writes.
         return original_manifest(*args, **kwargs)
 
     def binding_aware_classify(payload: Any) -> str:

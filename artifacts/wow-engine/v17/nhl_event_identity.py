@@ -2,13 +2,19 @@
 
 Provider discovery ids (for example ESPN ids) remain aliases. Canonical event
 identity is assigned only after an exact participant + start-time match against
-the NHL-owned club season schedule endpoint already used by WOW research.
+the NHL-owned club season schedule endpoint already used by WOW research. The
+response body is read and parsed once. The identity fingerprint covers only
+the canonical matched-game identity fields. It is NOT a source-body snapshot
+digest or a substitute for a persisted, independently revalidated receipt.
 
 This module has no sporting-probability, market-price, calibration, ranking, or
 execution authority.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -58,6 +64,9 @@ _TEAM_ALIASES = {
 }
 
 
+_TEAM_ABBREVIATIONS = frozenset(_TEAM_ALIASES.values())
+
+
 class NHLEventIdentityError(RuntimeError):
     def __init__(self, code: str, detail: str = ""):
         super().__init__(detail or code)
@@ -66,17 +75,24 @@ class NHLEventIdentityError(RuntimeError):
 
 
 def _norm(value: Any) -> str:
-    return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+    """ASCII-fold a participant name to the alias table's key form.
+
+    NFKD decomposes accented Latin letters and the combining marks are dropped,
+    so "Montréal" folds to "montreal". This is never fuzzy or wildcard
+    matching: the folded token must still equal a known full-name key exactly.
+    """
+    text = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    return "".join(
+        ch for ch in text if ch.isalnum() and not unicodedata.combining(ch)
+    )
 
 
 def team_abbreviation(value: Any) -> str | None:
     token = _norm(value)
     if not token:
         return None
-    if len(token) in {2, 3}:
-        upper = str(value or "").strip().upper()
-        if upper in set(_TEAM_ALIASES.values()):
-            return upper
+    if len(token) in {2, 3} and token.upper() in _TEAM_ABBREVIATIONS:
+        return token.upper()
     return _TEAM_ALIASES.get(token)
 
 
@@ -88,6 +104,19 @@ def _aware(value: Any) -> datetime:
     if parsed.utcoffset() is None:
         raise NHLEventIdentityError("NHL_EVENT_TIME_INVALID", str(value))
     return parsed.astimezone(timezone.utc)
+
+
+def _response_body(response: Any) -> bytes:
+    """Return the raw body bytes, or fail closed.
+
+    Read once and parse these same bytes. This prevents competing .json()
+    and .content reads, but does not imply that season-feed bytes were
+    persisted or can be re-fetched unchanged after unrelated games finish.
+    """
+    body = getattr(response, "content", None)
+    if not isinstance(body, (bytes, bytearray)) or not body:
+        raise NHLEventIdentityError("NHL_OFFICIAL_SOURCE_BODY_UNAVAILABLE")
+    return bytes(body)
 
 
 def season_start_year(event_time: datetime) -> int:
@@ -135,9 +164,10 @@ def resolve_nhl_current_event_identity(
         raise NHLEventIdentityError(
             f"NHL_OFFICIAL_SOURCE_HTTP_{getattr(response, 'status_code', 'UNKNOWN')}"
         )
+    body = _response_body(response)
     try:
-        payload = response.json()
-    except Exception as exc:  # noqa: BLE001
+        payload = json.loads(body)
+    except ValueError as exc:
         raise NHLEventIdentityError(
             "NHL_OFFICIAL_SOURCE_RESPONSE_INVALID",
             type(exc).__name__,
@@ -147,7 +177,8 @@ def resolve_nhl_current_event_identity(
     if not isinstance(games, list):
         raise NHLEventIdentityError("NHL_OFFICIAL_SOURCE_SCHEMA_DRIFT")
 
-    matches: list[Mapping[str, Any]] = []
+    match: Mapping[str, Any] = {}
+    matched_ids: set[str] = set()
     for game in games:
         if not isinstance(game, Mapping):
             continue
@@ -169,17 +200,31 @@ def resolve_nhl_current_event_identity(
             continue
         delta = abs((event_time - start).total_seconds()) / 60.0
         if delta <= START_TOLERANCE_MINUTES:
-            matches.append(game)
+            matched_ids.add(game_id)
+            match = game
 
-    ids = {str(game.get("id") or "").strip() for game in matches if str(game.get("id") or "").strip()}
-    if not ids:
+    if not matched_ids:
         raise NHLEventIdentityError("NHL_CANONICAL_EVENT_NOT_FOUND")
-    if len(ids) != 1:
+    if len(matched_ids) != 1:
         raise NHLEventIdentityError("NHL_CANONICAL_EVENT_AMBIGUOUS")
 
-    match = matches[0]
+    # Canonicalize ONLY the actual matched game's six identity fields.
+    # Do not hash the mutable entire season schedule, whose other 80+ games
+    # change states, scores and times independently of this fixture.
+    identity_match = {
+        "id": str(match.get("id")),
+        "startTimeUTC": str(match.get("startTimeUTC")),
+        "homeTeam": {"abbrev": home},
+        "awayTeam": {"abbrev": away},
+        "gameType": match.get("gameType"),
+        "gameState": match.get("gameState"),
+    }
+    identity_match_sha256 = hashlib.sha256(
+        json.dumps(identity_match, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
     return {
-        "event_id": next(iter(ids)),
+        "event_id": next(iter(matched_ids)),
         "event_start_time": _aware(match.get("startTimeUTC")).isoformat(),
         "home_team": home,
         "away_team": away,
@@ -187,6 +232,8 @@ def resolve_nhl_current_event_identity(
         "game_state": match.get("gameState"),
         "identity_provider": SOURCE_PROVIDER,
         "identity_source": url,
+        "identity_match_sha256": identity_match_sha256,
+        "identity_match": identity_match,
         "identity_verified_at": datetime.now(timezone.utc).isoformat(),
         "market_features_used": False,
         "prediction_authority": False,

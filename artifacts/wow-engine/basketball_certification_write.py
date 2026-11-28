@@ -54,24 +54,30 @@ def verify_certification_write(
     sport: str,
     model_artifact_version: str,
     calibrator_version: str | None = None,
+    unchanged: bool = False,
 ) -> dict[str, Any]:
     """Re-read the row after the upsert; raise unless it names this artifact.
+
+    ``unchanged`` covers the frozen NBA forward candidate: a refit stores an
+    inactive challenger and deliberately leaves the registration row alone, so
+    the row must still name the version that was already registered.
 
     Transport failures while reading are left to propagate unchanged so the
     caller keeps the provider's own error fields.  Only an observable but wrong
     row raises ``BasketballCertificationWriteError``.
     """
     row = read_certification_row(client, sport=sport)
+    label = "unchanged" if unchanged else "expected"
     if row is None:
         raise BasketballCertificationWriteError(
             f"{WRITE_NOT_OBSERVED} sport={sport} "
-            f"expected={model_artifact_version} observed=NONE"
+            f"{label}={model_artifact_version} observed=NONE"
         )
 
     observed = str(row.get("model_artifact_version") or "")
     if observed != model_artifact_version:
         raise BasketballCertificationWriteError(
-            f"{WRITE_NOT_OBSERVED} sport={sport} expected={model_artifact_version} "
+            f"{WRITE_NOT_OBSERVED} sport={sport} {label}={model_artifact_version} "
             f"observed={observed or 'NONE'} "
             f"capability_status={row.get('capability_status')} "
             f"reason_code={row.get('reason_code')}"

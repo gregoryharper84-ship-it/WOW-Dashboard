@@ -66,6 +66,20 @@ jobs:
       - name: Run effectiveness contract regression
         run: python -m pytest -q artifacts/wow-engine/test_v17_engineering_effectiveness.py
 
+      - name: Run P0 cross-sport context invalidation regression
+        run: |
+          python -m pytest -q --tb=short \
+            artifacts/wow-engine/test_v17_context_change_impact.py \
+            artifacts/wow-engine/v17/test_slip_research_preflight.py \
+            artifacts/wow-engine/tests/test_v17_team_event_bridge_runtime.py
+
+      - name: Run prop Full Model stale-context terminal regression
+        env:
+          PYTHONPATH: artifacts/flask-scoring-api:artifacts/wow-engine
+        run: |
+          python -m pytest -q --tb=short \
+            artifacts/flask-scoring-api/gate_engine/tests/test_full_model_gatekeeper.py
+
       - name: Run workflow/handoff adjacent regression when required
         if: contains(steps.impact.outputs.gates, 'WORKFLOW_HANDOFF_ACCEPTANCE')
         run: |

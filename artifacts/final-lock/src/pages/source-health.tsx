@@ -1,10 +1,11 @@
+import { apiFetch, API_ROOT } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RefreshCw, CheckCircle, XCircle, AlertCircle, HelpCircle, Activity } from "lucide-react";
 
-const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+const API_BASE = API_ROOT;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -112,7 +113,7 @@ export default function SourceHealthPage() {
   const { data, isLoading, isError, refetch } = useQuery<HealthSummary>({
     queryKey: ["source-health"],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/wow/source-health`);
+      const res = await apiFetch(`${API_BASE}/wow/source-health`);
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json();
     },

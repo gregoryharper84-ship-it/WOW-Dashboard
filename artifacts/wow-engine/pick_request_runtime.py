@@ -38,6 +38,7 @@ from typing import Any, Optional
 from fastapi import Header, HTTPException
 
 from github_actions_oidc import scout_route_auth_dependency
+import calibration_publication_api as _publication_api
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 from prop_auto_hydration_router import (
@@ -345,9 +346,42 @@ class _ScoringReceiptMarketApi:
         )
         return research if research is not None else route
 
+    def score_prop_research(
+        self,
+        req: Any,
+        *,
+        x_wow_model_identity: Optional[str],
+        lane: dict[str, Any],
+        preflight: dict[str, Any],
+        blockers: list[str],
+    ) -> Any:
+        """Internal request-bound research entrypoint; cannot write predictions.
+
+        The captured publication hold owns this entire canonical request. Do
+        not re-enter the dynamic production wrapper: it may observe recovered
+        health and select governed scoring before a post-return check can run.
+        The raw scorer retains the original exact-artifact/evidence authority.
+        """
+        def score() -> Any:
+            model_identity = self._wrapped.prod._reject_llp_prop_identity(x_wow_model_identity)
+            return _publication_api._raw_specialist_research(
+                self._wrapped,
+                req,
+                model_identity=model_identity,
+                lane=lane,
+                preflight=preflight,
+                blockers=blockers,
+                expected_snapshot_id=str(req.source_snapshot_id),
+            )
+
+        return self._invoke_score(score)
+
     def score_prop(self, *args: Any, **kwargs: Any) -> Any:
+        return self._invoke_score(self._wrapped.score_prop, *args, **kwargs)
+
+    def _invoke_score(self, scorer: Any, *args: Any, **kwargs: Any) -> Any:
         try:
-            return self._wrapped.score_prop(*args, **kwargs)
+            return scorer(*args, **kwargs)
         except HTTPException as exc:
             detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
             detail["specialist_scoring_attempted"] = True

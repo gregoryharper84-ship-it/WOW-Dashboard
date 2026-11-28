@@ -74,6 +74,17 @@ def test_fit_and_persist_verifies_the_certification_row_after_the_upsert(monkeyp
     class _WriteClient:
         def table(self, name):
             self.table_name = name
+            self.query = None
+            return self
+
+        def select(self, *_args, **_kwargs):
+            self.query = "select"
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
             return self
 
         def insert(self, payload):
@@ -85,6 +96,8 @@ def test_fit_and_persist_verifies_the_certification_row_after_the_upsert(monkeyp
             return self
 
         def execute(self):
+            # No registered candidate: the freeze probe sees an empty table and
+            # the certification read-back is stubbed by the monkeypatch below.
             return SimpleNamespace(data=[])
 
     artifact = SimpleNamespace(
@@ -128,6 +141,11 @@ def test_fit_and_persist_verifies_the_certification_row_after_the_upsert(monkeyp
         pipeline,
         "evaluate_untouched_calibrated_holdout",
         lambda *args: {"holdout_rows": 60},
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "build_shadow_binary_calibration_artifact",
+        lambda **_kwargs: ({"certification_status": "SHADOW"}, "c" * 64),
     )
     monkeypatch.setattr(
         pipeline,

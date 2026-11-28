@@ -58,3 +58,7 @@
 /.github/CODEOWNERS @gregoryharper84-ship-it
 # Render production config (autoDeploy/checksPass): changing it can re-open the deploy path (#1663).
 /render.yaml @gregoryharper84-ship-it
+
+# Auto-computed governance trust-root dependencies: owner approval is required.
+/artifacts/wow-engine/github_actions_oidc.py @gregoryharper84-ship-it
+/artifacts/wow-engine/mcp_acceptance_auth.py @gregoryharper84-ship-it

@@ -33,6 +33,10 @@ from basketball_team_event_specialist import (
 )
 from calibration import phase_b_platt
 from basketball_certification_write import verify_certification_write
+from v17.basketball_team_event_calibration_artifact import (
+    BasketballCalibrationArtifactError,
+    build_shadow_binary_calibration_artifact,
+)
 
 can_execute: bool = False
 
@@ -61,7 +65,7 @@ def load_games(client: Any, sport: str) -> list[TrainingGame]:
     while True:
         result = (
             client.table(table)
-            .select("game_id,season,game_date,home_team_id,away_team_id,home_score,away_score")
+            .select("game_id,season,game_date,home_team_id,away_team_id,home_score,away_score,source_provider")
             .eq("settled", True)
             .order("game_date")
             .order("game_id")
@@ -94,6 +98,7 @@ def load_games(client: Any, sport: str) -> list[TrainingGame]:
             game_date=datetime.fromisoformat(str(r["game_date"])).date(),
             home_team_id=str(r["home_team_id"]), away_team_id=str(r["away_team_id"]),
             home_score=int(r["home_score"]), away_score=int(r["away_score"]),
+            source_provider=str(r.get("source_provider") or "").strip().upper(),
         )
         for r in rows
     ]
@@ -204,6 +209,38 @@ def evaluate_untouched_calibrated_holdout(artifact, holdout, coefficients):
     }
 
 
+# Owner decision 2026-11-24 (Greg): NBA refits no longer move the registered
+# forward candidate. Each maintenance refit minted a new version and re-pointed
+# the single registration row, so forward shadow evidence restarted every run
+# (83 captures over 7 versions in 3 days) and no version could reach the forward
+# minimum. While NBA has a registered SHADOW candidate, a refit is still fitted
+# and stored as an inactive challenger artifact + calibrator, but the
+# registration row is left unchanged. The pointer moves only through an
+# owner-approved change to that row. No probability is published either way.
+FROZEN_FORWARD_CANDIDATE_SPORTS = frozenset({"NBA"})
+
+
+def _frozen_forward_candidate(client: Any, sport: str) -> str | None:
+    """Return the registered SHADOW version a refit must not replace, if any.
+
+    Read errors propagate before anything is fitted or written (fail closed).
+    """
+    if sport not in FROZEN_FORWARD_CANDIDATE_SPORTS:
+        return None
+    rows = (
+        client.table("wow_basketball_team_event_certification")
+        .select("capability_status,model_artifact_version")
+        .eq("sport", sport).limit(1).execute().data
+    ) or []
+    if not rows:
+        return None
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    version = str(row.get("model_artifact_version") or "").strip()
+    if row.get("capability_status") == "SHADOW" and version:
+        return version
+    return None
+
+
 def fit_and_persist(
     sport: str,
     client=None,
@@ -220,6 +257,7 @@ def fit_and_persist(
     if sport not in TRAIN_TABLE:
         raise ValueError(f"unsupported sport {sport}")
     client = client or _client()
+    frozen_candidate_version = _frozen_forward_candidate(client, sport)
     games = load_games(client, sport)
     features = build_pregame_features(games, sport)
     version_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -241,6 +279,28 @@ def fit_and_persist(
         provenance_complete=bool(provenance_complete),
     )
     calibrator_version = f"{sport}_TEAM_EVENT_PLATT_V1_{version_stamp}"
+    # The artifact is fitted only to calibration_train; the untouched holdout
+    # above remains strictly out-of-time for calibration quality evaluation.
+    # An unsuccessful calibrated fold must still leave inspectable SHADOW
+    # evidence. Never fabricate an artifact or turn builder rejection into a
+    # certified status; keep the precise typed blocker in durable notes.
+    calibration_artifact_block = None
+    try:
+        calibration_artifact, calibration_artifact_sha256 = build_shadow_binary_calibration_artifact(
+            sport=sport,
+            model_family=MODEL_FAMILY,
+            model_version=model_version,
+            calibration_version=calibrator_version,
+            raw_probabilities=raw,
+            outcomes=outcomes,
+            fold_assignments=folds,
+            timestamps=timestamps,
+            fit=calibration,
+        )
+    except BasketballCalibrationArtifactError as exc:
+        calibration_artifact = None
+        calibration_artifact_sha256 = None
+        calibration_artifact_block = str(exc)
 
     artifact_payload = asdict(artifact)
     client.table("wow_basketball_team_event_model_artifacts").insert({
@@ -270,37 +330,47 @@ def fit_and_persist(
         "log_loss": calibration.metrics.log_loss,
         "ece": calibration.metrics.ece,
         "calibration_bias": calibration.metrics.calibration_bias,
+        "calibration_artifact_payload": calibration_artifact,
+        "calibration_artifact_sha256": calibration_artifact_sha256,
         "promoted": False, "active": False,
     }).execute()
 
     persisted_status = "SHADOW" if decision.capability_status == "CERTIFIED" else decision.capability_status
     persisted_reason = "CERTIFICATION_REPLAY_REQUIRED" if decision.capability_status == "CERTIFIED" else decision.reason_code
-    client.table("wow_basketball_team_event_certification").upsert({
-        "sport": sport, "capability_status": persisted_status,
-        "reason_code": persisted_reason,
-        "model_artifact_version": model_version,
-        "calibrator_version": calibrator_version,
-        "corpus_rows": len(games), "settled_rows": len(games),
-        "certification_notes": {
-            "fit_decision": asdict(decision),
-            "calibration_status": calibration_status,
-            "calibration_training_cutoff": artifact.train_end_date,
-            "calibration_training_rows": len(calibration_train),
-            "calibration_holdout_overlap_rows": 0,
-            "untouched_holdout_evidence": holdout_evidence,
-            "provenance_complete": bool(provenance_complete),
-            "promotion_attempted": False, "can_execute": False,
-        },
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }, on_conflict="sport").execute()
+    if calibration_artifact_block is not None:
+        persisted_status = "SHADOW"
+        persisted_reason = "BASKETBALL_CALIBRATION_ARTIFACT_BLOCKED"
+    if frozen_candidate_version is None:
+        client.table("wow_basketball_team_event_certification").upsert({
+            "sport": sport, "capability_status": persisted_status,
+            "reason_code": persisted_reason,
+            "model_artifact_version": model_version,
+            "calibrator_version": calibrator_version,
+            "corpus_rows": len(games), "settled_rows": len(games),
+            "certification_notes": {
+                "fit_decision": asdict(decision),
+                "calibration_status": calibration_status,
+                "calibration_artifact_block": calibration_artifact_block,
+                "calibration_training_cutoff": artifact.train_end_date,
+                "calibration_training_rows": len(calibration_train),
+                "calibration_holdout_overlap_rows": 0,
+                "untouched_holdout_evidence": holdout_evidence,
+                "provenance_complete": bool(provenance_complete),
+                "promotion_attempted": False, "can_execute": False,
+            },
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="sport").execute()
 
     # A PostgREST write can return without the row changing.  Re-read it before
     # reporting success so a silent no-op cannot look like persisted evidence.
+    # A frozen forward candidate is the exception: no upsert was attempted, so
+    # the row must still name the registered version and calibrator.
     verify_certification_write(
         client,
         sport=sport,
-        model_artifact_version=model_version,
-        calibrator_version=calibrator_version,
+        model_artifact_version=frozen_candidate_version or model_version,
+        calibrator_version=None if frozen_candidate_version else calibrator_version,
+        unchanged=frozen_candidate_version is not None,
     )
 
     return {
@@ -309,12 +379,20 @@ def fit_and_persist(
         "holdout_brier": artifact.holdout_brier, "holdout_log_loss": artifact.holdout_log_loss,
         "holdout_accuracy": artifact.holdout_accuracy, "calibration_rows": len(raw),
         "calibration_status": calibration_status, "fit_decision": asdict(decision),
+        "calibration_artifact_sha256": calibration_artifact_sha256,
+        "calibration_artifact_certification_status": (
+            calibration_artifact["certification_status"]
+            if calibration_artifact is not None else None
+        ),
+        "calibration_artifact_block": calibration_artifact_block,
         "calibration_training_cutoff": artifact.train_end_date,
         "calibration_training_rows": len(calibration_train),
         "calibration_holdout_overlap_rows": 0,
         "untouched_holdout_evidence": holdout_evidence,
         "persisted_status": persisted_status,
         "certification_write_verified": True,
+        "registered_candidate_frozen": frozen_candidate_version is not None,
+        "registered_candidate_version": frozen_candidate_version or model_version,
         "provenance_complete": bool(provenance_complete),
         "promotion_attempted": False,
         "can_execute": False,

@@ -596,3 +596,71 @@ def test_missing_native_claude_owner_rule_fails_closed(missing_path):
     owner['codeowners'] = owner['codeowners'].replace(f'/.claude/ @{OWNER}\n', '')
     findings = run(owner)['findings']
     assert f'PROTECTION_CODEOWNERS_UNCOVERED:{missing_path}' in findings
+
+
+# --- Trust-root closure must not walk through test files (2026-11-25) ------------
+# A governance workflow that *runs* a test file does not make the code under test
+# a gate. Walking imports from named test files made 219 sport/model modules
+# (NCAAF/NHL maintenance, specialists, calibration) owner-approval roots.
+
+def _closure_repo(tmp_path):
+    wf = tmp_path / ".github/workflows"
+    wf.mkdir(parents=True)
+    for declared in m.DECLARED_TRUST_ROOT_PATHS:
+        if declared.startswith(".github/workflows/"):
+            (tmp_path / declared).write_text("on: push\n")
+    (wf / "wow-v17-existing-pr-governance-review.yml").write_text(
+        "run: verify --bootstrap TRUST_ROOT_BOOTSTRAP\n")
+    (wf / "wow-v17-change-impact-gate.yml").write_text(
+        "run: |\n"
+        "  python artifacts/wow-engine/v17/gate_tool.py\n"
+        "  python -m pytest -q artifacts/wow-engine/test_gate_suite.py\n")
+    v17 = tmp_path / "artifacts/wow-engine/v17"
+    v17.mkdir(parents=True)
+    (v17 / "gate_tool.py").write_text("from v17.gate_helper import X\n")
+    (v17 / "gate_helper.py").write_text("X = 1\n")
+    (v17 / "sport_model.py").write_text("import v17.sport_math\n")
+    (v17 / "sport_math.py").write_text("Y = 2\n")
+    (tmp_path / "artifacts/wow-engine/test_gate_suite.py").write_text(
+        "from v17.sport_model import *\nfrom v17.gate_helper import X\n")
+    return tmp_path
+
+
+def test_trust_root_closure_does_not_follow_imports_of_test_files(tmp_path):
+    roots = set(m.governance_trust_roots(_closure_repo(tmp_path)))
+    assert roots == {
+        "artifacts/wow-engine/v17/gate_tool.py",
+        "artifacts/wow-engine/v17/gate_helper.py",
+    }, roots
+
+
+def test_declared_security_roots_stay_protected_without_a_workflow_reference(tmp_path):
+    repo = _closure_repo(tmp_path)
+    for path in m.DECLARED_SECURITY_TRUST_ROOTS:
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("TOKEN_CHECK = True\n")
+    roots = set(m.governance_trust_roots(repo))
+    assert set(m.DECLARED_SECURITY_TRUST_ROOTS) <= roots
+    assert "artifacts/wow-engine/v17/sport_model.py" not in roots
+
+
+def test_live_trust_roots_keep_gate_code_and_drop_sport_model_code():
+    gov = set(m.governance_trust_roots(ROOT))
+    for path in (
+        "artifacts/wow-engine/v17/ncaaf_model_maintenance.py",
+        "artifacts/wow-engine/v17/nhl_model_maintenance.py",
+        "artifacts/wow-engine/v17/first_six_open_data_maintenance.py",
+        "artifacts/wow-engine/v17/basketball_specialist_pipeline.py",
+        "artifacts/wow-engine/v17/slip_research_preflight.py",
+    ):
+        assert path not in gov, path
+    for path in (
+        "artifacts/wow-engine/v17/agent_identity_policy.py",
+        "artifacts/wow-engine/v17/independent_release_checks.py",
+        "artifacts/wow-engine/v17/engineering_effectiveness.py",
+        "artifacts/wow-engine/v17/governance_dispatcher.py",
+        ".github/scripts/independent_source_review_receipt.py",
+        "artifacts/wow-engine/github_actions_oidc.py",
+        "artifacts/wow-engine/mcp_acceptance_auth.py",
+    ):
+        assert path in gov, path

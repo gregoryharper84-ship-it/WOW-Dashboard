@@ -81,6 +81,8 @@ class GameScriptShadowResult:
     ceiling:            str
     patch_id:           str
     unavailable_reason: str | None
+    script_basis: str = "UNAVAILABLE"
+    source_record_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -98,6 +100,8 @@ class GameScriptShadowResult:
             "unavailable_reason": self.unavailable_reason,
             "can_execute":        False,
             "shadow_only":        True,
+            "script_basis":       self.script_basis,
+            "source_record_ids_unverified": list(self.source_record_ids),
         }
 
 
@@ -143,7 +147,7 @@ class GameScriptShadowGate:
         # Stage 1: parse game environment (requires spread + total_line)
         env = parse_game_environment(combined)
         if env is None:
-            return _unavailable("missing_spread_or_total_line")
+            return _unavailable("invalid_or_missing_game_environment")
 
         # Stage 2: derive script priors
         priors = derive_script_priors(env)
@@ -208,6 +212,8 @@ class GameScriptShadowGate:
             ceiling=CEILING,
             patch_id=PATCH_ID,
             unavailable_reason=None,
+            script_basis=env.basis,
+            source_record_ids=env.source_record_ids,
         )
         return result.to_dict()
 

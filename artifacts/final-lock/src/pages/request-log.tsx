@@ -1,11 +1,11 @@
+import { apiFetch, API_ROOT } from "@/lib/api";
 import { useState, useCallback, useMemo } from "react";
 import {
   RefreshCw, AlertTriangle, CheckCircle2, XCircle, Clock,
   Search, Filter, Download, ClipboardList,
 } from "lucide-react";
 
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
-const API  = BASE.replace("/final-lock", "/api");
+const API = API_ROOT;
 
 interface LogEntry {
   id: number;
@@ -130,7 +130,7 @@ export default function RequestLogPage() {
       const qs = new URLSearchParams({ limit: String(limit) });
       if (labelFilter !== "ALL") qs.set("terminal_label", labelFilter);
       if (sportFilter !== "ALL") qs.set("sport", sportFilter);
-      const r = await fetch(`${API}/request-log?${qs}`);
+      const r = await apiFetch(`${API}/request-log?${qs}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json() as { requests?: LogEntry[]; entries?: LogEntry[]; data?: LogEntry[] };
       setLogs((data.requests ?? data.entries ?? data.data ?? []) as LogEntry[]);

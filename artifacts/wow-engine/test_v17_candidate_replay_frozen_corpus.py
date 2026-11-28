@@ -177,3 +177,17 @@ def test_frozen_candidate_missing_canonical_event_identity_fails():
     import pytest
     with pytest.raises(ValueError, match="CANDIDATE_CORPUS_OFFICIAL_EVENT_ID_MISSING"):
         evidence._all_rows(db, _candidate())
+
+
+def test_candidate_replay_reads_explicit_nhl_source_id_without_source_alias():
+    assert evidence._source_id({"source_id": "NHL_PUBLIC_WEB_API"}) == "NHL_PUBLIC_WEB_API"
+    assert evidence._source_id({"source_manifest": {"source_id": "NHL_PUBLIC_WEB_API"}}) == "NHL_PUBLIC_WEB_API"
+
+
+def test_candidate_replay_preserves_unclassified_source_and_priority():
+    nba = {"source_manifest": {"source": "wow_nba_training_games", "game_id": "espn-401909984"}}
+    assert evidence._source_id(nba) == "WOW_NBA_TRAINING_GAMES"
+    assert evidence.source_readiness("WOW_NBA_TRAINING_GAMES").blockers == ("MODEL_SOURCE_UNCLASSIFIED",)
+    assert evidence._source_id({"source": "wow_nba_training_games", "source_id": "SPORTSDATAVERSE_ESPN"}) == "WOW_NBA_TRAINING_GAMES"
+    assert evidence._source_id({"source_id": "UNREGISTERED_PROVIDER"}) == "UNREGISTERED_PROVIDER"
+    assert evidence.source_readiness("UNREGISTERED_PROVIDER").ready_for_candidate_training is False

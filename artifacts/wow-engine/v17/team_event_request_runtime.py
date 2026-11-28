@@ -27,6 +27,7 @@ from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
 from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
+from v17.matchup_discovery import discover_matchup
 from v17.v17_candidate_envelopes import V17TeamEventCandidateEnvelope, V17GovernedProbabilityPackage, DataUnavailable
 
 CAN_EXECUTE = False
@@ -510,7 +511,23 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
     reconciler_out = _run(RESEARCH_RECONCILER, {"research_reports": reports, "team_jobs_ok": team_jobs_ok, "evidence_present": isinstance(candidate.get("evidence"), dict), "event_start_present": bool(candidate.get("event_start_utc"))})
     if reconciler_out.status != "SUCCEEDED":
         raise _scout_research_barrier_blocked(req, RESEARCH_RECONCILER, reconciler_out.blockers)
-    return {"status": "SUCCEEDED", "stages": stages}
+    # Run the same mandatory matchup review for focused/interactive requests.
+    # Missing research evidence remains visible; only the controlling fitted
+    # model determines whether its own certified inputs permit scoring.
+    return {"status": "SUCCEEDED", "stages": stages,
+            "matchup_discovery": _matchup_discovery_for_request(req)}
+
+
+def _matchup_discovery_for_request(req: TeamEventRequest) -> dict[str, Any]:
+    """Shared read-only audit for serial and parallel research barriers."""
+    return discover_matchup({
+        "sport_key": str(getattr(req, "sport", "") or "").strip().upper(),
+        "official_event_id": getattr(req, "official_event_id", None),
+        "event_start_utc": getattr(req, "event_start_time_utc", None),
+        "home_team": getattr(req, "home_team", None),
+        "away_team": getattr(req, "away_team", None),
+        "sport_specific_evidence": getattr(req, "sport_specific_evidence", None),
+    })
 
 
 def _build_team_event_envelope(
@@ -829,6 +846,7 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical
         "backend_route_status": "SPORT_SPECIFIC_TEAM_EVENT_ADAPTER_NOT_REGISTERED",
         "market_probability_substitution_allowed": False, "generic_reasoning_substitution_allowed": False,
         "probability_publishable": False, "blockers": [f"{sport}_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE"],
+        "matchup_discovery": scout_research_barrier["matchup_discovery"],
     }, req))
 
 
