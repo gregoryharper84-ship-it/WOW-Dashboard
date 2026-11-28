@@ -753,7 +753,15 @@ def _owner_approved_at_head(ev: dict, head: str) -> bool:
 # The FILE NAME must follow the test convention. Being inside a test directory
 # is not enough: conftest.py, helpers.py, fixtures.py and similar support files
 # contain no test cases, so they can never satisfy this requirement.
+# The *_tests.* form is accepted because this repository configures it in
+# pyproject.toml [tool.pytest.ini_options] python_files and in
+# scripts/wow_rapid.py PYTEST_PATTERNS; it is not one of pytest's own defaults.
 TEST_FILE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+# Statuses GitHub's pull-request files API reports for a file that still exists
+# and gained lines. Anything else -- removed, missing or unrecognized -- cannot
+# prove that an added negative test is present.
+TEST_CHANGE_STATUSES = frozenset({"added", "modified", "changed", "renamed", "copied"})
 
 
 def is_test_path(path: str) -> bool:
@@ -765,7 +773,7 @@ def is_test_path(path: str) -> bool:
         return False
     if name.startswith(("test_", "test-", "spec_")):
         return True
-    return "_test." in name or ".test." in name or ".spec." in name
+    return "_test." in name or "_tests." in name or ".test." in name or ".spec." in name
 
 
 def negative_test_findings(ev: dict, *, trust_root_change: bool) -> list[str]:
@@ -787,11 +795,13 @@ def negative_test_findings(ev: dict, *, trust_root_change: bool) -> list[str]:
         return ["QA_TRUST_ROOT_NEGATIVE_TEST_MISSING"]
     for change in tests:
         additions = change.get("additions")
+        status = change.get("status")
         if (
             isinstance(additions, int)
             and not isinstance(additions, bool)
             and additions > 0
-            and change.get("status") != "removed"
+            and isinstance(status, str)
+            and status in TEST_CHANGE_STATUSES
         ):
             return []
     return ["QA_TRUST_ROOT_NEGATIVE_TEST_INVALID"]

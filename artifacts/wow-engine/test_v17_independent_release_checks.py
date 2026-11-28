@@ -460,6 +460,37 @@ def test_trust_root_negative_test_must_add_a_line_and_not_be_removed():
         assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" not in m.qa_findings(ev)
 
 
+def test_plural_tests_suffix_satisfies_the_negative_test_requirement():
+    # deployment_gate_tests.py is collected via pyproject.toml python_files and
+    # wow_rapid.py PYTEST_PATTERNS, so it is a real test file for this gate.
+    plural = "artifacts/wow-engine/deployment_gate_tests.py"
+    assert m.is_test_path(plural)
+    ev = evidence(
+        files=(TRUST_ROOT_FILES[0], plural), author=OWNER, reviews=[],
+        file_changes=[
+            {"filename": TRUST_ROOT_FILES[0], "status": "modified", "additions": 4, "deletions": 1},
+            {"filename": plural, "status": "added", "additions": 5, "deletions": 0},
+        ],
+    )
+    assert m.qa_findings(ev) == []
+
+
+@pytest.mark.parametrize("status", [None, "", "queued"])
+def test_trust_root_negative_test_requires_a_recognized_change_status(status):
+    # An absent or unrecognized status cannot prove the test change is still a
+    # non-removed change, so nonzero additions are not enough on their own.
+    ev = evidence(
+        files=TRUST_ROOT_FILES, author=OWNER, reviews=[],
+        file_changes=[
+            {"filename": TRUST_ROOT_FILES[0], "status": "modified", "additions": 4, "deletions": 1},
+            {"filename": NEGATIVE_TEST_FILE, "status": status, "additions": 3, "deletions": 0},
+        ],
+    )
+    findings = m.qa_findings(ev)
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_INVALID" in findings
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" not in findings
+
+
 def test_trust_root_negative_test_evidence_is_never_assumed():
     ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[])
     ev.pop("file_changes")
@@ -476,6 +507,9 @@ def test_ordinary_code_needs_no_negative_test():
 @pytest.mark.parametrize("path", [
     "artifacts/wow-engine/test_v17_x.py",
     "artifacts/wow-engine/v17/trust_root_test.py",
+    # Plural _tests.py is collected by this repository's configured python_files.
+    "artifacts/wow-engine/deployment_gate_tests.py",
+    "artifacts/wow-engine/ncaaf_trust_tests.py",
     "web/src/panel.test.tsx",
     "web/src/panel.spec.js",
     ".github/scripts/tests/test_reviewer.py",
