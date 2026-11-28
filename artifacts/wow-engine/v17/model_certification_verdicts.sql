@@ -32,6 +32,12 @@
 --                                       and the missing relation or row must
 --                                       be named in the report
 --
+-- NCAAF is the exception. Its artifact table can be empty, or contain rows
+-- with none active, and those are different gaps in the evidence that a zero-row
+-- result cannot tell apart. Query 3 therefore always returns exactly one row,
+-- carrying `verdict` and `reason_code`; when it is UNVERIFIED, model_certified
+-- is NULL -- never false.
+--
 -- Read these verdicts SIDE BY SIDE with the runtime report. No single artifact
 -- combines the two axes any more: v17/restoration_status_verifier.py answers
 -- RUNTIME_RESTORED, and this file answers MODEL_CERTIFIED. Report both, keep
@@ -159,25 +165,83 @@ select
 --    probability_publishable to promotion, a certified lifecycle and a fitted
 --    calibrator; this query re-states the whole predicate so a row edited around
 --    the constraint still cannot certify.
+--
+--    Unlike the other two, this ALWAYS returns one row, so an empty registry and
+--    a registry with no active artifact stay distinguishable:
+--      total_rows = 0        -> UNVERIFIED / NO_ARTIFACT_RECORDED
+--      total_rows > 0, none active -> UNVERIFIED / NO_ACTIVE_ARTIFACT
+--      active artifact fails the predicate -> MODEL_HOLD
+--      active artifact passes              -> MODEL_CERTIFIED
+--
+--    model_certified is NULL only in the two UNVERIFIED branches. The held
+--    branch says false outright: `picked.certified` is a three-valued AND, so
+--    a NULL operand would otherwise yield NULL there while `verdict` fell
+--    through to MODEL_HOLD -- a recorded failure reading as missing evidence.
 -- ---------------------------------------------------------------------------
+with counts as (
+    select count(*) as total_rows
+      from public.wow_ncaaf_fitted_model_artifacts
+),
+ranked as (
+    select a.artifact_id,
+           a.feature_schema_version,
+           a.lifecycle_state,
+           a.probability_publishable,
+           a.calibrator_version,
+           a.calibration_training_n,
+           a.promoted,
+           a.active,
+           row_number() over (
+               order by case when a.lifecycle_state = 'CHAMPION' then 0 else 1 end,
+                        a.created_at desc
+           ) as rn
+      from public.wow_ncaaf_fitted_model_artifacts a
+     where a.active
+),
+picked as (
+    select p.artifact_id,
+           p.feature_schema_version,
+           p.lifecycle_state,
+           p.probability_publishable,
+           p.calibrator_version,
+           p.calibration_training_n,
+           (
+               p.probability_publishable
+               and p.promoted
+               and p.active
+               and p.lifecycle_state in ('PROSPECTIVE_CERTIFIED', 'CHAMPION')
+               and p.calibrator_version is not null
+               and p.calibration_training_n > 0
+           ) as certified
+      from ranked p
+     where p.rn = 1
+)
 select
     'NCAAF' as sport,
-    a.feature_schema_version,
-    a.artifact_id,
-    a.lifecycle_state,
-    a.probability_publishable,
-    a.calibrator_version,
-    a.calibration_training_n,
-    (
-        a.probability_publishable
-        and a.promoted
-        and a.active
-        and a.lifecycle_state in ('PROSPECTIVE_CERTIFIED', 'CHAMPION')
-        and a.calibrator_version is not null
-        and a.calibration_training_n > 0
-    ) as model_certified
-  from public.wow_ncaaf_fitted_model_artifacts a
- where a.active
- order by case when a.lifecycle_state = 'CHAMPION' then 0 else 1 end,
-          a.created_at desc
- limit 1;
+    counts.total_rows,
+    picked.feature_schema_version,
+    picked.artifact_id,
+    picked.lifecycle_state,
+    picked.probability_publishable,
+    picked.calibrator_version,
+    picked.calibration_training_n,
+    case
+        when counts.total_rows = 0 then null
+        when picked.artifact_id is null then null
+        when picked.certified then true
+        else false
+    end as model_certified,
+    case
+        when counts.total_rows = 0 then 'UNVERIFIED'
+        when picked.artifact_id is null then 'UNVERIFIED'
+        when picked.certified then 'MODEL_CERTIFIED'
+        else 'MODEL_HOLD'
+    end as verdict,
+    case
+        when counts.total_rows = 0 then 'NO_ARTIFACT_RECORDED'
+        when picked.artifact_id is null then 'NO_ACTIVE_ARTIFACT'
+        when picked.certified then 'CERTIFIED_ARTIFACT_PUBLISHABLE'
+        else 'ACTIVE_ARTIFACT_NOT_PUBLISHABLE'
+    end as reason_code
+  from counts
+  left join picked on true;

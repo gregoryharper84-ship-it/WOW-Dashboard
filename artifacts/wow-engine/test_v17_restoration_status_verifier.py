@@ -132,19 +132,23 @@ def query_for(sport: str) -> str:
 
 
 def verdict_expression(statement: str) -> str:
-    """The parenthesised predicate a query assigns to ``model_certified``."""
+    """The predicate or CASE a query assigns to ``model_certified``."""
     marker = re.search(r"\bas\s+model_certified\b", statement, re.IGNORECASE)
     if marker is None:
         raise AssertionError("statement does not assign model_certified")
     body = statement[: marker.start()].rstrip()
-    if not body.endswith(")"):
-        raise AssertionError("model_certified must be assigned a parenthesised predicate")
-    depth = 0
-    for i in range(len(body) - 1, -1, -1):
-        depth += {")": 1, "(": -1}.get(body[i], 0)
-        if depth == 0:
-            return body[i + 1 :].strip()
-    raise AssertionError("unbalanced predicate")
+    if body.lower().endswith("end"):
+        start = body.lower().rfind("case")
+        if start != -1:
+            return body[start:].strip()
+    if body.endswith(")"):
+        depth = 0
+        for i in range(len(body) - 1, -1, -1):
+            depth += {")": 1, "(": -1}.get(body[i], 0)
+            if depth == 0:
+                return body[i + 1 :].strip()
+        raise AssertionError("unbalanced predicate")
+    raise AssertionError("model_certified must be assigned a predicate or CASE")
 
 
 class TestProvenanceGuard(unittest.TestCase):
@@ -354,15 +358,49 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
         self.assertRegex(self.nfl.lower(), r"evidence\s*->>\s*'calibrator_ready'\s+is\s+not\s+null")
 
     def test_no_query_defaults_absence_to_false(self):
-        """A LEFT JOIN, a stub, or a coalesced predicate turns missing evidence into false."""
+        """Absent evidence may produce a row only if that row says UNVERIFIED outright."""
         for sport in QUERY_MARKERS:
             statement = query_for(sport)
+            predicate = verdict_expression(statement)
             with self.subTest(sport=sport):
-                self.assertNotRegex(statement.lower(), r"\bleft\s+(?:outer\s+)?join\b")
-                predicate = verdict_expression(statement)
                 self.assertRegex(predicate, r"\w+\.\w+")  # a real column, not a literal
                 self.assertNotIn("coalesce", predicate.lower())
-                self.assertNotRegex(predicate.lower(), r"\b(?:true|false)\b")
+                # A boolean literal is allowed only as an explicit outcome
+                # (`then true` / `else false`); anywhere else it is a stub.
+                lowered = predicate.lower()
+                for literal in re.finditer(r"\b(?:true|false)\b", lowered):
+                    before = lowered[: literal.start()].rstrip()
+                    self.assertTrue(
+                        before.endswith(("then", "else")),
+                        f"bare boolean literal in the {sport} verdict: {lowered[max(0, literal.start() - 30):literal.end() + 10]!r}",
+                    )
+                if re.search(r"\bleft\s+(?:outer\s+)?join\b", statement.lower()):
+                    self.assertIn("'unverified'", statement.lower())
+                    self.assertRegex(predicate.lower(), r"then\s+null")
+
+    def test_ncaaf_always_returns_a_row_and_names_the_missing_case(self):
+        """An empty registry and a registry with no active artifact are different gaps."""
+        ncaaf = query_for("NCAAF")
+        lowered = ncaaf.lower()
+        self.assertIn("left join", lowered)  # survives an empty table
+        self.assertIn("total_rows", lowered)
+        for token in (
+            "'unverified'",
+            "'no_artifact_recorded'",
+            "'no_active_artifact'",
+            "'model_certified'",
+            "'model_hold'",
+        ):
+            self.assertIn(token, lowered)
+        # NULL is reserved for the two UNVERIFIED branches. The held branch must
+        # say false outright: picked.certified is a three-valued AND, so echoing
+        # it there would give NULL for a recorded failure.
+        certified = verdict_expression(ncaaf).lower()
+        self.assertRegex(certified, r"when\s+counts\.total_rows\s*=\s*0\s+then\s+null")
+        self.assertRegex(certified, r"when\s+picked\.artifact_id\s+is\s+null\s+then\s+null")
+        self.assertRegex(certified, r"when\s+picked\.certified\s+then\s+true\s+else\s+false")
+        self.assertEqual(len(re.findall(r"then\s+null", certified)), 2)
+        self.assertNotIn("then false", certified)
 
 
 if __name__ == "__main__":
