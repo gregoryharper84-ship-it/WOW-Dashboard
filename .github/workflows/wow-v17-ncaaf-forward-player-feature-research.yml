@@ -1,0 +1,38 @@
+name: wow-v17-ncaaf-forward-player-feature-research
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-ncaaf-forward-player-feature-research.yml"
+      - "artifacts/wow-engine/ncaaf_forward_pregame_player_feature_freeze_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_forward_pregame_player_feature_freeze_contract.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-ncaaf-forward-player-feature-research.yml"
+      - "artifacts/wow-engine/ncaaf_forward_pregame_player_feature_freeze_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_forward_pregame_player_feature_freeze_contract.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  guard:
+    name: NCAAF pregame research freeze contract
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install isolated test dependency
+        run: python -m pip install pytest==8.3.5
+      - name: Verify strictly pregame research-only source contract
+        run: python -m pytest --noconftest -q test_ncaaf_forward_pregame_player_feature_freeze_contract.py
