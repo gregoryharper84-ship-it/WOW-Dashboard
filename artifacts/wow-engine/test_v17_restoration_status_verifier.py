@@ -1,0 +1,277 @@
+"""Regression coverage for the read-only V17 runtime restoration verifier.
+
+Two invariants matter most:
+
+* a supplied literal such as ``"c0ffee1"`` can never produce
+  ``RUNTIME_RESTORED``, including by constructing ``ReadResult`` directly with a
+  ``live:`` source;
+* the SQL that now answers ``MODEL_CERTIFIED`` stays read-only and keeps the
+  same forward-evidence floor as the governing module.
+"""
+from __future__ import annotations
+
+import ast
+import json
+import pathlib
+import re
+import unittest
+
+from v17.restoration_status_verifier import (
+    CAN_EXECUTE,
+    PRIORITY_SPORTS,
+    TERMINAL_AUTHORITY,
+    ReadResult,
+    assess_runtime,
+    is_live_source,
+    read_github_main_sha,
+    read_render_service_commit,
+    read_runtime_terminal_receipt,
+    report_digest,
+)
+
+CAPTURED = "2026-11-07T06:00:00Z"
+MAIN = "372bef19a04a1c053ad6ab3f649bdbcaf62c10b3"
+REPO = "gregoryharper84-ship-it/WOW-Dashboard"
+MODULE_DIR = pathlib.Path(__file__).resolve().parent / "v17"
+SQL_PATH = MODULE_DIR / "model_certification_verdicts.sql"
+
+
+def transport_for(**routes: tuple[int, object]):
+    def transport(url: str) -> tuple[int, object]:
+        if url not in routes:
+            raise AssertionError(f"unexpected url: {url}")
+        return routes[url]
+
+    return transport
+
+
+def github_route(sha: str = MAIN) -> tuple[str, tuple[int, object]]:
+    return (f"https://api.github.com/repos/{REPO}/commits/main", (200, {"sha": sha}))
+
+
+def render_route(service_id: str, sha: str = MAIN) -> tuple[str, tuple[int, object]]:
+    return (
+        f"https://api.render.com/v1/services/{service_id}/deploys?limit=1",
+        (200, [{"deploy": {"id": "dep-1", "commit": {"id": sha}}, "cursor": "c1"}]),
+    )
+
+
+def receipt_route(
+    origin: str = "https://engine.example", path: str = "/internal/v17/score"
+) -> tuple[str, tuple[int, object]]:
+    return (
+        origin + path,
+        (
+            200,
+            {
+                "can_execute": False,
+                "terminal_authority": TERMINAL_AUTHORITY,
+                "disposition": "MODEL_SCORED",
+                "scored_rows": 1,
+                "prediction_receipt_id": "rcpt-abc123",
+                "deployed_commit": MAIN,
+            },
+        ),
+    )
+
+
+def live_runtime_evidence(
+    *, web_sha: str = MAIN, worker_sha: str = MAIN, receipt_patch: dict | None = None
+):
+    """Read all four runtime sources through their real readers."""
+    origin, path = "https://engine.example", "/internal/v17/score"
+    routes = dict(
+        [
+            github_route(),
+            render_route("srv-web", web_sha),
+            render_route("srv-worker", worker_sha),
+            receipt_route(origin, path),
+        ]
+    )
+    if receipt_patch:
+        status, payload = routes[origin + path]
+        merged = dict(payload)
+        merged.update(receipt_patch)
+        routes[origin + path] = (status, merged)
+    transport = transport_for(**routes)
+    return {
+        "github_main": read_github_main_sha(transport, repo=REPO, captured_at=CAPTURED),
+        "render_web": read_render_service_commit(transport, service_id="srv-web", captured_at=CAPTURED),
+        "render_worker": read_render_service_commit(
+            transport, service_id="srv-worker", captured_at=CAPTURED
+        ),
+        "runtime_receipt": read_runtime_terminal_receipt(
+            transport, origin=origin, path=path, captured_at=CAPTURED
+        ),
+    }
+
+
+def sql_body(path: pathlib.Path) -> str:
+    """The SQL with line comments stripped, for read-only assertions."""
+    return "\n".join(line.split("--", 1)[0] for line in path.read_text(encoding="utf-8").splitlines())
+
+
+class TestProvenanceGuard(unittest.TestCase):
+    def test_fixture_sha_can_never_restore_a_sport(self):
+        """The original defect: caller-supplied 'c0ffee1' established success."""
+        fake = ReadResult(True, "c0ffee1", "fixture:test", CAPTURED)
+        self.assertFalse(is_live_source(fake.source))
+
+        assessment = assess_runtime(
+            "NBA",
+            github_main=fake,
+            render_web=fake,
+            render_worker=fake,
+            runtime_receipt=ReadResult(
+                True,
+                {
+                    "can_execute": False,
+                    "terminal_authority": TERMINAL_AUTHORITY,
+                    "disposition": "MODEL_SCORED",
+                    "scored_rows": 1,
+                    "prediction_receipt_id": "rcpt-1",
+                },
+                "fixture:test",
+                CAPTURED,
+            ),
+        )
+        self.assertEqual(assessment["status"], "RUNTIME_UNVERIFIED")
+        self.assertIn("GITHUB_MAIN_PROVENANCE_NOT_LIVE", assessment["blockers"])
+        self.assertIn("RENDER_WEB_PROVENANCE_NOT_LIVE", assessment["blockers"])
+        self.assertIn("RUNTIME_RECEIPT_PROVENANCE_NOT_LIVE", assessment["blockers"])
+
+    def test_hand_built_live_read_result_is_rejected(self):
+        """Constructing the dataclass directly must not mint live provenance."""
+        with self.assertRaises(PermissionError):
+            ReadResult(True, "c0ffee1", "live:forged", CAPTURED)
+
+    def test_only_a_reader_holding_the_token_can_attest(self):
+        with self.assertRaises(PermissionError):
+            ReadResult._attested_live(
+                "c0ffee1", source="live:x", captured_at=CAPTURED, attestation=object()
+            )
+
+
+class TestRuntimeAssessment(unittest.TestCase):
+    def test_matching_live_shas_with_scoring_receipt_restore_runtime(self):
+        assessment = assess_runtime("NBA", **live_runtime_evidence())
+        self.assertEqual(assessment["status"], "RUNTIME_RESTORED")
+        self.assertEqual(assessment["blockers"], [])
+        self.assertEqual(assessment["scored_rows"], 1)
+        self.assertEqual(assessment["prediction_receipt_id"], "rcpt-abc123")
+        self.assertFalse(assessment["can_execute"])
+
+    def test_worker_sha_drift_holds_runtime(self):
+        assessment = assess_runtime("NBA", **live_runtime_evidence(worker_sha="deadbeef"))
+        self.assertEqual(assessment["status"], "RUNTIME_HOLD")
+        self.assertIn("RENDER_WORKER_SHA_MISMATCH", assessment["blockers"])
+
+    def test_unreadable_render_service_is_unverified_not_restored(self):
+        origin, path = "https://engine.example", "/internal/v17/score"
+        transport = transport_for(
+            **dict([github_route(), render_route("srv-web"), receipt_route(origin, path)])
+        )
+        assessment = assess_runtime(
+            "NBA",
+            github_main=read_github_main_sha(transport, repo=REPO, captured_at=CAPTURED),
+            render_web=read_render_service_commit(transport, service_id="srv-web", captured_at=CAPTURED),
+            render_worker=read_render_service_commit(
+                transport, service_id="srv-worker-missing", captured_at=CAPTURED
+            ),
+            runtime_receipt=read_runtime_terminal_receipt(
+                transport, origin=origin, path=path, captured_at=CAPTURED
+            ),
+        )
+        self.assertEqual(assessment["status"], "RUNTIME_UNVERIFIED")
+        self.assertTrue(any(b.startswith("RENDER_WORKER_UNREAD") for b in assessment["blockers"]))
+
+    def test_missing_immutable_receipt_holds_runtime(self):
+        assessment = assess_runtime(
+            "NBA", **live_runtime_evidence(receipt_patch={"prediction_receipt_id": None})
+        )
+        self.assertEqual(assessment["status"], "RUNTIME_HOLD")
+        self.assertIn("RUNTIME_IMMUTABLE_RECEIPT_MISSING", assessment["blockers"])
+
+    def test_zero_scored_rows_holds_runtime(self):
+        assessment = assess_runtime("NBA", **live_runtime_evidence(receipt_patch={"scored_rows": 0}))
+        self.assertEqual(assessment["status"], "RUNTIME_HOLD")
+        self.assertIn("RUNTIME_NO_SCORED_ROW", assessment["blockers"])
+
+    def test_terminal_model_failure_is_not_a_scoring_result(self):
+        assessment = assess_runtime(
+            "NBA", **live_runtime_evidence(receipt_patch={"disposition": "MODEL_UNAVAILABLE"})
+        )
+        self.assertEqual(assessment["status"], "RUNTIME_HOLD")
+        self.assertIn("RUNTIME_TERMINAL_MODEL_FAILURE:MODEL_UNAVAILABLE", assessment["blockers"])
+
+    def test_receipt_not_terminating_through_the_reducer_holds_runtime(self):
+        assessment = assess_runtime(
+            "NBA", **live_runtime_evidence(receipt_patch={"terminal_authority": "SOMETHING_ELSE"})
+        )
+        self.assertEqual(assessment["status"], "RUNTIME_HOLD")
+        self.assertIn("RUNTIME_TERMINAL_AUTHORITY_MISMATCH", assessment["blockers"])
+
+    def test_runtime_claiming_execution_authority_is_rejected_loudly(self):
+        origin, path = "https://engine.example", "/internal/v17/score"
+        transport = transport_for(**dict([(origin + path, (200, {"can_execute": True}))]))
+        with self.assertRaises(PermissionError):
+            read_runtime_terminal_receipt(transport, origin=origin, path=path, captured_at=CAPTURED)
+
+
+class TestReport(unittest.TestCase):
+    def test_report_is_json_safe_and_carries_can_execute_false(self):
+        report = assess_runtime("NFL", **live_runtime_evidence())
+        self.assertFalse(report["can_execute"])
+        self.assertEqual(json.loads(json.dumps(report)), report)
+
+    def test_digest_is_stable_and_content_sensitive(self):
+        restored = assess_runtime("NBA", **live_runtime_evidence())
+        self.assertEqual(report_digest([restored]), report_digest([restored]))
+        self.assertEqual(len(report_digest([restored])), 64)
+        drifted = assess_runtime("NBA", **live_runtime_evidence(worker_sha="deadbeef"))
+        self.assertNotEqual(report_digest([restored]), report_digest([drifted]))
+
+
+class TestModuleInvariants(unittest.TestCase):
+    def test_priority_sports_are_exactly_the_owner_four(self):
+        self.assertEqual(PRIORITY_SPORTS, ("NFL", "NBA", "NHL", "NCAAF"))
+
+    def test_module_never_grants_execution(self):
+        self.assertFalse(CAN_EXECUTE)
+
+    def test_sql_verdicts_are_read_only(self):
+        body = sql_body(SQL_PATH).lower()
+        for verb in ("insert", "update", "delete", "alter", "create", "drop", "truncate", "grant", "revoke"):
+            self.assertNotRegex(body, rf"\b{verb}\b", f"{verb} found in verdict SQL")
+
+    def test_sql_covers_each_governed_model_relation(self):
+        body = sql_body(SQL_PATH)
+        for relation in (
+            "wow_nfl_forward_calibration_health",
+            "wow_basketball_team_event_certification",
+            "wow_ncaaf_fitted_model_artifacts",
+        ):
+            self.assertIn(relation, body)
+        self.assertNotIn("wow_nhl", body.lower())
+
+    def test_sql_forward_floor_matches_the_governing_module(self):
+        """The 100 floor moved to SQL; it must not drift from the model module."""
+        tree = ast.parse((MODULE_DIR / "nfl_forward_shadow.py").read_text(encoding="utf-8"))
+        governed = None
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id == "MIN_FORWARD_GRADED":
+                if isinstance(node.value, ast.Constant):
+                    governed = node.value.value
+        self.assertIsNotNone(governed, "MIN_FORWARD_GRADED not found in nfl_forward_shadow")
+
+        floors = re.findall(r"minimum_forward_required\s*>=\s*(\d+)", sql_body(SQL_PATH))
+        self.assertTrue(floors, "no minimum_forward_required floor in verdict SQL")
+        for floor in floors:
+            self.assertEqual(int(floor), governed)
+
+
+if __name__ == "__main__":
+    unittest.main()
