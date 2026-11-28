@@ -32,7 +32,7 @@ artifact demonstrates.
 | Per-row stage proof | exact readback, calibration producer receipt, final refresh | contract present; per-row proof unproven | `v17/nfl_daily_stage_receipts.py` |
 | Fitted artifact | `active`, `promoted`, `calibrator_id`, `certification_id`, `lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')` | **satisfied** — `7fee1209-0bed-4bd0-aa0f-fc7a881eff80` is `active=true`, `promoted=true`, `lifecycle_state='CHAMPION'`, with calibrator and certification ids populated | `wow_nfl_event_fitted_model_artifacts` |
 | Calibrator | active + promoted, `validation_status='PASS'`, `health_status='PASS'`, NFL `OUTRIGHT_WINNER` | **satisfied** — `756379bd-f557-4508-8ecb-91a5d336ec64` is `PLATT_TIME_SPLIT_V1`, active + promoted, `validation_status='PASS'`, `health_status='PASS'` | `wow_calibrators` |
-| Governed catalog | NFL row `CERTIFIED` + independent verification `PASS` + both hashes | **still unproven — G7 open** — no NFL row. The certificate of record is a different object, resolved by `wow_v17_active_team_event_certification` (2026-11-27 receipt) | `wow_team_event_specialist_certifications` (separate artefact) + `wow_v17_active_team_event_certification()` (certificate of record) |
+| Governed catalog | NFL row `CERTIFIED` + independent verification `PASS` + both hashes | **still unproven — G7 open** — zero NFL rows. The table *is* the certificate of record: the RPC the stage-receipt predicate calls reads it directly and returns `TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED` when no row matches (migration `20260921`, lines 57-85) | `wow_team_event_specialist_certifications` (read by `wow_v17_active_team_event_certification()`) |
 | Runtime capability | certified artifact + ready calibrator | **`AVAILABLE`** — `terminal_label_if_scored_now='MODEL_QUALIFIED_HOLD'`, `certified_artifact_ready=true`, `calibrator_ready=true`, row updated 2026-11-25T06:23Z. Scores only: `probability_publishable=false`, `can_execute=false` | `wow_runtime_capabilities` (`capability_key='NFL_EVENT_PROBABILITY'`) |
 | Health probe | live champion loads through `load_champion_model` | **not re-verified** — a process-level `load_champion_model` check that writes no row; re-run it to settle `NFL_ACTIVE_PROMOTED_CHAMPION_PROVEN` vs `NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN` | `v17/all_sport_capability_readiness.py` |
 | Build classification | — | `GOVERNED_CATALOG_CERTIFICATION_PENDING` — static planning label; G7 is the open gate | `v17/capability_build_registry.py` |
@@ -99,13 +99,15 @@ Two corrections to the 11-11 reading:
 
 1. The lane is not stuck at G5. G5's artifact and calibrator conditions and G6's
    clearing condition are met; publication is withheld by G7.
-2. An empty `wow_team_event_specialist_certifications` is not evidence about the
-   certificate of record, which resolves through
-   `wow_v17_active_team_event_certification`. Emptiness there means the separate
-   governed-catalog artefact (G7) is absent.
+2. An empty `wow_team_event_specialist_certifications` is direct evidence that G7
+   is unmet. There is no separate certificate of record: the RPC the stage-receipt
+   predicate calls reads this table (migration `20260921`, lines 57-85) and
+   returns `TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED` when no row matches, so
+   zero rows is the blocker itself rather than a proxy for it.
 
-The read-only role cannot read that RPC's payload (`42501 permission denied`), so
-the certificate's returned fields stay unverified and G7 stays open.
+The read-only role cannot execute that RPC (`42501 permission denied`), so its
+payload stays unread. The table's row count remains the direct G7 evidence either
+way, and it is zero, so G7 stays open.
 
 ---
 
@@ -336,16 +338,18 @@ select capability_status,
   from public.wow_runtime_capabilities
  where capability_key = 'NFL_EVENT_PROBABILITY';
 
--- G7 certificate of record — what the stage-receipt predicate resolves, and
--- NOT the table below. Needs EXECUTE beyond the plain read-only role (42501);
--- an unreadable payload is unverified, not absent.
+-- G7 certificate of record — the stage-receipt predicate resolves this RPC,
+-- which reads the table below directly and returns
+-- TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED when no row matches. Needs
+-- EXECUTE beyond the plain read-only role (42501); the table's row count is the
+-- direct evidence either way.
 select *
   from public.wow_v17_active_team_event_certification(
          p_sport => 'NFL', p_league_scope => 'NFL'
        );
 
--- G7 governed catalog (separate artefact). Expected empty today. Emptiness
--- here is evidence about the catalog row only — never about the G6 capability.
+-- G7 governed catalog — the same table the RPC above reads. Expected empty
+-- today; emptiness is why G7 is unmet. It says nothing about G6.
 select certification_id, certification_status, independent_verification_status,
        probability_publishable, artifact_sha256, calibration_sha256
   from public.wow_team_event_specialist_certifications
