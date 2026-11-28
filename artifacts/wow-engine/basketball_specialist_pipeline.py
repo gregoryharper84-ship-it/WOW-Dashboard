@@ -5,8 +5,10 @@ model using only pregame team performance/rest features. Market prices are not
 features. Calibration reuses V17 phase_b_platt with chronological folds.
 
 This pipeline never changes can_execute and never auto-promotes an artifact.
-A successful run may advance certification state to SHADOW/CERTIFIED evidence,
-but promoted/active remain false until an explicit certification replay promotes.
+A run persists SHADOW certification evidence at most: a decision of CERTIFIED is
+downgraded to SHADOW with reason CERTIFICATION_REPLAY_REQUIRED, because a fit
+cannot certify itself. promoted/active stay false, and a separate explicit
+certification replay must promote and certify the artifact.
 """
 from __future__ import annotations
 
