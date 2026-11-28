@@ -158,7 +158,10 @@ def test_repeated_uconn_spread_across_two_slips_is_held_once_not_double_counted(
     result = audit_research_slips(cards(
         [uconn, leg("mavs", "nba-mavs", market="POINT_SPREAD", line=-4.5)],
         [second, leg("phoenix", "nba-phoenix")]), as_of_utc=AS_OF)
-    assert result["cards"][0]["blockers"] == []
+    # The shared game holds both cards symmetrically; the duplicate exact
+    # thesis itself is attributed once, to the later card.
+    assert "CROSS_SLIP_EVENT_EXPOSURE_UNVERIFIED" in result["cards"][0]["blockers"]
+    assert "CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE" not in result["cards"][0]["blockers"]
     assert "CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE" in result["cards"][1]["blockers"]
     assert max(result["cross_slip_exact_exposure_counts"].values()) == 2
 
@@ -277,7 +280,8 @@ def test_alias_reuse_is_blocked_across_ml_and_spread_label_variants():
     assert exact_key(x) == exact_key(y)
     outcome = audit_research_slips(
         cards([a, x], [b, y]), as_of_utc=AS_OF)
-    assert outcome["cards"][0]["blockers"] == []
+    assert "CROSS_SLIP_EVENT_EXPOSURE_UNVERIFIED" in outcome["cards"][0]["blockers"]
+    assert "CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE" not in outcome["cards"][0]["blockers"]
     assert "CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE" in outcome["cards"][1]["blockers"]
 
 
@@ -427,7 +431,7 @@ def test_fixture_provenance_absent_or_wrong_team_is_not_inferred_from_bookmaker_
     assert "OFFICIAL_FIXTURE_IDENTITY_OR_CHRONOLOGY_UNVERIFIED" in result["cards"][0]["blockers"]
 
 
-def test_robertson_style_common_game_hinge_across_three_cards_is_held():
+def test_robertson_style_common_game_across_three_cards_holds_every_card():
     # Different props on the same event are not exact duplicate theses, but
     # they still concentrate event/game-script risk across the whole session.
     one = prop("robertson", "stars-penguins", player="NHL-ROB")
@@ -449,9 +453,10 @@ def test_robertson_style_common_game_hinge_across_three_cards_is_held():
     snapshot = deepcopy(proposed)
     report = audit_research_slips(proposed, as_of_utc=AS_OF)
     assert proposed == snapshot
-    assert report["cards"][0]["blockers"] == []
-    assert report["cards"][1]["blockers"] == []
-    assert "CROSS_SLIP_EVENT_HINGE_CONCENTRATION" in report["cards"][2]["blockers"]
+    # A shared game holds every card that uses it, not only the late arrival.
+    for index in range(3):
+        assert "CROSS_SLIP_EVENT_EXPOSURE_UNVERIFIED" in report["cards"][index]["blockers"]
+        assert report["cards"][index]["status"] == "RESEARCH_HOLD"
     assert report["cross_slip_event_exposure_counts"]["NHL|stars-penguins"] == 3
     assert max(report["cross_slip_exact_exposure_counts"].values()) == 1
     assert report["can_execute"] is False
