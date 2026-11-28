@@ -1,0 +1,149 @@
+name: wow-v17-nhl-failure-code-registry
+
+# No `paths:` filter, deliberately: an NHL_* code can be emitted by any module,
+# and a fixed path list cannot enumerate modules that do not exist yet. The job
+# installs only pytest and reads text, so running it on every change is cheap.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nhl-registry-guard-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  registry-guard:
+    name: NHL failure-code and disposition registry guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+        # A pull-request test file runs in this job; the checkout token must not
+        # be readable from .git/config while it does. Full history is needed so
+        # the conflict check below can read the base branch.
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install guard test runner only
+        # The registry guards read documentation and source text; they need
+        # pytest and the standard library, nothing from the runtime stack.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pytest>=8.0"
+      - name: Registry guards
+        # --noconftest is required: the repository conftest imports the Celery
+        # runtime, which this documentation-only guard does not install.
+        run: |
+          set -o pipefail
+          python -m pytest -q --noconftest \
+            tests/test_nhl_pregame_failure_codes_registered.py \
+            tests/test_nhl_status_registry.py \
+            tests/test_sport_failure_registries.py \
+            tests/test_registry_merge_conflict.py | tee /tmp/nhl-registry-guard.log
+      - name: Check the generated sport registries are current
+        run: python scripts/sport_failure_registry.py --check
+      - name: Fail when a registry document conflicts with the base branch
+        # The registries are append-heavy and several lanes add rows at once, so
+        # a branch can conflict on the document itself while every earlier run
+        # was green. A conflicted head has no merge commit, which means GitHub
+        # runs no checks on it at all: the pull request goes quietly dirty.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -o pipefail
+          python scripts/registry_merge_conflict.py \
+            --base "$BASE_REF" --head "$HEAD_SHA" | tee /tmp/nhl-registry-conflict.log
+      - name: Upload guard log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nhl-registry-guard-log
+          path: /tmp/nhl-registry-guard.log
+          if-no-files-found: warn
+      - name: Record invariants
+        if: always()
+        run: |
+          {
+            echo '## NHL and per-sport registry guards'
+            echo 'Fails when an emitted failure code is unregistered, a documented code is no longer emitted,'
+            echo 'a row names the wrong module, a shared emitter is left undocumented, a generated'
+            echo 'sport registry document is stale, or the branch conflicts with its base branch on a'
+            echo 'registry document (a conflicted head runs no checks at all).'
+            echo 'These guards read documentation and source text; they do not check or grant execution authority.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  preflight-executed-query:
+    name: V17 certification preflight executed-query regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install test runner and PostgreSQL server binaries
+        # The executed-query tests build a throwaway cluster under a temp
+        # directory and talk to it over a Unix socket, so they need initdb/pg_ctl
+        # and psql installed, not a running service or any credentials.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pytest>=8.0"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql
+      - name: Execute the preflight SQL against ephemeral PostgreSQL
+        run: |
+          set -o pipefail
+          python -m pytest -q --noconftest -rs \
+            tests/test_v17_certification_promotion_preflight.py | tee /tmp/v17-preflight-executed.log
+      - name: Fail if the executed-query regression silently skipped
+        # Without server binaries these tests skip, which would leave only the
+        # text guards running. This job exists to execute the SQL, so a skip is
+        # a failure rather than reduced coverage nobody notices.
+        run: |
+          if grep -qE '^[0-9]+ skipped|SKIPPED' /tmp/v17-preflight-executed.log; then
+            echo '::error::executed-query preflight tests were skipped; PostgreSQL binaries were not usable'
+            grep -E 'SKIPPED' /tmp/v17-preflight-executed.log || true
+            exit 1
+          fi
+          echo 'executed-query regression ran without skips'
+      - name: Upload executed-query log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-preflight-executed-log
+          path: /tmp/v17-preflight-executed.log
+          if-no-files-found: warn
+      - name: Record invariants
+        if: always()
+        run: |
+          {
+            echo '## V17 certification preflight (executed)'
+            echo 'Runs the read-only promotion preflight against an ephemeral PostgreSQL cluster'
+            echo 'with stand-in registry tables, so the prop-family inventory is executed rather than'
+            echo 'only pattern-matched. Asserts a declared family with no registry row still reports'
+            echo 'PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND, an undeclared registry family stays visible,'
+            echo 'and every row keeps can_execute = false and preflight_authorizes_publication = false.'
+            echo 'Grants no execution or publication authority.'
+          } >> "$GITHUB_STEP_SUMMARY"
