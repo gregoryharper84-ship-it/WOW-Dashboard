@@ -75,6 +75,8 @@ spread, game-total, or player-prop research into multiple slips.
    any kickoff, including sport + official event, outcome/period/settlement,
    player/team ID for props, the exact offered quote (not hypothetical odds),
    timestamp, bookmaker and a strict quote-freshness policy.
+For an explicitly requested 2x, 3x or 5x gross return target, populate each relevant card's `target_gross_payout_multiple` with that numeric value. Do not derive a whole-lineup quote from leg prices. A missing or below-target quote is a research HOLD; if the platform lacks a supported lineup adapter, state that the target is unverified. Recheck the exact lineup after changes. Never claim a verified payout or sporting probability from research shape checks alone.
+
 2. Run the existing V17 \`slip_portfolio_optimizer.optimize_portfolio\` with
    \`research_preflight_enabled=True\` and an explicit
    \`research_as_of_utc\`; its \`v17.slip_research_preflight.audit_research_slips\`
