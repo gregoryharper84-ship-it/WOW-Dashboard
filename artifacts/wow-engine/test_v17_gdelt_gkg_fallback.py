@@ -55,8 +55,26 @@ def test_parse_gkg_keeps_sport_title_or_url_and_requires_page_title():
     assert len(articles) == 1
     assert articles[0]["title"].startswith("Spurs rule")
     assert articles[0]["source_url"].startswith("https://www.espn.com/nba/")
+    assert articles[0]["material_lead"] is True
     assert articles[0]["publisher_claim_verified"] is False
     assert articles[0]["historical_pregame_eligible"] is False
+
+
+def test_parse_gkg_prefers_material_leads_over_fashion_noise():
+    fashion = _gkg_row(
+        url="https://www.espn.com/nba/story/_/id/2/best-dressed",
+        title="Eight best-dressed NBA players this week",
+    )
+    injury = _gkg_row(
+        url="https://www.espn.com/nba/story/_/id/3/out",
+        title="Lakers star ruled out with injury",
+    )
+    csv = "\n".join([fashion, injury]) + "\n"
+    articles = gkg.parse_gkg_articles(csv.encode(), sport_key="basketball_nba",
+                                      observed_at=NOW)
+    assert articles[0]["title"].startswith("Lakers star")
+    assert articles[0]["material_lead"] is True
+    assert sum(1 for row in articles if row.get("material_lead")) >= 1
 
 
 def test_parse_rejects_titleless_gkg_rows():

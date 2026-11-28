@@ -10,13 +10,37 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
+try:
+    from v17.news_fitted_persistence_readback import (
+        missing_news_persistence_readback,
+        validate_news_persistence_readback,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    from news_fitted_persistence_readback import (
+        missing_news_persistence_readback,
+        validate_news_persistence_readback,
+    )
+
 CAN_EXECUTE = False
 SCHEMA = "wow.v17.news_fitted_rescore_receipt.v1"
+TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 ScoreFn = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+PersistenceFn = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
+
+
+def _finite_open_unit_interval(value: Any) -> float | None:
+    """Require a real number strictly inside (0, 1); reject bool/NaN/inf."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or not 0.0 < number < 1.0:
+        return None
+    return number
 
 
 def _utc(value: Any) -> datetime | None:
@@ -126,6 +150,7 @@ def dispatch_news_rescore(
     candidate: Mapping[str, Any],
     *,
     score_fn: ScoreFn | None = None,
+    persistence_readback_fn: PersistenceFn | None = None,
     observed_at: datetime | None = None,
     prior_feature_snapshot: Mapping[str, Any] | None = None,
     baseline_features: Mapping[str, Any] | None = None,
@@ -133,7 +158,10 @@ def dispatch_news_rescore(
     """Attempt one news-triggered controlling-specialist rescore for a candidate.
 
     ``model_rescore_verified`` becomes true only when a genuine scorer response
-    is returned with a changed permitted feature hash and no invented authority.
+    returns both calibrated probability and lower bound in (0, 1) with
+    lower_bound <= calibrated_probability and matching feature hash, **and** an
+    authenticated persistence/terminal readback confirms those immutable and
+    calibration ids from store (not scorer-echoed objects alone).
     """
     now = observed_at or datetime.now(timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
@@ -175,6 +203,12 @@ def dispatch_news_rescore(
         "scoring_response_code": None,
         "calibrated_probability": None,
         "calibrated_lower_bound": None,
+        "immutable_prediction_id": None,
+        "prior_immutable_prediction_id": None,
+        "calibration_receipt_id": None,
+        "terminal_readback": None,
+        "store_attestation": None,
+        "persistence_authenticated": False,
         "scoring_attempted": False,
         "model_rescore_verified": False,
         "prediction_authority": False,
@@ -248,6 +282,12 @@ def dispatch_news_rescore(
         return finish("NEWS_RESCORE_FEATURE_UNCHANGED", blockers=["FEATURE_SNAPSHOT_UNCHANGED"])
 
     prop_target = _prop_target(candidate)
+    # Prior identity is request/store authority, not an optional scorer claim.
+    known_prior = (
+        str(candidate.get("prior_immutable_prediction_id") or "").strip()
+        or str(handoff.get("prior_immutable_prediction_id") or "").strip()
+        or None
+    )
     request = {
         "sport_key": sport_key,
         "official_event_id": official_event_id,
@@ -260,6 +300,7 @@ def dispatch_news_rescore(
         "feature_snapshot": after,
         "feature_snapshot_hash": after["feature_snapshot_hash"],
         "prior_feature_snapshot_hash": prior.get("feature_snapshot_hash"),
+        "prior_immutable_prediction_id": known_prior,
         "news_research_handoff_sha256": handoff.get("receipt_sha256"),
         "source_receipt_sha256": handoff.get("source_receipt_sha256"),
         "material_news_facts": after["material_news_facts"],
@@ -319,16 +360,25 @@ def dispatch_news_rescore(
     if not receipt["fitted_model_version"]:
         return finish("NEWS_RESCORE_MODEL_VERSION_MISSING", blockers=["MODEL_VERSION_MISSING"])
 
-    calibrated = response.get("calibrated_probability")
-    lower = response.get("calibrated_lower_bound")
-    if calibrated is not None:
-        if not isinstance(calibrated, (int, float)) or isinstance(calibrated, bool) or not 0 < float(calibrated) < 1:
-            return finish("NEWS_RESCORE_PROBABILITY_INVALID", blockers=["CALIBRATED_PROBABILITY_INVALID"])
-        receipt["calibrated_probability"] = float(calibrated)
-    if lower is not None:
-        if not isinstance(lower, (int, float)) or isinstance(lower, bool) or not 0 < float(lower) < 1:
-            return finish("NEWS_RESCORE_LOWER_BOUND_INVALID", blockers=["CALIBRATED_LOWER_BOUND_INVALID"])
-        receipt["calibrated_lower_bound"] = float(lower)
+    calibrated = _finite_open_unit_interval(response.get("calibrated_probability"))
+    if calibrated is None:
+        return finish(
+            "NEWS_RESCORE_PROBABILITY_INVALID",
+            blockers=["CALIBRATED_PROBABILITY_REQUIRED"],
+        )
+    lower = _finite_open_unit_interval(response.get("calibrated_lower_bound"))
+    if lower is None:
+        return finish(
+            "NEWS_RESCORE_LOWER_BOUND_INVALID",
+            blockers=["CALIBRATED_LOWER_BOUND_REQUIRED"],
+        )
+    if lower > calibrated:
+        return finish(
+            "NEWS_RESCORE_LOWER_BOUND_ORDER_INVALID",
+            blockers=["CALIBRATED_LOWER_BOUND_EXCEEDS_PROBABILITY"],
+        )
+    receipt["calibrated_probability"] = calibrated
+    receipt["calibrated_lower_bound"] = lower
 
     response_feature_hash = response.get("feature_snapshot_hash")
     if (
@@ -345,6 +395,48 @@ def dispatch_news_rescore(
             blockers=["SCORER_FEATURE_HASH_MISMATCH"],
         )
 
+    response_route = response.get("controlling_specialist_route")
+    if response_route is not None and str(response_route).strip() != route:
+        return finish(
+            "NEWS_RESCORE_ROUTE_MISMATCH",
+            blockers=["CONTROLLING_ROUTE_MISMATCH"],
+        )
+
+    response_prop = response.get("prop_target")
+    if prop_target is not None and response_prop is not None:
+        if not isinstance(response_prop, Mapping) or dict(response_prop) != prop_target:
+            return finish(
+                "NEWS_RESCORE_PROP_TARGET_MISMATCH",
+                blockers=["PROP_TARGET_MISMATCH"],
+            )
+
+    # Claimed ids from the scorer are necessary but not sufficient. An
+    # authenticated store/reducer readback must confirm them. Caller-supplied
+    # terminal objects alone never authenticate production persistence.
+    persistence_fn = persistence_readback_fn or missing_news_persistence_readback
+    try:
+        persistence = persistence_fn(request, response)
+    except Exception as exc:  # noqa: BLE001 - preserve typed persistence failure
+        return finish(
+            "NEWS_RESCORE_PERSISTENCE_UNVERIFIED",
+            blockers=["NEWS_PERSISTENCE_READBACK_FAILED", type(exc).__name__],
+        )
+    normalized, persist_status, persist_blockers = validate_news_persistence_readback(
+        request, response, persistence if isinstance(persistence, Mapping) else None,
+    )
+    if persist_status is not None or normalized is None:
+        return finish(
+            persist_status or "NEWS_RESCORE_PERSISTENCE_UNVERIFIED",
+            blockers=persist_blockers or ["NEWS_PERSISTENCE_UNAUTHENTICATED"],
+        )
+
+    receipt["immutable_prediction_id"] = normalized["immutable_prediction_id"]
+    receipt["prior_immutable_prediction_id"] = normalized["prior_immutable_prediction_id"]
+    receipt["calibration_receipt_id"] = normalized["calibration_receipt_id"]
+    receipt["terminal_readback"] = normalized["terminal_readback"]
+    receipt["store_attestation"] = normalized["store_attestation"]
+    receipt["persistence_authenticated"] = True
+
     receipt["model_rescore_verified"] = True
     receipt["scoring_response_digest"] = _hash({
         "code": code,
@@ -353,6 +445,12 @@ def dispatch_news_rescore(
         "prop_target": prop_target,
         "calibrated_probability": receipt["calibrated_probability"],
         "calibrated_lower_bound": receipt["calibrated_lower_bound"],
+        "immutable_prediction_id": receipt["immutable_prediction_id"],
+        "prior_immutable_prediction_id": receipt["prior_immutable_prediction_id"],
+        "calibration_receipt_id": receipt["calibration_receipt_id"],
+        "terminal_readback": receipt["terminal_readback"],
+        "store_attestation": receipt["store_attestation"],
+        "persistence_authenticated": True,
     })
     return finish("NEWS_RESCORE_VERIFIED")
 
@@ -361,6 +459,7 @@ def dispatch_news_rescores_for_handoff(
     payload: dict[str, Any],
     *,
     score_fn: ScoreFn | None = None,
+    persistence_readback_fn: PersistenceFn | None = None,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Walk enriched Multiscout candidates and attach rescore receipts where requested."""
@@ -402,6 +501,7 @@ def dispatch_news_rescores_for_handoff(
             receipt = dispatch_news_rescore(
                 item,
                 score_fn=score_fn,
+                persistence_readback_fn=persistence_readback_fn,
                 observed_at=observed_at,
                 baseline_features=item.get("baseline_features")
                 if isinstance(item.get("baseline_features"), dict)

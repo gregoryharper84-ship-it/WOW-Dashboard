@@ -18,6 +18,7 @@ try:  # package import under pytest/backend runtime
     from v17.context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact, candidate_event_start
     from v17.news_event_research_handoff import reconcile_news_handoff
     from v17.news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
+    from v17.news_fitted_scorer_binding import production_news_fitted_scorer
     from v17.news_reviewed_fact_producer import attach_reviewed_facts_bundle
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
@@ -28,6 +29,7 @@ except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from context_change_impact import ALL_MARKET_FAMILIES, ALL_POSITION_SCOPE, assess_context_change_impact, candidate_event_start
     from news_event_research_handoff import reconcile_news_handoff
     from news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
+    from news_fitted_scorer_binding import production_news_fitted_scorer
     from news_reviewed_fact_producer import attach_reviewed_facts_bundle
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
@@ -541,9 +543,9 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     })
     out["governance"] = governance
     out["can_execute"] = False
-    # Preserve main's authenticated/reconciled-news dispatch before final
-    # Scout research promotion; missing fitted bindings remain typed HOLDs.
-    out = dispatch_news_rescores_for_handoff(out)
+    # Bind the production news→fitted registry before final Scout research
+    # promotion. Unregistered routes remain typed MODEL_UNAVAILABLE HOLDs.
+    out = dispatch_news_rescores_for_handoff(out, score_fn=production_news_fitted_scorer)
     out["can_execute"] = False
     return promote_handoff(out)
 
@@ -671,10 +673,13 @@ def main() -> int:
         "news_source_code": enriched.get("public_news_discovery_bridge", {}).get("source_code", "NOT_PRESENT"),
         "news_article_count": enriched.get("public_news_discovery_bridge", {}).get("article_count", 0),
         "news_candidates_touched": enriched.get("public_news_discovery_bridge", {}).get("candidates_touched", 0),
-        "news_reviewed_facts_bridge_status": enriched.get("news_reviewed_facts_bridge", {}).get("status", "NOT_PRESENT"),
+        "news_reviewed_facts_bridge_status": enriched.get("news_reviewed_facts_bridge", {}).get(
+            "status", "NEWS_REVIEWED_FACTS_NOT_PRESENT"
+        ),
         "news_reviewed_facts_attached": enriched.get("news_reviewed_facts_bridge", {}).get("candidates_attached", 0),
         "news_rescore_considered": enriched.get("news_fitted_rescore_summary", {}).get("candidates_considered", 0),
         "news_rescore_verified": enriched.get("news_fitted_rescore_summary", {}).get("rescore_verified", 0),
+        "news_fitted_scorer_binding": "production_news_fitted_scorer",
         "can_execute": False,
     }))
     return 0

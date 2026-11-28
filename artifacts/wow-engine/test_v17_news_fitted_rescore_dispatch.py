@@ -34,6 +34,7 @@ def _candidate(**overrides):
         "home_team": "New York Islanders",
         "away_team": "Toronto Maple Leafs",
         "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
+        "prior_immutable_prediction_id": "pred-original-pregame-001",
         "can_execute": False,
         "news_research_handoff": {
             "research_status": "NEWS_RESEARCH_RESCORE_REQUESTED",
@@ -58,9 +59,65 @@ def _ok_scorer(request):
         "feature_snapshot_hash": request["feature_snapshot_hash"],
         "calibrated_probability": 0.61,
         "calibrated_lower_bound": 0.54,
+        "immutable_prediction_id": "pred-news-rescore-001",
+        "prior_immutable_prediction_id": "pred-original-pregame-001",
+        "calibration_receipt_id": "calib-nhl-llp-v17-test",
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "prop_target": request.get("prop_target"),
+        # Caller-echoed terminal objects are intentionally insufficient alone.
+        "terminal_readback": {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+        },
         "prediction_authority": False,
         "can_execute": False,
     }
+
+
+def _ok_persistence(request, response):
+    """Shape-only store double for unit tests — not production acceptance."""
+    return {
+        "ok": True,
+        "authenticated": True,
+        "immutable_prediction_id": response.get("immutable_prediction_id"),
+        "prior_immutable_prediction_id": response.get("prior_immutable_prediction_id"),
+        "prior_immutable_prediction_preserved": True,
+        "calibration_receipt_id": response.get("calibration_receipt_id"),
+        "official_event_id": request.get("official_event_id"),
+        "sport_key": request.get("sport_key"),
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "feature_snapshot_hash": request.get("feature_snapshot_hash"),
+        "model_version": response.get("model_version"),
+        "calibrated_probability": response.get("calibrated_probability"),
+        "calibrated_lower_bound": response.get("calibrated_lower_bound"),
+        "prop_target": request.get("prop_target"),
+        "terminal_readback": {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+            "immutable_prediction_id": response.get("immutable_prediction_id"),
+            "calibration_receipt_id": response.get("calibration_receipt_id"),
+            "feature_snapshot_hash": request.get("feature_snapshot_hash"),
+        },
+        "store_attestation": {
+            "source": "TEST_DOUBLE_NOT_PRODUCTION",
+            "read_at_utc": NOW.isoformat(),
+        },
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+
+def _dispatch_ok(**kwargs):
+    return dispatch_news_rescore(
+        kwargs.pop("candidate", _candidate()),
+        score_fn=kwargs.pop("score_fn", _ok_scorer),
+        persistence_readback_fn=kwargs.pop("persistence_readback_fn", _ok_persistence),
+        observed_at=kwargs.pop("observed_at", NOW),
+        baseline_features=kwargs.pop("baseline_features", {"goalie_status": "UNCONFIRMED"}),
+        **kwargs,
+    )
 
 
 def test_feature_snapshot_hash_changes_when_material_news_is_added():
@@ -72,14 +129,10 @@ def test_feature_snapshot_hash_changes_when_material_news_is_added():
 
 
 def test_genuine_scorer_response_verifies_rescore_with_immutable_receipt():
-    out = dispatch_news_rescore(
-        _candidate(),
-        score_fn=_ok_scorer,
-        observed_at=NOW,
-        baseline_features={"goalie_status": "UNCONFIRMED"},
-    )
+    out = _dispatch_ok()
     assert out["dispatch_status"] == "NEWS_RESCORE_VERIFIED"
     assert out["model_rescore_verified"] is True
+    assert out["persistence_authenticated"] is True
     assert out["scoring_attempted"] is True
     assert out["feature_snapshot_changed"] is True
     assert out["before_feature_snapshot_hash"] != out["after_feature_snapshot_hash"]
@@ -89,6 +142,20 @@ def test_genuine_scorer_response_verifies_rescore_with_immutable_receipt():
     assert out["can_execute"] is False
     assert out["prediction_authority"] is False
     assert len(out["receipt_sha256"]) == 64
+
+
+def test_scorer_echoed_terminal_alone_never_verifies_without_store_readback():
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=_ok_scorer,
+        persistence_readback_fn=None,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PERSISTENCE_UNVERIFIED"
+    assert out["model_rescore_verified"] is False
+    assert out["persistence_authenticated"] is False
+    assert "NEWS_PERSISTENCE_STORE_NOT_BOUND" in out["blockers"]
 
 
 def test_forged_provider_id_and_unverified_identity_cannot_rescore():
@@ -148,14 +215,9 @@ def test_scorer_claiming_execution_authority_is_rejected():
 
 def test_missing_or_mismatched_feature_hash_never_verifies():
     def missing_hash(request):
-        return {
-            "ok": True,
-            "code": "NEWS_FITTED_RESCORE_COMPLETE",
-            "model_version": "nhl-llp-fixture-v17.test",
-            "calibrated_probability": 0.61,
-            "prediction_authority": False,
-            "can_execute": False,
-        }
+        body = _ok_scorer(request)
+        del body["feature_snapshot_hash"]
+        return body
 
     out = dispatch_news_rescore(
         _candidate(),
@@ -168,7 +230,7 @@ def test_missing_or_mismatched_feature_hash_never_verifies():
 
     def wrong_hash(request):
         return {
-            **missing_hash(request),
+            **_ok_scorer(request),
             "feature_snapshot_hash": "d" * 64,
         }
 
@@ -198,12 +260,7 @@ def test_prop_target_is_passed_to_scorer_and_receipt():
             "point": 2.5,
         },
     )
-    out = dispatch_news_rescore(
-        candidate,
-        score_fn=capture,
-        observed_at=NOW,
-        baseline_features={"goalie_status": "UNCONFIRMED"},
-    )
+    out = _dispatch_ok(candidate=candidate, score_fn=capture)
     assert out["dispatch_status"] == "NEWS_RESCORE_VERIFIED"
     assert seen["request"]["prop_target"] == {
         "participant": "Ilya Sorokin",
@@ -229,3 +286,156 @@ def test_official_start_cutoff_blocks_post_start_rescore():
     )
     assert out["dispatch_status"] == "NEWS_RESCORE_EVENT_ALREADY_STARTED"
     assert out["model_rescore_verified"] is False
+
+
+def test_missing_calibrated_pair_never_verifies():
+    def missing_both(request):
+        body = _ok_scorer(request)
+        body["calibrated_probability"] = None
+        body["calibrated_lower_bound"] = None
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=missing_both,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PROBABILITY_INVALID"
+    assert out["model_rescore_verified"] is False
+    assert "CALIBRATED_PROBABILITY_REQUIRED" in out["blockers"]
+
+    def missing_lower(request):
+        body = _ok_scorer(request)
+        del body["calibrated_lower_bound"]
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=missing_lower,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_LOWER_BOUND_INVALID"
+    assert out["model_rescore_verified"] is False
+
+
+def test_nan_inf_and_inverted_lower_bound_never_verify():
+    def nan_prob(request):
+        body = _ok_scorer(request)
+        body["calibrated_probability"] = float("nan")
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=nan_prob,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PROBABILITY_INVALID"
+    assert out["model_rescore_verified"] is False
+
+    def inverted(request):
+        body = _ok_scorer(request)
+        body["calibrated_probability"] = 0.40
+        body["calibrated_lower_bound"] = 0.55
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=inverted,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_LOWER_BOUND_ORDER_INVALID"
+    assert out["model_rescore_verified"] is False
+    assert out["calibrated_probability"] is None
+
+
+def test_missing_immutable_or_terminal_evidence_never_verifies():
+    def missing_immutable(request):
+        body = _ok_scorer(request)
+        del body["immutable_prediction_id"]
+        return body
+
+    out = _dispatch_ok(score_fn=missing_immutable)
+    assert out["dispatch_status"] == "NEWS_RESCORE_IMMUTABLE_PREDICTION_MISSING"
+    assert out["model_rescore_verified"] is False
+
+    def missing_store_terminal(request, response):
+        body = _ok_persistence(request, response)
+        del body["terminal_readback"]
+        return body
+
+    out = _dispatch_ok(persistence_readback_fn=missing_store_terminal)
+    assert out["dispatch_status"] == "NEWS_RESCORE_TERMINAL_READBACK_MISSING"
+    assert out["model_rescore_verified"] is False
+
+
+def test_route_mismatch_and_prior_receipt_collision_never_verify():
+    def wrong_route(request):
+        body = _ok_scorer(request)
+        body["controlling_specialist_route"] = "WRONG_ROUTE"
+        return body
+
+    out = dispatch_news_rescore(
+        _candidate(),
+        score_fn=wrong_route,
+        observed_at=NOW,
+        baseline_features={"goalie_status": "UNCONFIRMED"},
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_ROUTE_MISMATCH"
+    assert out["model_rescore_verified"] is False
+
+    def reused_prior(request):
+        body = _ok_scorer(request)
+        # Scorer rewrites prior to the new id; request still carries the original.
+        body["prior_immutable_prediction_id"] = body["immutable_prediction_id"]
+        return body
+
+    out = _dispatch_ok(score_fn=reused_prior)
+    assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_NOT_PRESERVED"
+    assert out["model_rescore_verified"] is False
+
+    def colliding_store(request, response):
+        body = _ok_persistence(request, response)
+        body["prior_immutable_prediction_id"] = response.get("immutable_prediction_id")
+        body["prior_immutable_prediction_preserved"] = True
+        return body
+
+    out = _dispatch_ok(
+        candidate=_candidate(prior_immutable_prediction_id="pred-news-rescore-001"),
+        score_fn=reused_prior,
+        persistence_readback_fn=colliding_store,
+    )
+    assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_COLLISION"
+    assert out["model_rescore_verified"] is False
+
+
+def test_prior_receipt_must_remain_in_authenticated_store():
+    def drop_prior(request, response):
+        body = _ok_persistence(request, response)
+        body["prior_immutable_prediction_id"] = None
+        body["prior_immutable_prediction_preserved"] = False
+        return body
+
+    out = _dispatch_ok(persistence_readback_fn=drop_prior)
+    assert out["dispatch_status"] == "NEWS_RESCORE_PRIOR_RECEIPT_NOT_PRESERVED"
+    assert out["model_rescore_verified"] is False
+
+
+def test_unlinked_store_terminal_never_verifies_and_is_not_synthesized():
+    def unlinked_terminal(request, response):
+        body = _ok_persistence(request, response)
+        body["terminal_readback"] = {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+        }
+        return body
+
+    out = _dispatch_ok(persistence_readback_fn=unlinked_terminal)
+    assert out["dispatch_status"] == "NEWS_RESCORE_TERMINAL_LINKAGE_MISSING"
+    assert out["model_rescore_verified"] is False
+    assert out.get("immutable_prediction_id") is None or out.get("model_rescore_verified") is False
+    assert "TERMINAL_LINKAGE_MISSING_ALL" in (out.get("blockers") or [])

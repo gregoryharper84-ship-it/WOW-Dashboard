@@ -71,6 +71,43 @@ def _ok_scorer(request):
         "feature_snapshot_hash": request["feature_snapshot_hash"],
         "calibrated_probability": 0.58,
         "calibrated_lower_bound": 0.51,
+        "immutable_prediction_id": "pred-nhl-news-e2e-001",
+        "prior_immutable_prediction_id": "pred-nhl-original-001",
+        "calibration_receipt_id": "calib-nhl-e2e-001",
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+
+def _ok_persistence(request, response):
+    return {
+        "ok": True,
+        "authenticated": True,
+        "immutable_prediction_id": response.get("immutable_prediction_id"),
+        "prior_immutable_prediction_id": response.get("prior_immutable_prediction_id"),
+        "prior_immutable_prediction_preserved": True,
+        "calibration_receipt_id": response.get("calibration_receipt_id"),
+        "official_event_id": request.get("official_event_id"),
+        "sport_key": request.get("sport_key"),
+        "controlling_specialist_route": request.get("controlling_specialist_route"),
+        "feature_snapshot_hash": request.get("feature_snapshot_hash"),
+        "model_version": response.get("model_version"),
+        "calibrated_probability": response.get("calibrated_probability"),
+        "calibrated_lower_bound": response.get("calibrated_lower_bound"),
+        "prop_target": request.get("prop_target"),
+        "terminal_readback": {
+            "authority": "V17_TERMINAL_REDUCER",
+            "status": "HOLD_RESEARCH_RESCORE",
+            "can_execute": False,
+            "immutable_prediction_id": response.get("immutable_prediction_id"),
+            "calibration_receipt_id": response.get("calibration_receipt_id"),
+            "feature_snapshot_hash": request.get("feature_snapshot_hash"),
+        },
+        "store_attestation": {
+            "source": "TEST_DOUBLE_NOT_PRODUCTION",
+            "read_at_utc": NOW.isoformat(),
+        },
         "prediction_authority": False,
         "can_execute": False,
     }
@@ -151,6 +188,8 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
             "team_event_candidates": [{
                 **identity,
                 "event_start_utc": "2026-11-24T00:30:00Z",
+                "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
+                "prior_immutable_prediction_id": "pred-nhl-original-001",
                 "baseline_features": {"goalie_status": "UNCONFIRMED"},
             }],
             "prop_candidates": [],
@@ -162,26 +201,46 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
     assert attached["news_reviewed_facts_bridge"]["status"] == "NEWS_REVIEWED_FACTS_ATTACHED"
     assert attached["news_reviewed_facts_bridge"]["candidates_attached"] == 1
 
-    # Default enrich_handoff uses unbound scorer → MODEL_UNAVAILABLE.
-    # Re-dispatch with a genuine scorer to prove the fitted path.
+    # Default enrich_handoff binds the production registry; without a registered
+    # adapter the route remains typed MODEL_UNAVAILABLE (not a synthetic score).
     enriched = enrich_handoff(attached)
     candidate = enriched["model_handoff"]["team_event_candidates"][0]
     assert candidate["news_research_handoff"]["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
     assert candidate["news_research_rescore_requested"] is True
     assert candidate["news_fitted_rescore_receipt"]["dispatch_status"] == "NEWS_RESCORE_MODEL_UNAVAILABLE"
+    assert "MODEL_UNAVAILABLE" in candidate["news_fitted_rescore_receipt"]["blockers"]
     assert candidate["news_model_rescore_verified"] is False
     assert candidate["can_execute"] is False
 
-    verified = dispatch_news_rescores_for_handoff(
+    # Scorer-echoed ids alone remain unverified without store readback.
+    echoed_only = dispatch_news_rescores_for_handoff(
         enriched, score_fn=_ok_scorer, observed_at=NOW,
+    )
+    echoed_receipt = echoed_only["model_handoff"]["team_event_candidates"][0][
+        "news_fitted_rescore_receipt"
+    ]
+    assert echoed_receipt["dispatch_status"] == "NEWS_RESCORE_PERSISTENCE_UNVERIFIED"
+    assert echoed_receipt["model_rescore_verified"] is False
+
+    verified = dispatch_news_rescores_for_handoff(
+        enriched,
+        score_fn=_ok_scorer,
+        persistence_readback_fn=_ok_persistence,
+        observed_at=NOW,
     )
     row = verified["model_handoff"]["team_event_candidates"][0]
     receipt = row["news_fitted_rescore_receipt"]
     assert receipt["dispatch_status"] == "NEWS_RESCORE_VERIFIED"
     assert receipt["model_rescore_verified"] is True
+    assert receipt["persistence_authenticated"] is True
     assert receipt["fitted_model_version"] == "nhl-llp-fixture-v17.e2e"
     assert receipt["before_feature_snapshot_hash"] != receipt["after_feature_snapshot_hash"]
     assert receipt["calibrated_probability"] == 0.58
+    assert receipt["calibrated_lower_bound"] == 0.51
+    assert receipt["immutable_prediction_id"] == "pred-nhl-news-e2e-001"
+    assert receipt["prior_immutable_prediction_id"] == "pred-nhl-original-001"
+    assert receipt["calibration_receipt_id"] == "calib-nhl-e2e-001"
+    assert receipt["terminal_readback"]["authority"] == "V17_TERMINAL_REDUCER"
     assert receipt["can_execute"] is False
     assert verified["news_fitted_rescore_summary"]["rescore_verified"] == 1
     assert verified["can_execute"] is False
@@ -282,3 +341,90 @@ def test_adversarial_forged_id_and_duplicate_syndication_never_qualify():
     )
     assert producer["producer_status"] == "NEWS_REVIEW_HIGH_IMPACT_CONFIRMATION_REQUIRED"
     assert producer["can_execute"] is False
+
+
+def test_unaffected_peer_event_and_unregistered_route_stay_hold():
+    from v17.context_change_impact import ALL_MARKET_FAMILIES, assess_context_change_impact
+    from v17.news_fitted_scorer_binding import (
+        clear_news_fitted_scorer_registry,
+        production_news_fitted_scorer,
+    )
+
+    clear_news_fitted_scorer_registry()
+    affected = {
+        "sport_key": "americanfootball_nfl",
+        "official_event_id": "2026112701",
+        "official_event_identity_verified": True,
+        "event_start_utc": "2026-11-27T18:00:00Z",
+        "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
+        "can_execute": False,
+        "news_research_handoff": {
+            "research_status": "NEWS_RESEARCH_RESCORE_REQUESTED",
+            "research_rescore_requested": True,
+            "receipt_sha256": "b" * 64,
+            "source_receipt_sha256": "a" * 64,
+            "official_event_id": "2026112701",
+            "sport_key": "americanfootball_nfl",
+            "event_start_utc": "2026-11-27T18:00:00+00:00",
+            "news_context": [{
+                "evidence_kind": "INJURY_STATUS",
+                "subject_id": "IND-QB",
+                "fact_value": "OUT",
+                "material_change": True,
+                "source_url": "https://www.nfl.com/news/qb-out",
+                "independent_review_ref": "sirt-1",
+                "independently_reviewed_at_utc": "2026-11-26T17:00:00+00:00",
+            }],
+            "prediction_authority": False,
+            "can_execute": False,
+        },
+    }
+    peer = {
+        "sport_key": "americanfootball_nfl",
+        "official_event_id": "2026112702",
+        "official_event_identity_verified": True,
+        "event_start_utc": "2026-11-27T21:00:00Z",
+        "controlling_specialist_route": "LLP_TEAM_BETTING_ENGINE",
+        "can_execute": False,
+        "news_research_handoff": {
+            "research_status": "NEWS_CONTEXT_RESEARCH_ONLY",
+            "research_rescore_requested": False,
+            "receipt_sha256": "d" * 64,
+            "source_receipt_sha256": "a" * 64,
+            "official_event_id": "2026112702",
+            "sport_key": "americanfootball_nfl",
+            "event_start_utc": "2026-11-27T21:00:00+00:00",
+            "news_context": [],
+            "prediction_authority": False,
+            "can_execute": False,
+        },
+    }
+    impact = assess_context_change_impact(
+        affected, affected["news_research_handoff"], now=NOW,
+    )
+    assert impact["research_invalidation_requested"] is True
+    assert set(impact["affected_market_families"]) == set(ALL_MARKET_FAMILIES)
+
+    peer_impact = assess_context_change_impact(
+        peer, peer["news_research_handoff"], now=NOW,
+    )
+    assert peer_impact["research_invalidation_requested"] is False
+    assert peer_impact["affected_market_families"] == []
+
+    payload = {
+        "can_execute": False,
+        "model_handoff": {
+            "team_event_candidates": [affected, peer],
+            "prop_candidates": [],
+        },
+    }
+    out = dispatch_news_rescores_for_handoff(
+        payload, score_fn=production_news_fitted_scorer, observed_at=NOW,
+    )
+    rows = out["model_handoff"]["team_event_candidates"]
+    assert rows[0]["news_fitted_rescore_receipt"]["dispatch_status"] == (
+        "NEWS_RESCORE_MODEL_UNAVAILABLE"
+    )
+    assert "news_fitted_rescore_receipt" not in rows[1]
+    assert out["news_fitted_rescore_summary"]["rescore_verified"] == 0
+    assert out["can_execute"] is False

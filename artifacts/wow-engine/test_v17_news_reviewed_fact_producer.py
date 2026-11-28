@@ -103,6 +103,17 @@ def test_stale_or_unconfirmed_claims_are_rejected():
     assert out["rejected_claims"][0]["reason"] == "CLAIM_NOT_CONFIRMED"
 
 
+def test_missing_sibling_bundle_is_explicit_not_present(tmp_path: Path):
+    payload = {
+        "can_execute": False,
+        "model_handoff": {"team_event_candidates": [], "prop_candidates": []},
+    }
+    out = attach_reviewed_facts_bundle(payload, tmp_path / "model-handoff.json")
+    assert out["news_reviewed_facts_bridge"]["status"] == "NEWS_REVIEWED_FACTS_NOT_PRESENT"
+    assert out["news_reviewed_facts_bridge"]["candidates_attached"] == 0
+    assert out["news_reviewed_facts_bridge"]["can_execute"] is False
+
+
 def test_bundle_attaches_only_to_verified_matching_events(tmp_path: Path):
     bundle = produce_reviewed_facts(DISCOVERY, [CLAIM], observed_at=NOW, source_receipt_sha256=DIGEST)
     (tmp_path / "news-reviewed-facts.json").write_text(json.dumps(bundle), encoding="utf-8")
