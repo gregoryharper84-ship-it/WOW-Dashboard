@@ -97,10 +97,17 @@ def _spread_forward_warm_error_code(exc: Exception) -> str:
     return type(exc).__name__
 
 
+# Postgres emits SQLSTATE 57014 (query_canceled/statement_timeout) when the warm
+# loses a startup contention race. It is transient, not a deterministic contract
+# failure, so it may use the existing bounded retry (#2663/#2666). A persistent
+# 57014 still exhausts all attempts and ends FAILED.
+_SPREAD_FORWARD_TRANSIENT_DB_ERROR_CODES = frozenset({"PGRST002", "57014"})
+
+
 def _spread_forward_warm_failure_is_transient(exc: Exception) -> bool:
     return (
         type(exc).__name__ == "ReadTimeout"
-        or _spread_forward_warm_error_code(exc) == "PGRST002"
+        or _spread_forward_warm_error_code(exc) in _SPREAD_FORWARD_TRANSIENT_DB_ERROR_CODES
     )
 
 
