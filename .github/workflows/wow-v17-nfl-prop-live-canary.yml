@@ -21,6 +21,7 @@ jobs:
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      WOW_CANARY_ACQUIRE_FIXTURES: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +34,12 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
+      - name: Install governed acquisition dependencies
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       - name: Validate multi-sport canary configuration
         working-directory: artifacts/wow-engine
         run: python v17/multisport_prop_live_canary.py self-test
@@ -42,16 +49,21 @@ jobs:
         shell: bash
         working-directory: artifacts/wow-engine
         run: |
-          if python v17/multisport_prop_live_canary.py check-live-fixtures; then
+          set +e
+          output=$(python v17/multisport_prop_live_canary.py check-live-fixtures --emit-fixtures acquired-fixtures.json)
+          status=$?
+          set -e
+          echo "$output"
+          echo "$output" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -eq 0 ]; then
             echo "eligible=true" >> "$GITHUB_OUTPUT"
           else
             echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Live canary coverage not run::Static NFL/MLB/WNBA fixtures are historical; do not submit stale events."
-            echo "### LIVE_CANARY_NOT_RUN_STALE_STATIC_FIXTURES" >> "$GITHUB_STEP_SUMMARY"
-            echo "No authenticated live model canary was performed. Current pregame fixture acquisition is still required." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Live canary coverage not run::No eligible future pregame rows were acquired; no stale event was submitted."
           fi
+          exit 0
 
       - name: Run future-dated governed live canaries and stress
         if: steps.fixture-check.outputs.eligible == 'true'
         working-directory: artifacts/wow-engine
-        run: python v17/multisport_prop_live_canary.py all
+        run: python v17/multisport_prop_live_canary.py all --fixtures-from acquired-fixtures.json

@@ -248,6 +248,54 @@ def test_empty_strikeout_history_is_prewrite_hold_not_snapshot_write_failure(
     assert result["can_execute"] is False
 
 
+class _HTTPRefusal(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.response = _RefusedResponse(status_code)
+
+
+class _RefusedResponse:
+    """A schedule response that refuses the date instead of serving a slate."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        raise _HTTPRefusal(self.status_code)
+
+    def json(self):
+        raise AssertionError("a refused date has no payload to read")
+
+
+@pytest.mark.parametrize("status_code", [404, 406])
+def test_schedule_date_refusal_is_an_empty_slate_not_a_blocker(status_code: int):
+    result = subject.acquire_mlb_forward_evidence_batch(
+        subject.MLBForwardEvidenceRequest(requested_date="2026-11-29"),
+        db=_DB(),
+        now=NOW,
+        http_get=lambda *_a, **_k: _RefusedResponse(status_code),
+    )
+
+    assert result["status"] == "COMPLETED"
+    assert result["total_candidates"] == 0
+    assert result["attempted"] == 0
+    assert result["blockers"] == []
+    assert result["can_execute"] is False
+
+
+def test_schedule_transport_failure_stays_data_unobtainable():
+    result = subject.acquire_mlb_forward_evidence_batch(
+        subject.MLBForwardEvidenceRequest(requested_date="2026-09-28"),
+        db=_DB(),
+        now=NOW,
+        http_get=lambda *_a, **_k: _RefusedResponse(503),
+    )
+
+    assert result["status"] == "DATA_UNOBTAINABLE"
+    assert result["blockers"] == ["MLB_PROP_SCHEDULE_ACQUISITION_FAILED:_HTTPRefusal"]
+    assert result["can_execute"] is False
+
+
 def test_actual_snapshot_upsert_failure_owns_run_invalid_write_status(
     monkeypatch: pytest.MonkeyPatch,
 ):
