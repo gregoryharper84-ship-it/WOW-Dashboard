@@ -275,8 +275,8 @@ def build_dispatch(handoff: dict[str, Any]) -> dict[str, Any]:
             for i, rows in enumerate(_chunks(prop_rows, MAX_PROP_ROWS))
         ],
         "team_event_batches": [
-            {"rows": rows}
-            for rows in _chunks(team_rows, MAX_TEAM_EVENT_ROWS)
+            {"request_id": f"{research_run_id}:team_events:{i + 1}", "rows": rows}
+            for i, rows in enumerate(_chunks(team_rows, MAX_TEAM_EVENT_ROWS))
         ],
         "mapping": {
             "source_prop_rows": len(raw_props),
@@ -301,14 +301,21 @@ def build_dispatch(handoff: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_json(origin: str, path: str, token: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    # Action invocation telemetry correlates via x-wow-request-id / x-request-id.
+    # Body-only request_id is not sufficient for sealed-destination receipt proof.
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    request_id = str((payload or {}).get("request_id") or "").strip()
+    if request_id:
+        headers["x-wow-request-id"] = request_id[:256]
+        headers["x-request-id"] = request_id[:256]
     request = Request(
         f"{origin.rstrip('/')}{path}",
         data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -355,9 +362,12 @@ def _dispatch_batches(
             "body": {"code": "AUTO_ADVANCE_INVALID_RECEIPT"},
             "can_execute": False,
         }
-        result["batch_key"] = str(
-            batch.get("request_id") or f"{lane}:{index + 1}"
-        )
+        request_id = str(batch.get("request_id") or "").strip()
+        result["batch_key"] = request_id or f"{lane}:{index + 1}"
+        if request_id:
+            # Durable outbound request identity for sealed-destination readback.
+            # Synthetic batch_key labels are never persistence proof.
+            result["request_id"] = request_id
         result["batch_index"] = index + 1
         result["can_execute"] = False
         return index, result
@@ -393,6 +403,8 @@ def execute_auto_advance(
     post_fn: Any = _post_json,
     max_in_flight: int = MAX_AUTO_ADVANCE_IN_FLIGHT,
     progress_fn: Any | None = None,
+    persistence_readback_by_id: Any | None = None,
+    configured_supabase_url: str | None = None,
 ) -> dict[str, Any]:
     try:
         dispatch = build_dispatch(handoff)
@@ -497,7 +509,7 @@ def execute_auto_advance(
         status = "AUTO_ADVANCE_COMPLETE"
         code = "AUTO_ADVANCE_RECONCILED"
 
-    return {
+    result = {
         **base,
         "status": status,
         "code": code,
@@ -516,6 +528,38 @@ def execute_auto_advance(
         "can_execute": False,
     }
 
+    # HTTP/transport success is not durable Action→DB provenance. When a
+    # readback function is supplied, require independent sealed-destination
+    # proof before any AUTO_ADVANCE_COMPLETE* status can stand.
+    if (
+        persistence_readback_by_id is not None
+        and str(result.get("status") or "").startswith("AUTO_ADVANCE_COMPLETE")
+    ):
+        from v17.action_persistence_provenance import (
+            claimed_receipt_ids_from_auto_advance,
+            verify_action_persistence_provenance,
+        )
+
+        url = str(
+            configured_supabase_url
+            or os.environ.get("SUPABASE_URL")
+            or ""
+        ).strip()
+        provenance = verify_action_persistence_provenance(
+            configured_supabase_url=url,
+            claimed_receipt_ids=claimed_receipt_ids_from_auto_advance(result),
+            readback_by_id=persistence_readback_by_id,
+        )
+        result["persistence_provenance"] = provenance
+        if provenance.get("persistence_readback_pass") is not True:
+            result["status"] = "BLOCKED_BACKEND_HANDOFF"
+            result["code"] = str(
+                provenance.get("code") or "PERSISTENCE_READBACK_MISSING"
+            )
+        result["can_execute"] = False
+
+    return result
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -524,11 +568,30 @@ def main() -> int:
     args = parser.parse_args()
 
     handoff = json.loads(Path(args.input).read_text(encoding="utf-8"))
-    receipt = execute_auto_advance(
-        handoff,
-        token=os.environ.get("WOW_ACTION_API_KEY"),
-        origin=ACTION_ORIGIN,
+    from v17.action_persistence_provenance import (
+        configured_supabase_url_from_env,
+        persistence_readback_by_id_from_env,
+        require_persistence_readback,
     )
+
+    readback = persistence_readback_by_id_from_env()
+    if require_persistence_readback() and readback is None:
+        receipt = {
+            "schema_version": "wow.v17.multiscout.auto-advance.v1",
+            "status": "BLOCKED_BACKEND_HANDOFF",
+            "code": "PERSISTENCE_CLIENT_UNAVAILABLE",
+            "source_run_id": handoff.get("run_id"),
+            "research_run_id": handoff.get("research_run_id"),
+            "can_execute": False,
+        }
+    else:
+        receipt = execute_auto_advance(
+            handoff,
+            token=os.environ.get("WOW_ACTION_API_KEY"),
+            origin=ACTION_ORIGIN,
+            persistence_readback_by_id=readback,
+            configured_supabase_url=configured_supabase_url_from_env() or None,
+        )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")

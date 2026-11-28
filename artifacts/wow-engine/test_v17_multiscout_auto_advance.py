@@ -325,3 +325,93 @@ def test_large_slate_uses_bounded_parallel_batches_and_deterministic_receipt_ord
     assert receipt["reconciliation"]["response_reconciliation_pass"] is True
     assert receipt["status"] == "AUTO_ADVANCE_COMPLETE"
     assert receipt["can_execute"] is False
+
+
+def test_auto_advance_complete_requires_persistence_readback_when_gate_supplied():
+    from v17.action_persistence_provenance import PERSISTENCE_READBACK_MISSING
+    from v17.production_release_admission import COMMITTED_APPLICATION_DATABASE_PROJECT_REF
+
+    def fake_post(origin, path, token, payload):
+        rows = payload.get("rows") or []
+        return {
+            "ok": True,
+            "http_status": 200,
+            "body": {
+                "rows": [
+                    {
+                        "row_key": row.get("row_key") or f"row-{index + 1}",
+                        "terminal_status": "COMPLETED",
+                        "can_execute": False,
+                    }
+                    for index, row in enumerate(rows)
+                ],
+                "reconciliation_pass": True,
+                "can_execute": False,
+            },
+            "can_execute": False,
+        }
+
+    red = execute_auto_advance(
+        _handoff(),
+        token="test-token",
+        origin="https://example.invalid",
+        post_fn=fake_post,
+        configured_supabase_url=f"https://{COMMITTED_APPLICATION_DATABASE_PROJECT_REF}.supabase.co",
+        persistence_readback_by_id=lambda _receipt_id: None,
+    )
+    assert red["status"] == "BLOCKED_BACKEND_HANDOFF"
+    assert red["code"] == PERSISTENCE_READBACK_MISSING
+    assert red["persistence_provenance"]["persistence_readback_pass"] is False
+    assert red["can_execute"] is False
+
+    green = execute_auto_advance(
+        _handoff(),
+        token="test-token",
+        origin="https://example.invalid",
+        post_fn=fake_post,
+        configured_supabase_url=f"https://{COMMITTED_APPLICATION_DATABASE_PROJECT_REF}.supabase.co",
+        persistence_readback_by_id=lambda receipt_id: {
+            "invocation_id": receipt_id,
+            "route": "/score-pick-request",
+            "can_execute": False,
+        },
+    )
+    assert green["status"] == "AUTO_ADVANCE_COMPLETE"
+    assert green["persistence_provenance"]["persistence_readback_pass"] is True
+    assert green["can_execute"] is False
+
+
+def test_post_json_stamps_request_id_headers_for_action_telemetry(monkeypatch):
+    from v17.multiscout_auto_advance import _post_json
+
+    captured = {}
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"can_execute":false}'
+
+    def fake_urlopen(request, timeout=120):
+        captured["headers"] = dict(request.headers)
+        return _Resp()
+
+    monkeypatch.setattr("v17.multiscout_auto_advance.urlopen", fake_urlopen)
+    receipt = _post_json(
+        "https://example.invalid",
+        "/score-pick-request",
+        "token",
+        {"request_id": "wow-scout-test-1:props:1", "rows": []},
+    )
+    assert receipt["ok"] is True
+    # urllib.Request title-cases header names; compare case-insensitively.
+    lowered = {str(key).lower(): value for key, value in captured["headers"].items()}
+    assert lowered.get("x-wow-request-id") == "wow-scout-test-1:props:1"
+    assert lowered.get("x-request-id") == "wow-scout-test-1:props:1"
+    assert receipt["can_execute"] is False

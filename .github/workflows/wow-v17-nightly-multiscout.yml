@@ -28,6 +28,7 @@ on:
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/v17/action_persistence_provenance.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue_installer.py"
       - "artifacts/wow-engine/v17/scout_handoff_terminal_acceptance.py"
@@ -67,6 +68,7 @@ on:
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/v17/action_persistence_provenance.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue_installer.py"
       - "artifacts/wow-engine/v17/scout_handoff_terminal_acceptance.py"
@@ -88,6 +90,7 @@ on:
       - "artifacts/wow-engine/test_v17_scout_secondary_window.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
+      - "artifacts/wow-engine/test_v17_action_persistence_provenance.py"
       - "artifacts/wow-engine/test_v17_scout_handoff_queue.py"
       - "artifacts/wow-engine/test_v17_scout_handoff_queue_migration.py"
       - "artifacts/wow-engine/test_v17_scout_handoff_terminal_acceptance.py"
@@ -140,6 +143,7 @@ jobs:
           test_v17_scout_secondary_window.py
           test_v17_nightly_multiscout_delivery.py
           test_v17_multiscout_auto_advance.py
+          test_v17_action_persistence_provenance.py
           test_v17_scout_handoff_queue.py
           test_v17_scout_handoff_queue_migration.py
           test_v17_scout_handoff_terminal_acceptance.py
@@ -318,9 +322,13 @@ jobs:
       WOW_SCOUT_REQUEST_DELAY_MS: "75"
       WOW_SCOUT_MARKET_CHUNK_SIZE: "10"
       WOW_SCOUT_ASYNC_HANDOFF_ENABLED: "true"
+      WOW_REQUIRE_PERSISTENCE_READBACK: "true"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       WOW_MARKET_EVIDENCE_ENABLED: "true"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
       SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:

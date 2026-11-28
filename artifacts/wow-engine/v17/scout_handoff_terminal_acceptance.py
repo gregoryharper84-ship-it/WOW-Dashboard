@@ -113,6 +113,49 @@ def _queue_governance_blockers(summary: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(blockers))
 
 
+def _apply_persistence_provenance(
+    summary: dict[str, Any],
+    blockers: list[str],
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Require sealed-destination DB readback when configured for Nightly.
+
+    HTTP COMPLETE from the Action host is not proof the durable rows landed in
+    the sealed application project. When ``WOW_REQUIRE_PERSISTENCE_READBACK`` is
+    set, missing client/config or missing rows fail closed.
+    """
+    from v17.action_persistence_provenance import (
+        claimed_receipt_ids_from_async_summary,
+        configured_supabase_url_from_env,
+        persistence_readback_by_id_from_env,
+        require_persistence_readback,
+        verify_action_persistence_provenance,
+    )
+
+    required = require_persistence_readback()
+    url = configured_supabase_url_from_env()
+    readback = persistence_readback_by_id_from_env()
+    if not required and readback is None:
+        return blockers, None
+    if required and readback is None:
+        blockers.append("PERSISTENCE_CLIENT_UNAVAILABLE")
+        return blockers, {
+            "status": "BLOCKED_WITH_EXACT_REASON",
+            "code": "PERSISTENCE_CLIENT_UNAVAILABLE",
+            "persistence_readback_pass": False,
+            "can_execute": False,
+        }
+    provenance = verify_action_persistence_provenance(
+        configured_supabase_url=url,
+        claimed_receipt_ids=claimed_receipt_ids_from_async_summary(summary),
+        readback_by_id=readback,
+    )
+    if provenance.get("persistence_readback_pass") is not True:
+        for code in provenance.get("blockers") or [provenance.get("code")]:
+            if code:
+                blockers.append(str(code))
+    return blockers, provenance
+
+
 def validate_terminal_summary(summary: dict[str, Any]) -> dict[str, Any]:
     rows_in = int(summary.get("rows_in") or 0)
     rows_completed = int(summary.get("rows_completed") or 0)
@@ -139,8 +182,9 @@ def validate_terminal_summary(summary: dict[str, Any]) -> dict[str, Any]:
     if processing_seen <= 0:
         blockers.append("SCOUT_TERMINAL_ACCEPTANCE_WORKER_PATH_NOT_PROVEN")
 
+    blockers, provenance = _apply_persistence_provenance(summary, blockers)
     blockers = list(dict.fromkeys(blockers))
-    return {
+    result = {
         "schema_version": "wow.v17.scout-handoff-terminal-acceptance.v1",
         "status": "PASS" if not blockers else "BLOCKED_WITH_EXACT_REASON",
         "source_run_id": summary.get("source_run_id"),
@@ -157,6 +201,9 @@ def validate_terminal_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "can_execute": False,
     }
+    if provenance is not None:
+        result["persistence_provenance"] = provenance
+    return result
 
 
 def wait_for_terminal(
