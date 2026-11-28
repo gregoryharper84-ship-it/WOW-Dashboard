@@ -1,0 +1,50 @@
+name: wow-v17-live-deploy-ancestry
+
+# Protected-main observation only. A pull_request head can never be live,
+# so this job reports nothing on pull requests; leaving it in a
+# pull_request-triggered workflow only produced a skipped check there.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-live-deploy-ancestry-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deployment-truth:
+    name: WOW live deployed-SHA ancestry (observation, never a deploy gate)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Assert live web/worker SHA is contained in protected main
+        id: ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          ANCESTRY_RECEIPT: live-deploy-ancestry.json
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          # Render's native checksPass trigger deploys this very commit. A
+          # lagging production SHA is therefore expected and reported, never a
+          # failure: the check asserts containment in main, not equality.
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "::notice::LIVE_SHA_ANCESTRY_UNVERIFIED: RENDER_API_KEY is not configured; no live readback was performed."
+            exit 0
+          fi
+          python -m v17.live_deploy_ancestry
+          python -c 'import json; b=json.load(open("live-deploy-ancestry.json")); print("live_ancestry", b["status"], "lag", b.get("observed_lag_commits"), "production_verified", b["production_verified"])'

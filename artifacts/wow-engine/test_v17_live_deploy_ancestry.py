@@ -177,22 +177,31 @@ def test_lagging_worker_writes_a_passing_pending_receipt(monkeypatch, tmp_path):
     assert body["production_verified"] is False
 
 
-def test_verify_workflow_runs_the_ancestry_check_off_the_deploy_commit_set():
+def test_ancestry_workflow_runs_the_ancestry_check_off_the_deploy_commit_set():
     """The assertion must be wired, non-deploying, and main-scoped only."""
     import yaml
 
     root = Path(__file__).resolve().parents[2]
-    text = (root / ".github/workflows/wow-engine-verify.yml").read_text()
+    path = root / ".github/workflows/wow-v17-live-deploy-ancestry.yml"
+    text = path.read_text()
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
+    # Main-scoped by its trigger, never by an in-job event guard: a job that
+    # skips on pull_request still reports a skipped check there, which is a
+    # non-passing commit status with no signal behind it.
+    assert "pull_request" not in workflow["on"]
+    assert workflow["on"]["push"]["branches"] == ["main"]
+    assert "workflow_dispatch" in workflow["on"]
     job = workflow["jobs"]["deployment-truth"]
-    assert job["if"] == ("github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' "
-                         "&& (github.event_name == 'push' || github.event_name == 'workflow_dispatch')")
+    assert "if" not in job
     assert job["permissions"] == {"contents": "read"}
     step = next(s for s in job["steps"] if s.get("id") == "ancestry")
     assert "v17.live_deploy_ancestry" in step["run"]
     assert "render.com/v1/services" not in text
     assert "gh pr merge" not in text
     assert "RENDER_API_KEY" in step["env"]
+    # The PR-triggered verify workflow must not re-register the observation job.
+    verify = (root / ".github/workflows/wow-engine-verify.yml").read_text()
+    assert "deployment-truth" not in verify
 
 
 @pytest.mark.parametrize("trigger", ["checksPass", "off"])
