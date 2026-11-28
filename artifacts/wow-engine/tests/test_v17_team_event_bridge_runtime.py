@@ -494,3 +494,40 @@ def test_screened_matchup_evidence_is_never_reported_as_consumed():
     assert audit["specialist_consumption_state"] == "NOT_DECLARED_BY_FITTED_VECTOR"
     assert audit["prediction_authority"] is False
     assert audit["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NFL", "NBA", "NCAAF", "NCAAB", "SOCCER", "TENNIS", "PGA"])
+def test_known_new_material_change_downgrades_registered_scorer_publication(sport):
+    # This tests the actual registered scorer return, not merely Scout metadata.
+    _register(sport, lambda *args, **kwargs: _valid_package(sport.lower()))
+    req = _request(sport)
+    req.latest_material_update_timestamp = "2026-09-09T18:00:00Z"
+    scored = _score(req)
+    assert scored["material_context_chronology_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert scored["probability_publishable"] is False
+    assert scored["rank_eligible"] is False
+    assert "CONTEXT_STALE_RECALC_REQUIRED" in scored["publication_blockers"]
+    assert scored["calibrated_probability"] == 0.72
+    assert scored["can_execute"] is False
+
+
+def test_registered_scorer_fresh_timestamp_is_only_chronology_not_consumption_attestation():
+    _register("NBA", lambda *args, **kwargs: _valid_package())
+    req = _request("NBA")
+    req.latest_material_update_timestamp = "2026-09-09T16:00:00Z"
+    scored = _score(req)
+    assert scored["material_context_chronology_status"] == "CHRONOLOGY_OK_CONSUMPTION_NOT_PROVEN"
+    assert scored["probability_publishable"] is True
+    assert scored["rank_eligible"] is True
+    assert scored["can_execute"] is False
+
+
+def test_registered_scorer_invalid_context_timestamp_holds_instead_of_publishing():
+    _register("NBA", lambda *args, **kwargs: _valid_package())
+    req = _request("NBA")
+    req.latest_material_update_timestamp = "invalid"
+    scored = _score(req)
+    assert scored["material_context_chronology_status"] == "CONTEXT_STALE_RECALC_REQUIRED"
+    assert scored["probability_publishable"] is False
+    assert scored["rank_eligible"] is False
+    assert scored["can_execute"] is False

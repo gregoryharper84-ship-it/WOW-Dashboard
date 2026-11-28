@@ -239,6 +239,11 @@ class NHLFeatureReconstruction:
     away_prior_games: int
     prior_event_count: int
     timeline_hash: str
+    # Uncapped days since each team's previous settled official start. Derived
+    # from the same server-owned timeline as rest_days_delta; None only for
+    # reconstructions built before these fields existed.
+    home_rest_days: float | None = None
+    away_rest_days: float | None = None
 
 
 def _verify_candidate(row: Mapping[str, Any]) -> NHLFittedCandidate:
@@ -882,6 +887,8 @@ def reconstruct_nhl_pregame_features(
         away_prior_games=int(away_state["games"]),
         prior_event_count=prior_count,
         timeline_hash=_sha256(timeline),
+        home_rest_days=float(home_rest),
+        away_rest_days=float(away_rest),
     )
 
 
@@ -1064,6 +1071,44 @@ def _evidence(req: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+SERVER_REST_TRAVEL_DERIVATION = "NHL_OFFICIAL_TIMELINE_PRIOR_START_V1"
+
+
+def _server_rest_travel(
+    reconstruction: NHLFeatureReconstruction, receipt: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Rest evidence derived server-side from the reconstructed official timeline.
+
+    The fitted model's rest features (``rest_days_delta`` and the two
+    back-to-back flags) are computed from this same timeline. A caller mapping
+    is never consumed by the model, so it cannot satisfy this input. Travel is
+    not a model feature and is reported as not modeled, never inferred.
+    """
+    home_rest = reconstruction.home_rest_days
+    away_rest = reconstruction.away_rest_days
+    if not all(
+        isinstance(v, float) and math.isfinite(v) and v > 0 for v in (home_rest, away_rest)
+    ):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT", ["NHL_REST_TRAVEL_UNAVAILABLE"]
+        )
+    return {
+        "derivation": SERVER_REST_TRAVEL_DERIVATION,
+        "source_policy_id": SOURCE_POLICY_ID,
+        "timeline_hash": reconstruction.timeline_hash,
+        "timeline_receipt_verified_at": str(receipt.get("verified_at") or "").strip() or None,
+        "feature_as_of": reconstruction.feature_as_of.isoformat(),
+        "home_rest_days": round(home_rest, 6),
+        "away_rest_days": round(away_rest, 6),
+        "home_back_to_back": bool(reconstruction.features.get("home_back_to_back")),
+        "away_back_to_back": bool(reconstruction.features.get("away_back_to_back")),
+        "travel": "NOT_MODELED",
+        "caller_value_consumed": False,
+        "market_features_used": False,
+        "can_execute": False,
+    }
+
+
 def score_current_nhl_event(
     req: Any, *, db: Any = None, now_utc: datetime | None = None,
     certified_candidate: NHLFittedCandidate | None = None,
@@ -1103,10 +1148,11 @@ def score_current_nhl_event(
         blockers.append("NHL_GOALIE_STATUS_STALE")
     if not str(evidence.get("goalie_identity_snapshot_id") or "").strip():
         blockers.append("NHL_GOALIE_IDENTITY_UNVERIFIED")
-    for key in ("injury_report", "rest_travel"):
-        value = evidence.get(key)
-        if not isinstance(value, Mapping) or not value:
-            blockers.append(f"NHL_{key.upper()}_UNAVAILABLE")
+    injury_report = evidence.get("injury_report")
+    if not isinstance(injury_report, Mapping) or not injury_report:
+        blockers.append("NHL_INJURY_REPORT_UNAVAILABLE")
+    # rest_travel is not a caller input: it is derived below from the same
+    # server-owned official timeline that produces the model's rest features.
     if not str(evidence.get("source_snapshot_id") or "").strip():
         blockers.append("NHL_SOURCE_SNAPSHOT_MISSING")
     if blockers:
@@ -1163,6 +1209,9 @@ def score_current_nhl_event(
         neutral_site=neutral_site,
         source_timeline_receipt=receipt,
     )
+    # Server-derived rest replaces any caller mapping before it can be echoed
+    # as consumed evidence. Fails closed if the timeline cannot provide it.
+    scoring_evidence["rest_travel"] = _server_rest_travel(reconstruction, receipt)
     package = score_nhl_fitted_candidate(
         candidate,
         reconstruction,

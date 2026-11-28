@@ -155,6 +155,12 @@ GOVERNANCE_WORKFLOWS_EXTRA = (
     ".github/workflows/wow-v17-engineering-auto-repair.yml",
 )
 TRUST_ROOT_PREFIXES = (".github/", ".agents/", ".claude/")
+# Credential verifiers for automation callers. No governance workflow names them
+# directly, so they are declared here rather than reached by the import closure.
+DECLARED_SECURITY_TRUST_ROOTS = (
+    "artifacts/wow-engine/github_actions_oidc.py",
+    "artifacts/wow-engine/mcp_acceptance_auth.py",
+)
 _REF_RE = re.compile(r"((?:artifacts|scripts|\.agents|\.github/scripts)/[A-Za-z0-9_./-]+\.(?:py|json|md|sh|ya?ml|txt))")
 _V17_IMPORT_RE = re.compile(r"\b(?:from|import)\s+v17\.([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -187,6 +193,9 @@ def governance_trust_roots(repo_root: Path) -> list[str]:
 
     A change to any of these can alter how the gates themselves decide, so it must
     never pass autonomously. Tests are excluded: they gate nothing at decision time.
+    A workflow that runs a test file does not make the code under test a gate, so
+    test files are neither roots nor import-closure seeds. Declared security
+    roots are always included.
     """
     repo_root = repo_root.resolve()
     workflows = [p for p in trust_root_paths(repo_root) if p.startswith(".github/workflows/")]
@@ -198,7 +207,8 @@ def governance_trust_roots(repo_root: Path) -> list[str]:
             found.add((repo_root / ref).resolve())
         for mod in _V17_IMPORT_RE.findall(text):
             found.add((repo_root / "artifacts/wow-engine/v17" / f"{mod}.py").resolve())
-    found = {f for f in found if f.is_file()}
+    found.update((repo_root / p).resolve() for p in DECLARED_SECURITY_TRUST_ROOTS)
+    found = {f for f in found if f.is_file() and not _is_test_path(f.relative_to(repo_root))}
     frontier = [f for f in found if f.suffix == ".py"]
     while frontier:
         nxt = []
@@ -209,7 +219,11 @@ def governance_trust_roots(repo_root: Path) -> list[str]:
                     nxt.append(dep)
         frontier = nxt
     rel = {str(f.relative_to(repo_root)) for f in found}
-    return sorted(r for r in rel if "/test" not in r and not Path(r).name.startswith("test_"))
+    return sorted(r for r in rel if not _is_test_path(Path(r)))
+
+
+def _is_test_path(rel: Path) -> bool:
+    return "/test" in str(rel) or rel.name.startswith("test_")
 
 
 def is_trust_root(path: str, governance_files: set[str] | frozenset[str]) -> bool:

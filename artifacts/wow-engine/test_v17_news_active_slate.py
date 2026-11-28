@@ -64,47 +64,59 @@ def test_slate_single_sport_and_daily_rotation():
     assert first != second
 
 
-def test_rate_limit_is_one_attempt_and_never_claims_recovery(monkeypatch):
-    calls = []
+def _gkg_blocked(*args, **kwargs):
+    return SimpleNamespace(
+        ok=False, code="SOURCE_NO_VALID_NEWS", status=200,
+        observed_at=AT.isoformat(), retry_after_seconds=None, data={})
+
+
+def test_rate_limit_is_one_doc_attempt_plus_gkg_fallback_without_claiming_recovery(
+        monkeypatch):
+    doc_calls = []
+    gkg_calls = []
+
     def blocked(*args, **kwargs):
-        calls.append(1)
+        doc_calls.append(1)
         return SimpleNamespace(
             ok=False, code="SOURCE_RATE_LIMITED", status=429,
             observed_at=AT.isoformat(), retry_after_seconds=None, data={})
+
+    def gkg_fail(*args, **kwargs):
+        gkg_calls.append(1)
+        return _gkg_blocked()
+
     monkeypatch.setattr(runner, "fetch_gdelt_news", blocked)
+    monkeypatch.setattr(runner, "fetch_gdelt_gkg_news", gkg_fail)
     receipt = runner.discover(AT, sport="basketball_nba")
-    assert calls == [1]
+    assert doc_calls == [1]
+    assert gkg_calls == [1]
     assert receipt["source_status"] == "BLOCKED"
     assert receipt["source_code"] == "SOURCE_RATE_LIMITED"
-    assert receipt["attempt_count"] == 1
-    assert receipt["attempts"] == [{
-        "attempt": 1, "delay_before_seconds": 0,
-        "http_status": 429, "source_code": "SOURCE_RATE_LIMITED",
-        "observed_at": AT.isoformat(), "retry_after_seconds": None,
-    }]
+    assert receipt["attempt_count"] == 2
+    assert receipt["attempts"][0]["channel"] == "GDELT_DOC"
+    assert receipt["attempts"][1]["channel"] == "GDELT_GKG_DUMP"
     assert receipt["total_wait_seconds"] == 0
     assert receipt["retry_deferred"] is True
+    assert receipt["fallback_status"] == "SOURCE_NO_VALID_NEWS"
     assert receipt["article_count"] == 0
     assert receipt["model_rescore_verified"] is False
     assert receipt["can_execute"] is False
 
 
 def test_retry_after_is_reported_but_never_slept_on(monkeypatch):
-    calls = []
     def blocked(*args, **kwargs):
-        calls.append(1)
         return SimpleNamespace(ok=False, code="SOURCE_RATE_LIMITED", status=429,
                                retry_after_seconds=1000,
                                observed_at=AT.isoformat(), data={})
     monkeypatch.setattr(runner, "fetch_gdelt_news", blocked)
+    monkeypatch.setattr(runner, "fetch_gdelt_gkg_news", _gkg_blocked)
     receipt = runner.discover(AT, sport="icehockey_nhl")
-    assert calls == [1]
     assert receipt["source_code"] == "SOURCE_RATE_LIMITED"
-    assert receipt["attempt_count"] == 1
+    assert receipt["attempt_count"] == 2
     assert receipt["retry_after_seconds"] == 1000
     assert receipt["attempts"][0]["retry_after_seconds"] == 1000
     assert receipt["total_wait_seconds"] == 0
-    assert receipt["retry_policy"]["same_run_retry"] is False
+    assert receipt["retry_policy"]["same_run_doc_retry"] is False
     assert receipt["retry_policy"]["recovery_verified"] is False
     assert receipt["can_execute"] is False
 
@@ -118,29 +130,44 @@ def test_successful_one_request_never_grants_model_authority(monkeypatch):
             observed_at=AT.isoformat(), data={"articles": [
                 {"title": "Discovery metadata", "evidence_only": True}]})
     monkeypatch.setattr(runner, "fetch_gdelt_news", accepted)
+    monkeypatch.setattr(
+        runner, "fetch_gdelt_gkg_news",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("gkg unused")))
     receipt = runner.discover(AT, sport="icehockey_nhl")
     assert calls == [1]
     assert receipt["source_status"] == "OK"
     assert receipt["article_count"] == 1
     assert receipt["attempt_count"] == 1
+    assert receipt["acquisition_path"] == "GDELT_DOC"
+    assert receipt["fallback_status"] == "NOT_ATTEMPTED"
     assert receipt["retry_deferred"] is False
     assert receipt["prediction_authority"] is False
     assert receipt["historical_pregame_eligible"] is False
     assert receipt["model_feature_eligible"] is False
 
 
-def test_timeout_preserves_source_failure_and_does_not_retry(monkeypatch):
-    calls = []
+def test_timeout_preserves_source_failure_and_tries_gkg_once(monkeypatch):
+    doc_calls = []
+    gkg_calls = []
+
     def timed_out(*args, **kwargs):
-        calls.append(1)
+        doc_calls.append(1)
         return SimpleNamespace(
             ok=False, code="SOURCE_TIMEOUT", status=None,
-            observed_at=AT.isoformat(), data={})
+            observed_at=AT.isoformat(), retry_after_seconds=None, data={})
+
+    def gkg_fail(*args, **kwargs):
+        gkg_calls.append(1)
+        return _gkg_blocked()
+
     monkeypatch.setattr(runner, "fetch_gdelt_news", timed_out)
+    monkeypatch.setattr(runner, "fetch_gdelt_gkg_news", gkg_fail)
     receipt = runner.discover(AT, sport="soccer")
-    assert calls == [1]
+    assert doc_calls == [1]
+    assert gkg_calls == [1]
     assert receipt["source_code"] == "SOURCE_TIMEOUT"
     assert receipt["source_status"] == "BLOCKED"
+    assert receipt["attempt_count"] == 2
     assert receipt["retry_deferred"] is False
     assert receipt["article_count"] == 0
     assert receipt["can_execute"] is False
@@ -196,6 +223,7 @@ def test_huge_market_handoff_uses_compact_event_sibling_without_loading_quotes(
         return {
             "source_status": "OK", "source_code": "SOURCE_FETCH_OK",
             "sport_key": sport, "articles": [], "attempt_count": 1,
+            "acquisition_path": "GDELT_DOC", "fallback_status": "NOT_ATTEMPTED",
             "retry_deferred": False, "prediction_authority": False,
             "can_execute": False, "model_feature_eligible": False,
         }
@@ -228,6 +256,8 @@ def test_missing_compact_sibling_reports_native_selection_blocker(
         calls.append(sport)
         return {"source_status": "BLOCKED", "source_code": "SOURCE_RATE_LIMITED",
                 "sport_key": sport, "articles": [], "attempt_count": 1,
+                "acquisition_path": "GDELT_DOC",
+                "fallback_status": "SOURCE_NO_VALID_NEWS",
                 "retry_deferred": True, "prediction_authority": False,
                 "can_execute": False}
     monkeypatch.setattr(runner, "discover", discover_stub)
@@ -237,8 +267,8 @@ def test_missing_compact_sibling_reports_native_selection_blocker(
     ])
     assert runner.main() == 0
     receipt = json.loads(dest.read_text())
-    assert calls == [None]  # Preserve the one-request fixed rotation fallback.
-    assert receipt["selection_policy"] == "SLATE_UNAVAILABLE_FIXED_ROTATION"
+    assert calls == [None]  # Preserve active-season rotation when slate missing.
+    assert receipt["selection_policy"] == "SLATE_UNAVAILABLE_ACTIVE_SEASON_ROTATION"
     assert receipt["slate_manifest_status"] == "NEWS_COMPACT_MANIFEST_MISSING"
     assert receipt["source_code"] == "SOURCE_RATE_LIMITED"
     assert receipt["attempt_count"] == 1

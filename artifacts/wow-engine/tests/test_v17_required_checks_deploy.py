@@ -226,7 +226,7 @@ def test_worker_only_service_drift_holds_before_any_write():
 
 
 def test_service_identity_drift_holds_before_any_write():
-    fake = Fake(services={"web": _service("web", trigger="off"), "worker": _service("worker")})
+    fake = Fake(services={"web": _service("web", trigger="commit"), "worker": _service("worker")})
     with pytest.raises(deployer.DeployHold, match="RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web"):
         _run(fake)
     assert fake.posts == []
@@ -380,3 +380,9 @@ def test_recovery_workflow_is_a_detected_and_sanctioned_render_writer():
     # Any other workflow that starts posting deploys is still foreign.
     texts["rogue.yml"] = 'run: curl -X "POST" https://api.render.com/v1/services/x/deploys'
     assert inventory_render_writers(texts)["foreign_posts"] == ["rogue.yml"]
+
+
+def test_deployer_is_the_writer_when_native_auto_deploy_is_off():
+    fake = Fake(services={"web": _service("web", trigger="off"), "worker": _service("worker", trigger="off")})
+    _run(fake)
+    assert len(fake.posts) == 2

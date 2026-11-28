@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import v17.news_event_research_handoff as news_handoff_module
+import v17.news_fitted_rescore_dispatch as rescore_dispatch_module
 from v17.news_event_research_handoff import reconcile_news_handoff
 from v17.news_fitted_rescore_dispatch import dispatch_news_rescores_for_handoff
 from v17.news_reviewed_fact_producer import attach_reviewed_facts_bundle, produce_reviewed_facts
@@ -79,6 +80,9 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
     # A league-official claim has a real 12h freshness ceiling. A test dated
     # Nov 22 must not silently expire when CI runs on Nov 23 or later.
     monkeypatch.setattr(news_handoff_module, "datetime", _fixed_news_clock(NOW))
+    # enrich_handoff dispatches the rescore with the wall clock; freeze it to
+    # the same instant so the fixed 2026-11-24T00:30Z start never expires.
+    monkeypatch.setattr(rescore_dispatch_module, "datetime", _fixed_news_clock(NOW))
     identity = resolve_multiscout_nhl_identity(
         {
             "sport_key": "icehockey_nhl",
@@ -185,6 +189,7 @@ def test_verified_nhl_news_path_produces_fitted_rescore_receipt(tmp_path: Path, 
     # Red/green regression: when time truly passes the official 12h limit,
     # the same article must lose rescore eligibility even before puck drop.
     monkeypatch.setattr(news_handoff_module, "datetime", _fixed_news_clock(NOW + timedelta(hours=13)))
+    monkeypatch.setattr(rescore_dispatch_module, "datetime", _fixed_news_clock(NOW + timedelta(hours=13)))
     expired = enrich_handoff(attached)
     expired_row = expired["model_handoff"]["team_event_candidates"][0]
     assert expired_row["news_research_handoff"]["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"

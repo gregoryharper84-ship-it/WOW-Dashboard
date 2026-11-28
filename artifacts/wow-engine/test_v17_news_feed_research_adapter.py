@@ -48,12 +48,14 @@ def test_public_source_returns_unverified_evidence_only(monkeypatch):
     assert item["historical_pregame_eligible"] is False
 
 
-def test_every_supported_sport_has_one_query_and_rotation_is_complete():
+def test_every_supported_sport_has_one_query_and_active_rotation_is_bounded():
     assert len(runner.SPORT_QUERIES) == len(news.WEIGHT_PROFILES) == 13
     assert {news.normalize_sport(x) for x, _ in runner.SPORT_QUERIES} == set(news.WEIGHT_PROFILES)
     start = datetime(2026, 11, 16, 0, tzinfo=timezone.utc)
-    sequence = [runner.selection(start + timedelta(hours=6*i))[0] for i in range(13)]
-    assert len(set(sequence)) == 13
+    active = set(runner.active_sport_keys(start))
+    sequence = [runner.selection(start + timedelta(hours=6 * i))[0] for i in range(len(active))]
+    assert set(sequence) == active
+    assert "baseball_mlb" not in active  # November off-season not daily-rotated
 
 
 @pytest.mark.parametrize("url", [

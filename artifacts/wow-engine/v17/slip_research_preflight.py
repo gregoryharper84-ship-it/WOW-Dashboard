@@ -12,12 +12,21 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Mapping, Sequence
 
+from v17.niche_prop_research import classify_niche_prop
+
 CAN_EXECUTE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 RESEARCH_CLASS = "RESEARCH_ONLY_UNCERTIFIED"
 _TOTALS = {"GAME_TOTAL", "TEAM_TOTAL", "TOTAL", "OVER_UNDER"}
 _PROPS = {"PLAYER_PROP", "PLAYER_POINTS", "PLAYER_REBOUNDS", "PLAYER_ASSISTS", "PROP"}
 _STANDARD_MAX_LEGS = 3
+# Research evidence is never an independently authenticated fitted model.
+# An asserted high-confidence label must be downgraded, regardless of
+# apparently favorable historic hit rates or an expensive favorite price.
+_HIGH_CONFIDENCE_CLAIMS = {
+    "STRONG", "STRONG_CONFIDENCE", "HIGH", "HIGH_CONFIDENCE",
+    "VERY_HIGH", "ELITE", "LOCK", "CERTIFIED", "FULL_MODEL",
+}
 _MARKET_ALIASES = {
     "ML": "MONEYLINE", "MONEYLINE": "MONEYLINE",
     "SPREAD": "POINT_SPREAD", "POINT_SPREAD": "POINT_SPREAD",
@@ -545,8 +554,65 @@ def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> 
             or _text(news.get("sport")).upper() != _text(leg.get("sport")).upper()
             or _text(news.get("official_event_id")) != _text(leg.get("official_event_id"))):
         return ["NEWS_PREGAME_VERIFICATION_UNVERIFIED"]
-    if news.get("material_change") is True and not _text(news.get("new_model_receipt_id")):
-        return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+    # A free-text receipt ID is not evidence that the fitted model saw the
+    # post-change lineup/role. This is a downgrade-only, research-level shape
+    # audit: even a passing caller-supplied receipt is NOT authenticated proof.
+    if news.get("material_change") is True:
+        receipt = news.get("new_model_receipt")
+        if not isinstance(receipt, Mapping):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        frozen = _time(receipt.get("frozen_at_utc"))
+        if (not _text(news.get("new_model_receipt_id"))
+                or _text(receipt.get("immutable_pregame_receipt_id")) != _text(news.get("new_model_receipt_id"))
+                or not _text(receipt.get("fitted_model_hash"))
+                or not _text(receipt.get("calibration_receipt_id"))
+                or _text(receipt.get("consumed_news_review_receipt_id")) != _text(news.get("independent_review_receipt_id"))
+                or frozen is None or frozen < seen or frozen > as_of or frozen >= start
+                or _text(receipt.get("sport")).upper() != _text(leg.get("sport")).upper()
+                or _text(receipt.get("official_event_id")) != _text(leg.get("official_event_id"))
+                or _market(receipt.get("market_family")) != _market(leg.get("market_family"))
+                or _text(receipt.get("market_period")).upper() != _text(leg.get("market_period")).upper()
+                or _text(receipt.get("side")).upper() != _text(leg.get("side")).upper()
+                or _text(receipt.get("settlement_basis")).upper() != _text(leg.get("settlement_basis")).upper()
+                or _line_key(receipt.get("exact_line")) != _line_key(leg.get("exact_line"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        market = _market(leg.get("market_family"))
+        if market in _PROPS and (
+                not _text(leg.get("official_player_id")) or not _text(leg.get("stat_type"))
+                or _text(receipt.get("official_player_id")) != _text(leg.get("official_player_id"))
+                or _text(receipt.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+        if market == "TEAM_TOTAL" and (
+                not _text(leg.get("selected_team_id"))
+                or _text(receipt.get("selected_team_id")) != _text(leg.get("selected_team_id"))):
+            return ["MATERIAL_NEWS_RESCORE_NOT_VERIFIED"]
+    return []
+
+
+def _context_impact_blockers(leg: Mapping[str, Any]) -> list[str]:
+    """Hold research candidates when event-wide news invalidation is pending.
+
+    Never use caller-supplied flags as proof that a fitted scorer consumed the
+    update. They may only downgrade the research card, not clear an invalidation.
+    """
+    impact = leg.get("context_change_impact")
+    recommendation_status = _text(leg.get("research_recommendation_status"))
+    impact_status = ""
+    if isinstance(impact, Mapping):
+        impact_status = _text(impact.get("impact_status"))
+        if impact.get("research_invalidation_requested") is True:
+            return ["CONTEXT_STALE_RECALC_REQUIRED"]
+    # Neither caller-supplied assessment can clear the other. A newer
+    # NO_MATERIAL_EVENT_RECEIPT is NOT a verified fitted rescore or a release
+    # of an earlier peer-derived stale recommendation.
+    stale_states = {
+        "CONTEXT_STALE_RECALC_REQUIRED", "CONTEXT_UNRESOLVED_REVIEW_REQUIRED",
+        "CONTEXT_MATERIAL_EVIDENCE_INVALID", "CONTEXT_RECEIPT_DIGEST_INVALID",
+        "CONTEXT_EVENT_IDENTITY_OR_START_UNRESOLVED",
+        "CONTEXT_EVIDENCE_EVENT_IDENTITY_MISMATCH", "CONTEXT_SPORT_NOT_MAPPED",
+    }
+    if recommendation_status in stale_states or impact_status in stale_states:
+        return ["CONTEXT_STALE_RECALC_REQUIRED"]
     return []
 
 
@@ -581,6 +647,8 @@ def audit_research_slips(
         if not isinstance(legs, list):
             legs = []
         blockers = []
+        if _text(slip.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+            blockers.append("SLIP_JOINT_CONFIDENCE_UNVERIFIED")
         if slip_id in seen_card_ids:
             blockers.append("RESEARCH_CARD_ID_DUPLICATE")
         seen_card_ids.add(slip_id)
@@ -595,7 +663,9 @@ def audit_research_slips(
                 leg_reports.append({"index": i, "blockers": ["RESEARCH_LEG_INVALID"]})
                 blockers.append("RESEARCH_LEG_INVALID")
                 continue
-            reasons: list[str] = []
+            reasons: list[str] = _context_impact_blockers(leg)
+            if _text(leg.get("confidence_label")).upper() in _HIGH_CONFIDENCE_CLAIMS:
+                reasons.append("RESEARCH_STRONG_CONFIDENCE_CLAIM_UNVERIFIED")
             identity = exact_key(leg)
             start = _time(leg.get("event_start_utc"))
             snapshot = _time(leg.get("source_snapshot_at_utc"))
@@ -606,6 +676,16 @@ def audit_research_slips(
             if _text(leg.get("market_family")).upper() not in _TOTALS | _PROPS | {"MONEYLINE", "ML", "POINT_SPREAD", "SPREAD"}:
                 reasons.append("MARKET_FAMILY_UNSUPPORTED")
             market = _market(leg.get("market_family"))
+            niche_research = classify_niche_prop(leg)
+            if (niche_research["stat_type"] == "FIELD_GOALS_MADE_COMBO"
+                    and _text(leg.get("sport")).upper() == "NFL"):
+                # The fitted prop manifest has no dedicated first-quarter
+                # two-kicker combo route. Never launder a combo into the
+                # individual-player prop contract, even with a plausible quote.
+                reasons.append("NFL_KICKER_COMBO_SPECIALIST_NOT_DECLARED")
+                if market == "PLAYER_PROP":
+                    reasons.append("NFL_KICKER_COMBO_NOT_SINGLE_PLAYER_PROP")
+                reasons.extend("NICHE_" + gap for gap in niche_research["identity_gaps"])
             if market in _TOTALS | _PROPS | {"POINT_SPREAD", "SPREAD"} and _number(leg.get("exact_line")) is None:
                 reasons.append("EXACT_LINE_MISSING")
             if not _text(leg.get("settlement_basis")):
@@ -644,6 +724,7 @@ def audit_research_slips(
             reasons = list(dict.fromkeys(reasons))
             leg_reports.append({"index": i, "row_id": leg.get("row_id"),
                                 "blockers": reasons, "research_only": True,
+                                "niche_prop_research": niche_research,
                                 "quote_independently_authenticated": False,
                                 "news_independently_authenticated": False,
                                 "model_probability_verified": False})
@@ -662,6 +743,10 @@ def audit_research_slips(
             "status": "RESEARCH_HOLD" if blockers else "RESEARCH_CONTEXT_REVIEWABLE_UNCERTIFIED",
             "blockers": blockers,
             "legs": leg_reports,
+            "niche_category_counts": dict(sorted(Counter(
+                item["niche_prop_research"]["category"]
+                for item in leg_reports if "niche_prop_research" in item
+            ).items())),
             "can_publish_as_certified": False,
             "model_rescore_verified": False,
             "joint_probability": None,

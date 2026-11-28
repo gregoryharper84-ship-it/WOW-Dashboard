@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 
 from v17.capability_build_registry import (
     TEAM_EVENT_BUILD_REGISTRY,
+    BuildStatus,
     capability_build_plan,
     validate_build_registry,
 )
@@ -29,13 +32,21 @@ def test_controlling_probability_is_d1_not_agent_reasoning(sport):
 
 def test_current_known_build_states_are_explicit():
     assert capability_build_plan("MLB").status == "CERTIFIED"
-    assert capability_build_plan("NFL").status == "FORWARD_EVIDENCE_PENDING"
+    assert capability_build_plan("NFL").status == "GOVERNED_CATALOG_CERTIFICATION_PENDING"
     assert capability_build_plan("NBA").status == "CURRENT_DATA_PENDING"
     assert capability_build_plan("WNBA").status == "CURRENT_DATA_PENDING"
     assert capability_build_plan("NCAAF").status == "EVIDENCE_CORPUS_PENDING"
     assert capability_build_plan("NHL").status == "EVIDENCE_CORPUS_PENDING"
     for sport in ("NCAAB", "SOCCER", "TENNIS", "PGA", "MMA", "BOXING", "CRICKET"):
         assert capability_build_plan(sport).status == "FITTED_SPECIALIST_PENDING"
+
+
+def test_every_registry_status_is_a_declared_build_status():
+    # Literal is typing-only; without this, a misspelled status would pass the
+    # per-sport assertions above and never be caught at runtime.
+    declared = set(get_args(BuildStatus))
+    for sport, plan in TEAM_EVENT_BUILD_REGISTRY.items():
+        assert plan.status in declared, sport
 
 
 def test_unknown_sport_cannot_be_silently_classified():

@@ -164,3 +164,78 @@ sports coverage to all 13 sports per run, independently authenticate a
 publisher, produce a fitted feature or establish news-triggered specialist
 rescoring. Only end-to-end evidence and independent QA can accept those
 distinct objectives. It remains research only; `can_execute=false`.
+
+
+## November 24, 2026 — user-readable public research newsfeed
+
+Existing research collection now publishes a **bounded human-readable newsfeed** without
+a new paid provider, scheduler, credential, crawler, or inferred model feature.
+
+- `wow-v17-scout-source-refresh` continues four existing scheduled acquisition
+  attempts per day. Each emits `gdelt-public-news/receipt.json` plus
+  **`newsfeed.json` and `newsfeed.md`** in the existing
+  `wow-v17-gdelt-public-news-<run>-<attempt>` artifact.
+- `wow-v17-nightly-multiscout` makes its normal single same-run GDELT
+  query after compact slate selection, then publishes a **separate, small**
+  `wow-v17-public-newsfeed-<run>-<attempt>` artifact containing
+  `public-gdelt-receipt.json`, `public-newsfeed.json` and
+  `public-newsfeed.md`. The same files are preserved in early discovery
+  recovery evidence. Artifacts retain the workflow's 90-day expiration.
+- The renderer records the SHA-256 of the **actual discovery receipt bytes**,
+  source code, timestamps, sampled sport, deduplicated headline groups,
+  source URLs, syndicated source instances, and explicit coverage states for
+  all 13 sports. HTML/Markdown-special headline characters are escaped.
+  No story bodies are copied. A missing, blocked, stale or invalid source
+  yields an explicit blocked newsfeed, **never a fabricated headline**.
+- The renderer has **no source fetch, extra API request or DB write**.
+  This is a **single-sport sample per run**, not a comprehensive daily
+  13-sport newsroom. The scheduled four polls, GDELT quota limitations,
+  and source-provider rights remain unchanged.
+- Neither an article title nor publication-date *claim* means it is a league,
+  team, or verified injury fact. Only the existing independent reviewed-fact
+  producer with exact authoritative event mapping may request a fitted
+  rescore. No unreviewed discovery can become a probability or alter weights.
+  `can_execute=false` and the global V17 terminal reducer are untouched.
+
+### Reading the newsfeed
+From GitHub Actions, open either workflow, select its **latest actual run**,
+and view/download its named news artifact. Read `newsfeed.md` for headlines
+and `newsfeed.json` for status and exact source SHA. Check `status` and
+`sampled_sport` before using any headline; never call an `OK` workflow
+a recovered source if the source JSON says `SOURCE_RATE_LIMITED`.
+
+**Final product acceptance** additionally requires a genuine recent
+source receipt, a run with nonempty valid headlines, independently verified
+publisher facts for material changes, a source-rights-approved durable
+persistence strategy if used as model data, and a fresh, immutable
+specialist+terminal receipt for *model* publication. A green CI test,
+artifact upload, or GDELT headline receipt is not that acceptance.
+
+
+## November 24, 2026 — GKG dump fallback + active-season sampling
+
+Live DOC ArtList probes and scheduled Actions receipts continue to show
+`SOURCE_RATE_LIMITED` / `SOURCE_TIMEOUT` with zero articles on shared egress.
+GDELT's own 429 body points high-traffic users at downloadable datasets.
+The GDELT Project ToU already covers those public dumps with attribution.
+
+**Engineering repair (acquisition path only):**
+
+1. Keep exactly one DOC ArtList request per run (no same-run DOC sleep/retry).
+2. On `SOURCE_RATE_LIMITED` or `SOURCE_TIMEOUT` only, attempt a **same-provider**
+   fallback: read `https://data.gdeltproject.org/gdeltv2/lastupdate.txt`, then
+   download at most two recent `*.gkg.csv.zip` slices (walk back 15-minute
+   stamps when the listed pointer 404s). Extract HTTPS `DocumentIdentifier`
+   URLs and `<PAGE_TITLE>` values matching the selected sport. Never download
+   publisher article bodies.
+3. Receipt fields: `acquisition_path` (`GDELT_DOC` or
+   `GDELT_GKG_DUMP_FALLBACK`), `fallback_status`, and per-attempt `channel`.
+4. Fixed source-refresh rotation now prefers **active-season** sports for the
+   current calendar month so four daily polls cover live leagues sooner.
+   Off-season sports remain in inventory as `NOT_SAMPLED_THIS_RUN` unless
+   explicitly requested. Multi-Scout compact-slate selection is unchanged.
+
+This does **not** enable ESPN/FOX/NewsAPI. Those remain rights-gated candidates.
+It does **not** authenticate publisher facts, map official events, or trigger
+fitted-specialist rescoring. Independent Verification must still confirm a
+scheduled nonempty artifact after merge. `can_execute=false`.

@@ -1601,3 +1601,85 @@ def test_registry_loader_recovers_after_overflowing_newest_metric():
     assert selected.created_at == datetime.fromisoformat(prior["created_at"])
     assert selected.publication_capable is False
     assert selected.research_screen_pass is True
+
+
+# --- rest_travel is server-derived from the official timeline (#1952) -------
+
+_CALLER_BLOCKERS_WITHOUT_EVIDENCE = {
+    "NHL_GOALIE_IDENTITY_UNVERIFIED",
+    "NHL_GOALIE_STATUS_STALE",
+    "NHL_INJURY_REPORT_UNAVAILABLE",
+    "NHL_SETTLEMENT_BASIS_UNVERIFIED",
+    "NHL_SOURCE_SNAPSHOT_MISSING",
+    "NHL_STARTING_GOALIE_NOT_CONFIRMED",
+}
+
+
+def test_rest_travel_is_not_a_caller_input_hold():
+    """Daily discovery rows carry no caller rest mapping; rest is server-owned."""
+    request = _request()
+    request.sport_specific_evidence = {"official_event_id": "2026029001"}
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.score_current_nhl_event(request, db=_DB(), now_utc=NOW)
+    assert caught.value.code == "MODEL_INPUTS_INSUFFICIENT"
+    assert set(caught.value.blockers) == _CALLER_BLOCKERS_WITHOUT_EVIDENCE
+    assert "NHL_REST_TRAVEL_UNAVAILABLE" not in caught.value.blockers
+
+
+def test_missing_caller_rest_travel_scores_with_server_derived_rest():
+    package = nhl.score_current_nhl_event(
+        _request(rest_travel=None), db=_DB(), now_utc=NOW
+    )
+    rest = package["evidence_consumed"]["rest_travel"]
+    reconstruction = _reconstruction()
+    assert rest["derivation"] == nhl.SERVER_REST_TRAVEL_DERIVATION
+    assert rest["source_policy_id"] == nhl.SOURCE_POLICY_ID
+    assert rest["timeline_hash"] == reconstruction.timeline_hash
+    assert rest["home_rest_days"] == round(reconstruction.home_rest_days, 6)
+    assert rest["away_rest_days"] == round(reconstruction.away_rest_days, 6)
+    assert rest["home_back_to_back"] is bool(reconstruction.features["home_back_to_back"])
+    assert rest["away_back_to_back"] is bool(reconstruction.features["away_back_to_back"])
+    assert rest["travel"] == "NOT_MODELED"
+    assert rest["caller_value_consumed"] is False
+    assert rest["can_execute"] is False
+    assert package["probability_publishable"] is False
+    assert package["can_execute"] is False
+
+
+def test_caller_rest_travel_cannot_override_or_change_probability():
+    bogus = {"home_days": 99, "away_days": 0, "travel": "TRANSATLANTIC"}
+    with_caller = nhl.score_current_nhl_event(
+        _request(rest_travel=bogus), db=_DB(), now_utc=NOW
+    )
+    without_caller = nhl.score_current_nhl_event(
+        _request(rest_travel=None), db=_DB(), now_utc=NOW
+    )
+    assert with_caller["evidence_consumed"]["rest_travel"] == (
+        without_caller["evidence_consumed"]["rest_travel"]
+    )
+    assert "home_days" not in with_caller["evidence_consumed"]["rest_travel"]
+    assert with_caller["raw_home_probability"] == without_caller["raw_home_probability"]
+
+
+def test_server_rest_travel_fails_closed_without_timeline_rest(monkeypatch):
+    original = nhl.reconstruct_nhl_pregame_features
+
+    def _no_rest(*args, **kwargs):
+        return replace(original(*args, **kwargs), home_rest_days=None)
+
+    monkeypatch.setattr(nhl, "reconstruct_nhl_pregame_features", _no_rest)
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.score_current_nhl_event(_request(), db=_DB(), now_utc=NOW)
+    assert caught.value.code == "MODEL_INPUTS_INSUFFICIENT"
+    assert caught.value.blockers == ("NHL_REST_TRAVEL_UNAVAILABLE",) or list(
+        caught.value.blockers
+    ) == ["NHL_REST_TRAVEL_UNAVAILABLE"]
+
+
+def test_reconstruction_exposes_rest_days_consistent_with_features():
+    reconstruction = _reconstruction()
+    capped = min(reconstruction.home_rest_days, 14.0) - min(reconstruction.away_rest_days, 14.0)
+    assert reconstruction.features["rest_days_delta"] == capped
+    assert reconstruction.features["home_back_to_back"] == (
+        1.0 if reconstruction.home_rest_days <= 1.5 else 0.0
+    )

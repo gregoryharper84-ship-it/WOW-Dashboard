@@ -240,7 +240,9 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         seen = set()
         # One database snapshot, with an exact server count. A configured
         # PostgREST row cap must produce HOLD rather than a healthy prefix.
-        result = (db.table("wow_nfl_forward_verified_grades").select("*", count="exact")
+        # Owner decision 2026-11-24 (#1939): the exact cohort is the V2
+        # LATEST_VALID_PREKICKOFF_V2 verified view, matching the V3 health row.
+        result = (db.table("wow_nfl_forward_verified_grades_v2").select("*", count="exact")
                   .eq("model_version", str(row["model_version"]))
                   .eq("model_artifact_id", str(row["model_artifact_id"]))
                   .order("official_event_id").execute())
@@ -253,7 +255,9 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
             if (not event_id or event_id in seen
                 or grade.get("model_version") != row["model_version"]
                 or str(grade.get("model_artifact_id")) != str(row["model_artifact_id"])
-                or grade.get("artifact_checksum") != saved_checksum):
+                or grade.get("artifact_checksum") != saved_checksum
+                or grade.get("schema_version") != "NFL_FORWARD_SHADOW_GRADE_V2"
+                or grade.get("selection_policy") != "LATEST_VALID_PREKICKOFF_V2"):
                 return False
             seen.add(event_id)
             cohort.append(ForwardGrade(**{field: grade[field] for field in ForwardGrade.__dataclass_fields__}))
@@ -265,7 +269,7 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         return False
     return bool(
         len(unique_games) >= minimum
-        and assessment.get("schema_version") == "NFL_FORWARD_CALIBRATION_HEALTH_V2"
+        and assessment.get("schema_version") == "NFL_FORWARD_CALIBRATION_HEALTH_V3"
         and model.get("active") is True
         and model.get("promoted") is True
         # Registry stays nonpublishing; independently certified terminal authority
