@@ -3,8 +3,15 @@
 - status: MERGED_PENDING_DEPLOY
 - severity: P1
 - domain: V17 multi-sport prop live canary / pregame evidence acquisition
-- primary_subsystem: V17_MULTISPORT_PROP_LIVE_CANARY
-- secondary_subsystems: [V17_PROP_EVIDENCE_ACQUISITION, V17_GITHUB_ACTIONS]
+- team_contract_version: "1.0"
+- primary_subsystem: DEPLOYMENT_RUNTIME
+- secondary_subsystems: []
+- workflow_stage: REPORTER_CLOSURE
+- current_owner: REPORTER_AGENT
+- reproduction_status: REPRODUCED
+- root_cause_status: CONFIRMED
+- risk_class: R1
+- protected_contracts_touched: []
 - created_utc: 2026-11-28T03:40:23Z
 - updated_utc: 2026-11-28T04:14:00Z
 - runtime_generation: V17_ACTIVE
@@ -80,7 +87,17 @@ governance checks passed before merge.
 
 - FIX-2026-11-28-001
 
+## Release Disposition
+
+Release status: `NOT_APPLICABLE`. This is canary/workflow-only code with no
+runtime deploy artifact; the dispatched run 46106105938 on merge commit
+`d1458c317` is the acceptance evidence, alongside push run 46106101546.
+`PRODUCTION_VERIFIED` is not claimed because no `deployed_commit` or
+`deployment_id` exists for a CI-only fix.
+
 ## Closure Criteria
 
-Merged and verified through a dispatched run on the merge commit. No runtime
-deployment is involved; final Reporter/governance closure remains open.
+Merged and verified through a dispatched run on the merge commit, with
+`release.status=NOT_APPLICABLE` recorded. Only the Reporter `FIXED_VERIFIED`
+receipt remains before `VERIFIED_CLOSED`; that receipt is deliberately not
+recorded here.
