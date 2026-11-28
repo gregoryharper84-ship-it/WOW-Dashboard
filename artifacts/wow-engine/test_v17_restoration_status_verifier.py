@@ -131,16 +131,19 @@ def query_for(sport: str) -> str:
     return matches[0]
 
 
-def verdict_expression(statement: str) -> str:
-    """The predicate or CASE a query assigns to ``model_certified``."""
-    marker = re.search(r"\bas\s+model_certified\b", statement, re.IGNORECASE)
+def verdict_expression(statement: str, alias: str = "model_certified") -> str:
+    """The predicate or CASE a query assigns to ``alias``."""
+    marker = re.search(rf"\bas\s+{alias}\b", statement, re.IGNORECASE)
     if marker is None:
-        raise AssertionError("statement does not assign model_certified")
+        raise AssertionError(f"statement does not assign {alias}")
     body = statement[: marker.start()].rstrip()
     if body.lower().endswith("end"):
-        start = body.lower().rfind("case")
-        if start != -1:
-            return body[start:].strip()
+        depth = 0
+        for token in reversed(list(re.finditer(r"\b(?:case|end)\b", body, re.IGNORECASE))):
+            depth += 1 if token.group(0).lower() == "end" else -1
+            if depth == 0:
+                return body[token.start() :].strip()
+        raise AssertionError("unbalanced CASE")
     if body.endswith(")"):
         depth = 0
         for i in range(len(body) - 1, -1, -1):
@@ -332,16 +335,30 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
             with self.subTest(sport=sport):
                 self.assertEqual(sum(marker in statement.lower() for statement in statements), 1)
 
+    def test_all_three_queries_return_the_same_verdict_row_shape(self):
+        """sport, verdict, reason_code, model_certified -- one row each, same order."""
+        # The final SELECT, not a CTE: `as reason_code` appears inside `judged`
+        # too, so searching the whole statement would prove nothing.
+        order = ("as sport", "judged.verdict", "judged.reason_code", "as model_certified")
+        for sport in QUERY_MARKERS:
+            statement = query_for(sport)
+            final = statement[statement.rindex("\nselect") :].lower()
+            with self.subTest(sport=sport):
+                self.assertIn("left join", statement.lower())  # cannot return zero rows
+                positions = [final.find(token) for token in order]
+                self.assertNotIn(-1, positions)
+                self.assertEqual(positions, sorted(positions))
+
     def test_nfl_verdict_reads_the_capability_row(self):
         lowered = self.nfl.lower()
         self.assertIn("wow_runtime_capabilities", lowered)
         self.assertRegex(lowered, r"capability_key\s*=\s*'nfl_event_probability'")
         # Joined, not merely declared: cap.* with no FROM entry is an invalid
         # query that a text-only check would happily approve.
-        self.assertRegex(lowered, r"\bjoin\s+capability\s+cap\b")
-        predicate = verdict_expression(self.nfl).lower()
-        self.assertRegex(predicate, r"capability_status\s*=\s*'available'")
-        self.assertIn("calibrator_ready", predicate)
+        self.assertRegex(lowered, r"\bjoin\s+capability\b")
+        # The gate lives in the scored CTE; the verdict is derived from it.
+        self.assertRegex(lowered, r"capability_status\s*=\s*'available'")
+        self.assertIn("calibrator_ready", lowered)
 
     def test_nfl_verdict_never_filters_the_dead_publishable_column(self):
         """wow_nfl_event_fitted_registry_not_probability_publication pins it false."""
@@ -353,6 +370,37 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
         self.assertNotIn("wow_calibrators", lowered)
         for column in ("market_family", "validation_status", "health_status"):
             self.assertNotIn(column, lowered)
+
+    def test_reason_codes_cover_every_unverified_branch(self):
+        """Each branch that can only be reached by absent evidence keeps its name."""
+        expectations = {
+            "NFL": ("NO_CAPABILITY_RECORD", "NO_CALIBRATOR_EVIDENCE", "NO_CALIBRATION_HEALTH_RECORD"),
+            "NBA": ("NO_CERTIFICATION_RECORD",),
+            "NCAAF": ("NO_ARTIFACT_RECORDED", "NO_ACTIVE_ARTIFACT"),
+        }
+        for sport, codes in expectations.items():
+            lowered = query_for(sport).lower()
+            for code in codes:
+                with self.subTest(sport=sport, code=code):
+                    self.assertIn(f"'{code.lower()}'", lowered)
+
+    def test_cte_joins_are_not_aliased_away(self):
+        """Aliasing a CTE then referencing its bare name is a 42P01 at runtime.
+
+        Scoped to the anchor join block: elsewhere the same CTE may legitimately
+        be aliased for a different SELECT, so a statement-wide check would flag
+        valid SQL such as `join champion ch on` inside `cohort`.
+        """
+        for sport in QUERY_MARKERS:
+            statement = query_for(sport).lower()
+            start = statement.find("from (select 1) anchor")
+            if start == -1:
+                continue
+            # The whole CTE holding the anchor, select list included.
+            block = statement[max(statement.rfind("),", 0, start), 0) : statement.find("\n),", start)]
+            for cte, _alias in re.findall(r"\bjoin\s+([a-z_]\w*)\s+([a-z_]\w*)\s+on\b", block):
+                with self.subTest(sport=sport, cte=cte):
+                    self.assertNotIn(f"{cte}.", block)
 
     def test_nfl_verdict_requires_calibrator_evidence_presence(self):
         self.assertRegex(self.nfl.lower(), r"evidence\s*->>\s*'calibrator_ready'\s+is\s+not\s+null")
@@ -378,6 +426,40 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
                     self.assertIn("'unverified'", statement.lower())
                     self.assertRegex(predicate.lower(), r"then\s+null")
 
+    def test_gates_are_not_weakened(self):
+        """Dropping any governed term must fail here, not silently relax a gate."""
+        nfl_gates = verdict_expression(self.nfl, "gates_pass").lower()
+        for term in (
+            "capability_status = 'available'",
+            "capability.calibrator_ready",
+            "champion.certified",
+            "status = 'pass'",
+            "certification_recommendation = 'forward_evidence_pass'",
+            "blockers = '[]'::jsonb",
+            "health.graded_n >= health.minimum_forward_required",
+            "cohort.graded_n >= health.minimum_forward_required",
+            "health.minimum_forward_required >= 100",
+        ):
+            self.assertIn(term, nfl_gates)
+
+        nba = query_for("NBA").lower()
+        self.assertRegex(nba, r"cert\.capability_status\s*=\s*'certified'\s+and\s+cert\.live_artifact")
+        nba_live = verdict_expression(query_for("NBA"), "live_artifact").lower()
+        for term in ("a.sport = c.sport", "a.model_artifact_version = c.model_artifact_version",
+                     "a.promoted", "a.active"):
+            self.assertIn(term, nba_live)
+
+        ncaaf_gates = verdict_expression(query_for("NCAAF"), "certified").lower()
+        for term in (
+            "p.probability_publishable",
+            "p.promoted",
+            "p.active",
+            "p.lifecycle_state in ('prospective_certified', 'champion')",
+            "p.calibrator_version is not null",
+            "p.calibration_training_n > 0",
+        ):
+            self.assertIn(term, ncaaf_gates)
+
     def test_ncaaf_always_returns_a_row_and_names_the_missing_case(self):
         """An empty registry and a registry with no active artifact are different gaps."""
         ncaaf = query_for("NCAAF")
@@ -392,15 +474,15 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
             "'model_hold'",
         ):
             self.assertIn(token, lowered)
-        # NULL is reserved for the two UNVERIFIED branches. The held branch must
-        # say false outright: picked.certified is a three-valued AND, so echoing
-        # it there would give NULL for a recorded failure.
+        # The boolean is keyed to the verdict, so a held row can never be null
+        # even when picked.certified evaluates to NULL.
         certified = verdict_expression(ncaaf).lower()
-        self.assertRegex(certified, r"when\s+counts\.total_rows\s*=\s*0\s+then\s+null")
-        self.assertRegex(certified, r"when\s+picked\.artifact_id\s+is\s+null\s+then\s+null")
-        self.assertRegex(certified, r"when\s+picked\.certified\s+then\s+true\s+else\s+false")
-        self.assertEqual(len(re.findall(r"then\s+null", certified)), 2)
-        self.assertNotIn("then false", certified)
+        self.assertRegex(certified, r"when\s+judged\.verdict\s*=\s*'unverified'\s+then\s+null")
+        self.assertRegex(
+            certified,
+            r"when\s+judged\.verdict\s*=\s*'model_certified'\s+then\s+true\s+else\s+false",
+        )
+        self.assertEqual(len(re.findall(r"then\s+null", certified)), 1)
 
 
 if __name__ == "__main__":
