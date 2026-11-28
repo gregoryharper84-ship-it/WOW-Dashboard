@@ -67,6 +67,8 @@ def test_close_verified_resolves_open_closure_release_note(tmp_path, monkeypatch
         "PR #2904 merged; no runtime deployment is involved; "
         "Reporter/governance closure remains open."
     )
+    source = next(r for r in ledger["records"] if r["postmortem_id"] == "PM-2026-11-28-001")
+    closed_utc = source["reporter_closure"]["closed_utc"]
     path = tmp_path / "incident-ledger.json"
     path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
     monkeypatch.setattr(records, "LEDGER", path)
@@ -81,8 +83,45 @@ def test_close_verified_resolves_open_closure_release_note(tmp_path, monkeypatch
     fix = row["engineering_fixes"]["FIX-2026-11-28-001"]
     assert row["state"] == "VERIFIED_CLOSED"
     assert row["reporter_closure"]["status"] == "FIXED_VERIFIED"
+    assert row["reporter_closure"]["closed_utc"] == closed_utc
+    assert f"FIXED_VERIFIED recorded {closed_utc}" in fix["release_note"]
     assert "remains open" not in fix["release_note"].lower()
-    assert "FIXED_VERIFIED recorded" in fix["release_note"]
+    assert row["updated_utc"] > closed_utc
+    records.validate()
+
+
+def test_close_verified_first_close_sets_receipt_and_updated_utc(tmp_path, monkeypatch) -> None:
+    ledger = json.loads(records.LEDGER.read_text(encoding="utf-8"))
+    row = next(r for r in ledger["records"] if r["postmortem_id"] == "PM-2026-11-28-001")
+    row["state"] = "MERGED_PENDING_DEPLOY"
+    row["reporter_closure"] = {"status": "PENDING", "evidence": "", "closed_utc": None}
+    fix = row["engineering_fixes"]["FIX-2026-11-28-001"]
+    fix["state"] = "MERGED_PENDING_DEPLOY"
+    fix["release_note"] = "PR #2904 merged; Reporter/governance closure remains open."
+
+    path = tmp_path / "incident-ledger.json"
+    path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(records, "LEDGER", path)
+
+    records.close_verified(
+        postmortem_id="PM-2026-11-28-001",
+        evidence="First closure receipt.",
+        preventive_control="Closure must be recorded through close-verified.",
+    )
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    row = next(r for r in saved["records"] if r["postmortem_id"] == "PM-2026-11-28-001")
+    fix = row["engineering_fixes"]["FIX-2026-11-28-001"]
+    assert row["state"] == "VERIFIED_CLOSED"
+    closed_utc = row["reporter_closure"]["closed_utc"]
+    assert row["reporter_closure"]["status"] == "FIXED_VERIFIED"
+    assert row["reporter_closure"]["evidence"] == "First closure receipt."
+    assert row["updated_utc"] == closed_utc
+    assert fix["state"] == "VERIFIED_CLOSED"
+    assert fix["updated_utc"] == closed_utc
+    assert "remains open" not in fix["release_note"].lower()
+    assert f"FIXED_VERIFIED recorded {closed_utc}" in fix["release_note"]
+    assert row["learning"]["preventive_control"] == "Closure must be recorded through close-verified."
     records.validate()
 
 

@@ -470,19 +470,16 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
         raise ValueError("verified closure requires REPORTER_CLOSURE stage")
     receipt = row.get("reporter_closure") or {}
     already_closed = row.get("state") == "VERIFIED_CLOSED" or receipt.get("status") == "FIXED_VERIFIED"
-    if already_closed:
-        if (
-            row.get("state") != "VERIFIED_CLOSED"
-            or receipt.get("status") != "FIXED_VERIFIED"
-            or not receipt.get("closed_utc")
-        ):
-            raise ValueError(
-                "verified closure is already recorded but inconsistent; "
-                "refusing to overwrite the closure receipt"
-            )
-        closed_utc = receipt["closed_utc"]
-    else:
-        closed_utc = _utc_now()
+    if already_closed and (
+        row.get("state") != "VERIFIED_CLOSED"
+        or receipt.get("status") != "FIXED_VERIFIED"
+        or not receipt.get("closed_utc")
+    ):
+        raise ValueError(
+            "verified closure is already recorded but inconsistent; "
+            "refusing to overwrite the closure receipt"
+        )
+    closed_utc = receipt["closed_utc"] if already_closed else _utc_now()
     notes_changed = False
     for fix_id in row.get("engineering_fix_ids", []):
         fix = (row.get("engineering_fixes") or {}).get(fix_id)
@@ -513,7 +510,7 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
         raise ValueError("closure blocked: " + "; ".join(errors))
     if already_closed and not notes_changed:
         return
-    row["updated_utc"] = closed_utc
+    row["updated_utc"] = _utc_now() if already_closed else closed_utc
     _save_ledger(ledger)
 
 
