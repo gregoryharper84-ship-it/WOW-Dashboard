@@ -26,7 +26,7 @@ Data ingestion, log/diagnostic improvements, integration repair, scorer transpor
 ### P — Protected engineering
 Changes to `.github/**`, reviewer decision behavior, secret/permission boundaries, trusted agent workflows, release safety, or a file consumed as a governance trust root. The reviewer category/schema change in PR #2301 is **P**, not diagnostic-only.
 
-- Require the same three real GitHub checks at the exact final head, plus scoped security-negative and compatibility tests for the changed trust boundary.
+- Require the same three real GitHub checks at the exact final head, plus scoped security-negative and compatibility tests for the changed trust boundary. Deterministic QA enforces the presence of that test: a trust-root change must carry a changed test file that adds at least one line, otherwise it holds with `QA_TRUST_ROOT_NEGATIVE_TEST_MISSING` or `QA_TRUST_ROOT_NEGATIVE_TEST_INVALID`. That proves a negative test is present and executable, never that it is adversarial or correct.
 - If the original PR is authored by the authenticated repository owner, authorship is **permitted**; no impossible self-approval or App copy is required. Owner authorization to release is established by an intentional authenticated GitHub merge after the other requirements pass, not by CI or the PR author's identity alone.
 - If another human/bot authors a protected PR, require the authenticated owner's exact-head `APPROVED` review before QA's owner-authorization evidence passes.
 - QA status describes **deterministic exact-head evidence**, not independent human/AI review. Optional semantic-review receipts retain their native status.

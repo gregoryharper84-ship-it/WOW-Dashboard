@@ -134,6 +134,8 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
                "author_id": 285088163 if author == OWNER else 9001, "changed_files": len(files),
                "body": "Incident: #2136\nParent: #1688"},
         "files": list(files),
+        "file_changes": [{"filename": path, "status": "modified", "additions": 3, "deletions": 0}
+                         for path in files],
         "source_review_paths": list(files),
         "source_review": source_review_evidence(files, author=author),
         "qa_review_policy": {
@@ -155,7 +157,13 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
     return ev
 
 
-TRUST_ROOT_FILES = (".github/workflows/wow-v17-claude-engineering-worker.yml",)
+# A trust-root change must carry a changed test file, so the fixture pair is the
+# protected workflow plus the negative test that covers it.
+NEGATIVE_TEST_FILE = "artifacts/wow-engine/v17/test_trust_root_negative_contract.py"
+TRUST_ROOT_FILES = (
+    ".github/workflows/wow-v17-claude-engineering-worker.yml",
+    NEGATIVE_TEST_FILE,
+)
 
 
 # --- QA decisions --------------------------------------------------------------------
@@ -422,6 +430,131 @@ def test_non_owner_trust_root_still_needs_exact_head_owner_approval():
     ev["reviews"] = [{"user": OWNER, "state": "APPROVED", "commit_id": OLD,
                       "submitted_at": "2026-10-09T02:00:00Z"}]
     assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+
+
+# --- trust-root negative test -------------------------------------------------------
+
+
+def test_trust_root_change_without_a_changed_test_file_holds():
+    ev = evidence(files=(TRUST_ROOT_FILES[0],), author=OWNER, reviews=[])
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" in m.qa_findings(ev)
+    # Adding the covering test is what satisfies it; ownership is not a substitute.
+    assert m.qa_findings(evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[])) == []
+
+
+def test_trust_root_negative_test_must_add_a_line_and_not_be_removed():
+    def file_changes(test_status="modified", test_additions=1):
+        return [
+            {"filename": TRUST_ROOT_FILES[0], "status": "modified", "additions": 4, "deletions": 1},
+            {"filename": NEGATIVE_TEST_FILE, "status": test_status,
+             "additions": test_additions, "deletions": 0 if test_additions else 5},
+        ]
+
+    assert m.qa_findings(evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[],
+                                  file_changes=file_changes())) == []
+    # The removed case keeps a nonzero count so the status clause, not the
+    # addition count, is what the assertion exercises.
+    for changes in (file_changes(test_additions=0), file_changes(test_status="removed", test_additions=3)):
+        ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[], file_changes=changes)
+        assert "QA_TRUST_ROOT_NEGATIVE_TEST_INVALID" in m.qa_findings(ev)
+        assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" not in m.qa_findings(ev)
+
+
+def test_plural_tests_suffix_satisfies_the_negative_test_requirement():
+    # deployment_gate_tests.py is collected via pyproject.toml python_files and
+    # wow_rapid.py PYTEST_PATTERNS, so it is a real test file for this gate.
+    plural = "artifacts/wow-engine/deployment_gate_tests.py"
+    assert m.is_test_path(plural)
+    ev = evidence(
+        files=(TRUST_ROOT_FILES[0], plural), author=OWNER, reviews=[],
+        file_changes=[
+            {"filename": TRUST_ROOT_FILES[0], "status": "modified", "additions": 4, "deletions": 1},
+            {"filename": plural, "status": "added", "additions": 5, "deletions": 0},
+        ],
+    )
+    assert m.qa_findings(ev) == []
+
+
+@pytest.mark.parametrize("status", [None, "", "queued"])
+def test_trust_root_negative_test_requires_a_recognized_change_status(status):
+    # An absent or unrecognized status cannot prove the test change is still a
+    # non-removed change, so nonzero additions are not enough on their own.
+    ev = evidence(
+        files=TRUST_ROOT_FILES, author=OWNER, reviews=[],
+        file_changes=[
+            {"filename": TRUST_ROOT_FILES[0], "status": "modified", "additions": 4, "deletions": 1},
+            {"filename": NEGATIVE_TEST_FILE, "status": status, "additions": 3, "deletions": 0},
+        ],
+    )
+    findings = m.qa_findings(ev)
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_INVALID" in findings
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" not in findings
+
+
+def test_trust_root_negative_test_evidence_is_never_assumed():
+    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[])
+    ev.pop("file_changes")
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_INVALID" in m.qa_findings(ev)
+    ev["file_changes"] = [{"filename": NEGATIVE_TEST_FILE, "status": "modified",
+                           "additions": "3", "deletions": 0}]
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_INVALID" in m.qa_findings(ev)
+
+
+def test_ordinary_code_needs_no_negative_test():
+    assert m.qa_findings(evidence(files=("artifacts/wow-engine/v17/nfl_ml_challenger_v2.py",))) == []
+
+
+@pytest.mark.parametrize("path", [
+    "artifacts/wow-engine/test_v17_x.py",
+    "artifacts/wow-engine/v17/trust_root_test.py",
+    # Plural _tests.py is collected by this repository's configured python_files.
+    "artifacts/wow-engine/deployment_gate_tests.py",
+    "artifacts/wow-engine/ncaaf_trust_tests.py",
+    "web/src/panel.test.tsx",
+    "web/src/panel.spec.js",
+    ".github/scripts/tests/test_reviewer.py",
+])
+def test_test_file_convention_accepts_real_test_paths(path):
+    assert m.is_test_path(path)
+
+
+@pytest.mark.parametrize("path", [
+    "artifacts/wow-engine/v17/contest.py",
+    "artifacts/wow-engine/v17/testimony.py",
+    # A test directory alone is support code, not a test case.
+    "artifacts/wow-engine/tests/conftest.py",
+    "artifacts/wow-engine/tests/helpers.py",
+    "artifacts/wow-engine/v17/tests/fixtures.py",
+    # A test_ prefix alone is not enough: the file must be test code.
+    "artifacts/wow-engine/test_data.json",
+    "artifacts/wow-engine/tests/fixtures.json",
+    ".github/scripts/independent_source_review_receipt.py",
+    "",
+])
+def test_test_file_convention_rejects_non_tests(path):
+    assert not m.is_test_path(path)
+
+
+def test_a_test_helper_or_conftest_does_not_satisfy_the_negative_test_requirement():
+    # tests/conftest.py is support code, not a test case: added lines there never count.
+    helper = "artifacts/wow-engine/tests/conftest.py"
+    ev = evidence(
+        files=(TRUST_ROOT_FILES[0], helper), author=OWNER, reviews=[],
+        file_changes=[
+            {"filename": TRUST_ROOT_FILES[0], "status": "modified", "additions": 4, "deletions": 1},
+            {"filename": helper, "status": "added", "additions": 12, "deletions": 0},
+        ],
+    )
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" in m.qa_findings(ev)
+    assert "QA_TRUST_ROOT_NEGATIVE_TEST_INVALID" not in m.qa_findings(ev)
+
+
+def test_release_re_derives_the_trust_root_negative_test_requirement():
+    ev = evidence(files=(TRUST_ROOT_FILES[0],), author=OWNER, reviews=[])
+    with_qa(ev)
+    findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert "RELEASE_QA_TRUST_ROOT_NEGATIVE_TEST_MISSING" in findings
+    assert m.decision("release", findings, ev)["conclusion"] == "failure"
 
 
 # --- Release decisions --------------------------------------------------------------
@@ -989,6 +1122,43 @@ def test_gather_collects_exact_head_evidence():
     )
     assert ev["evidence_errors"] == [] and ev["files"] == ["artifacts/x.py"]
     assert ev["check_runs"][0]["app_id"] == GHA and ev["owner_login"] == OWNER
+
+
+def test_gather_records_per_file_change_shape_for_the_negative_test_requirement():
+    files = [
+        {"filename": ".github/workflows/wow-verify.yml", "status": "modified",
+         "additions": 1, "deletions": 1},
+        {"filename": "artifacts/wow-engine/test_wow_verify.py", "status": "added",
+         "additions": 42, "deletions": 0},
+    ]
+    ev = m.gather(
+        REPO,
+        7,
+        HEAD,
+        fetch=Fake(_gather_routes(files=files)),
+        source_review_resolver=_source_review_resolver,
+    )
+    assert ev["file_changes"] == [
+        {"filename": ".github/workflows/wow-verify.yml", "status": "modified",
+         "additions": 1, "deletions": 1},
+        {"filename": "artifacts/wow-engine/test_wow_verify.py", "status": "added",
+         "additions": 42, "deletions": 0},
+    ]
+
+
+def test_gather_never_invents_change_counts():
+    files = [{"filename": ".github/workflows/wow-verify.yml", "status": "modified"}]
+    ev = m.gather(
+        REPO,
+        7,
+        HEAD,
+        fetch=Fake(_gather_routes(files=files)),
+        source_review_resolver=_source_review_resolver,
+    )
+    assert ev["file_changes"] == [
+        {"filename": ".github/workflows/wow-verify.yml", "status": "modified",
+         "additions": None, "deletions": None},
+    ]
 
 
 @pytest.mark.parametrize("mutate, error", [
