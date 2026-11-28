@@ -58,8 +58,38 @@
 --    governed `wow_runtime_capabilities` row that
 --    `wow_v17_refresh_nfl_event_capability()` maintains, and requires
 --    evidence.calibrator_ready to be present. When that row or that key is
---    missing the verdict is UNVERIFIED / NO_CALIBRATOR_EVIDENCE -- never false,
---    so an omitted check cannot masquerade as a recorded failure.
+--    missing the verdict is UNVERIFIED / NFL_EVENT_CALIBRATOR_UNAVAILABLE --
+--    never false, so an omitted check cannot masquerade as a recorded failure.
+--
+--    Reason codes are governed names, one vocabulary per axis.
+--
+--    Readiness axes read the NFL contract's own blocker names, because those
+--    three rows are exactly what this query reads:
+--      NFL_EVENT_PROBABILITY_CAPABILITY_UNAVAILABLE  nfl_event_model_contract.p0_readiness
+--      NFL_EVENT_CALIBRATOR_UNAVAILABLE              nfl_event_model_contract.p0_readiness
+--      NFL_FITTED_MODEL_ARTIFACT_UNAVAILABLE         nfl_event_model_contract.p0_readiness
+--
+--    The forward-evidence axis speaks the ledger's own DB-enforced vocabulary
+--    instead of borrowing the scoring row's aggregate code:
+--      INSUFFICIENT_FORWARD_EVIDENCE  ledger status, when its cohort is short
+--      DO_NOT_CERTIFY_YET             its certification_recommendation when it
+--                                     ran and did not pass (FAIL or blockers)
+--      NFL_FORWARD_CERTIFICATION_UNPROVEN  nothing was assessed (no ledger row),
+--                                     the floor is below governance, or the
+--                                     champion itself has too few grades
+--    Collapsing all of these to one code would flatten the ledger's own
+--    three-way outcome (PASS / FAIL / INSUFFICIENT_FORWARD_EVIDENCE) into a
+--    single string, so "not enough evidence yet" and "evidence failed" would
+--    read identically -- the distinction this report exists to make.
+--
+--    Deliberately NOT the cross-sport inventory blockers
+--    (v17/cross_sport_certification_inventory.py). Those name data currency,
+--    source provenance, specialist readiness and deterministic replay --
+--    dimensions this query never reads -- so adopting them would assert checks
+--    that did not run.
+--
+--    CERTIFIED_ARTIFACT_PUBLISHABLE is report-local. No governed code names the
+--    all-gates-pass state, and CERTIFIED_ROUTE would overstate this query.
 --
 --    The ledger's graded_n is a global snapshot, so a passing ledger alone must
 --    not authorize a champion that lacks its own grades: the cohort CTE recounts
@@ -141,19 +171,23 @@ judged as (
                when gates_pass then 'MODEL_CERTIFIED'
                else 'MODEL_HOLD'
            end as verdict,
+           -- Governed names only -- see the vocabulary note in section 1.
+           -- Order mirrors gates_pass, so the code names the first gate that
+           -- actually failed.
            case
-               when capability_key is null then 'NO_CAPABILITY_RECORD'
-               when not evidence_present then 'NO_CALIBRATOR_EVIDENCE'
-               when health_id is null then 'NO_CALIBRATION_HEALTH_RECORD'
-               when capability_status <> 'AVAILABLE' then 'CAPABILITY_NOT_AVAILABLE'
-               when not calibrator_ready then 'CALIBRATOR_NOT_READY'
-               when not certified_artifact_ready then 'CERTIFIED_ARTIFACT_UNAVAILABLE'
-               when status <> 'PASS'
-                 or certification_recommendation <> 'FORWARD_EVIDENCE_PASS' then 'LEDGER_NOT_PASS'
-               when blockers <> '[]'::jsonb then 'LEDGER_BLOCKERS_PRESENT'
-               when minimum_forward_required < 100 then 'FORWARD_FLOOR_BELOW_GOVERNED_MINIMUM'
-               when graded_n < minimum_forward_required then 'LEDGER_COHORT_BELOW_MINIMUM'
-               when cohort_graded_n < minimum_forward_required then 'CHAMPION_COHORT_BELOW_MINIMUM'
+               when capability_key is null then 'NFL_EVENT_PROBABILITY_CAPABILITY_UNAVAILABLE'
+               when not evidence_present then 'NFL_EVENT_CALIBRATOR_UNAVAILABLE'
+               when health_id is null then 'NFL_FORWARD_CERTIFICATION_UNPROVEN'
+               when capability_status <> 'AVAILABLE' then 'NFL_EVENT_PROBABILITY_CAPABILITY_UNAVAILABLE'
+               when not calibrator_ready then 'NFL_EVENT_CALIBRATOR_UNAVAILABLE'
+               when not certified_artifact_ready then 'NFL_FITTED_MODEL_ARTIFACT_UNAVAILABLE'
+               when status = 'INSUFFICIENT_FORWARD_EVIDENCE' then 'INSUFFICIENT_FORWARD_EVIDENCE'
+               when status <> 'PASS' then 'DO_NOT_CERTIFY_YET'
+               when certification_recommendation <> 'FORWARD_EVIDENCE_PASS' then 'DO_NOT_CERTIFY_YET'
+               when blockers <> '[]'::jsonb then 'DO_NOT_CERTIFY_YET'
+               when minimum_forward_required < 100 then 'NFL_FORWARD_CERTIFICATION_UNPROVEN'
+               when graded_n < minimum_forward_required then 'INSUFFICIENT_FORWARD_EVIDENCE'
+               when cohort_graded_n < minimum_forward_required then 'NFL_FORWARD_CERTIFICATION_UNPROVEN'
                else 'CERTIFIED_ARTIFACT_PUBLISHABLE'
            end as reason_code
       from scored

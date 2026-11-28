@@ -371,10 +371,64 @@ class TestModelVerdictSqlInvariants(unittest.TestCase):
         for column in ("market_family", "validation_status", "health_status"):
             self.assertNotIn(column, lowered)
 
+    def test_nfl_reason_codes_are_governed_not_invented(self):
+        """The NFL report must speak the contract's vocabulary, not a local one."""
+        governed = {
+            "NFL_EVENT_PROBABILITY_CAPABILITY_UNAVAILABLE",  # nfl_event_model_contract.p0_readiness
+            "NFL_EVENT_CALIBRATOR_UNAVAILABLE",              # nfl_event_model_contract.p0_readiness
+            "NFL_FITTED_MODEL_ARTIFACT_UNAVAILABLE",         # nfl_event_model_contract.p0_readiness
+            "NFL_FORWARD_CERTIFICATION_UNPROVEN",            # v17/nfl_daily_stage_receipts.py
+            "INSUFFICIENT_FORWARD_EVIDENCE",                 # ledger status (DB check constraint)
+            "DO_NOT_CERTIFY_YET",                            # ledger certification_recommendation
+            "CERTIFIED_ARTIFACT_PUBLISHABLE",                # report-local success label
+        }
+        emitted = set(
+            re.findall(r"(?:then|else)\s+'([A-Z][A-Z0-9_]+)'", verdict_expression(self.nfl, "reason_code"))
+        )
+        self.assertTrue(emitted)
+        self.assertEqual(emitted - governed, set())
+        for retired in (
+            "NO_CAPABILITY_RECORD",
+            "NO_CALIBRATOR_EVIDENCE",
+            "NO_CALIBRATION_HEALTH_RECORD",
+            "CAPABILITY_NOT_AVAILABLE",
+            "CALIBRATOR_NOT_READY",
+            "CERTIFIED_ARTIFACT_UNAVAILABLE",
+            "LEDGER_NOT_PASS",
+            "LEDGER_BLOCKERS_PRESENT",
+            "FORWARD_FLOOR_BELOW_GOVERNED_MINIMUM",
+            "LEDGER_COHORT_BELOW_MINIMUM",
+            "CHAMPION_COHORT_BELOW_MINIMUM",
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, self.nfl)
+
+    def test_forward_evidence_outcomes_stay_distinct(self):
+        """The ledger's three-way outcome must not collapse back to one code.
+
+        PASS / FAIL / INSUFFICIENT_FORWARD_EVIDENCE are separate governed
+        outcomes; a single shared reason code would make "not enough evidence
+        yet" and "evidence failed" read identically.
+        """
+        expr = verdict_expression(self.nfl, "reason_code")
+        self.assertRegex(
+            expr,
+            r"status\s*=\s*'INSUFFICIENT_FORWARD_EVIDENCE'\s+then\s+'INSUFFICIENT_FORWARD_EVIDENCE'",
+        )
+        self.assertIn("'DO_NOT_CERTIFY_YET'", expr)
+        self.assertLess(
+            expr.index("status = 'INSUFFICIENT_FORWARD_EVIDENCE'"),
+            expr.index("'DO_NOT_CERTIFY_YET'"),
+        )
+
     def test_reason_codes_cover_every_unverified_branch(self):
         """Each branch that can only be reached by absent evidence keeps its name."""
         expectations = {
-            "NFL": ("NO_CAPABILITY_RECORD", "NO_CALIBRATOR_EVIDENCE", "NO_CALIBRATION_HEALTH_RECORD"),
+            "NFL": (
+                "NFL_EVENT_PROBABILITY_CAPABILITY_UNAVAILABLE",
+                "NFL_EVENT_CALIBRATOR_UNAVAILABLE",
+                "NFL_FORWARD_CERTIFICATION_UNPROVEN",
+            ),
             "NBA": ("NO_CERTIFICATION_RECORD",),
             "NCAAF": ("NO_ARTIFACT_RECORDED", "NO_ACTIVE_ARTIFACT"),
         }
